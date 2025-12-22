@@ -1,0 +1,16 @@
+[package]
+name = "panda"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+linked_list_allocator = "0.10.5"
+log = "0.4"
+spinning_top = "0.3.0"
+uefi = { version = "0.36" }
+x86_64 = { version = "0.15", default-features=false, features=["instructions"] }
+
+[[bin]]
+name = "panda"
+test = true
+bench = false
