@@ -9,7 +9,7 @@ build:
 run:
 	qemu-system-x86_64 -nodefaults -enable-kvm -no-shutdown \
 	    -machine pc-q35-9.2 -m 1G \
-		-serial stdio -nographic \
+		-serial stdio \
 		-device virtio-gpu \
 		-device virtio-mouse \
 		-device virtio-keyboard \

@@ -1,7 +1,11 @@
-use core::{alloc::GlobalAlloc, ptr};
+use core::{
+    alloc::{GlobalAlloc, Layout},
+    ptr,
+};
 
 use log::{error, trace};
 use spinning_top::RwSpinlock;
+use x86_64::VirtAddr;
 
 struct BumpAllocatorInner {
     heap_start: usize,
@@ -59,7 +63,7 @@ unsafe impl GlobalAlloc for BumpAllocator {
             return ptr::null_mut();
         }
 
-        trace!("Allocated {} bytes at {alloc_start:#010X}", layout.size());
+        trace!("Allocated {} bytes at {alloc_start:#0X}", layout.size());
 
         allocator.allocations += 1;
         alloc_start as *mut u8
@@ -67,7 +71,7 @@ unsafe impl GlobalAlloc for BumpAllocator {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
         trace!(
-            "Skipping deallocation of {} bytes at {:#010x}",
+            "Skipping deallocation of {} bytes at {:#0X}",
             layout.size(),
             ptr as usize
         );
@@ -81,4 +85,9 @@ pub unsafe fn init(heap_start: usize, heap_size: usize) {
     unsafe {
         GLOBAL_ALLOCATOR.init(heap_start, heap_size);
     }
+}
+
+pub fn allocate(layout: Layout) -> VirtAddr {
+    let ptr = unsafe { GLOBAL_ALLOCATOR.alloc_zeroed(layout) };
+    VirtAddr::new(ptr as u64)
 }

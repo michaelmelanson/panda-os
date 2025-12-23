@@ -1,11 +1,8 @@
-use linked_list_allocator::LockedHeap;
 use log::debug;
 use uefi::{
     boot::MemoryType,
     mem::memory_map::{MemoryMap, MemoryMapOwned},
 };
-
-static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 pub fn init_from_uefi(memory_map: &MemoryMapOwned) -> (usize, usize) {
     let mut best_region_base = None;
@@ -35,12 +32,6 @@ pub fn init_from_uefi(memory_map: &MemoryMapOwned) -> (usize, usize) {
         best_region_page_count * 4 / 1024,
         best_region_base
     );
-
-    unsafe {
-        ALLOCATOR
-            .lock()
-            .init(best_region_base as *mut u8, best_region_size);
-    }
 
     (best_region_base, best_region_size)
 }

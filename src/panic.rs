@@ -3,6 +3,9 @@
 fn panic(info: &core::panic::PanicInfo) -> ! {
     use log::error;
 
-    error!("PANIC: {}", info.message());
+    let file = info.location().map(|l| l.file()).unwrap_or("unknown");
+    let line = info.location().map(|l| l.line()).unwrap_or(0);
+
+    error!("PANIC at [{}:{}]: {}", file, line, info.message());
     loop {}
 }
