@@ -117,6 +117,7 @@ unsafe impl Hal for VirtioHal {
     }
 }
 
+#[allow(unused)]
 struct VirtioGpuDevice {
     gpu: VirtIOGpu<VirtioHal, PciTransport>,
     framebuffer: VirtAddr,
