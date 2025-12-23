@@ -2,7 +2,6 @@ pub mod device;
 
 use ::acpi::sdt::mcfg::Mcfg;
 use alloc::vec::Vec;
-use log::info;
 use spinning_top::RwSpinlock;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -78,21 +77,15 @@ fn init_pci_bus(
 pub fn enumerate_pci_devices(f: impl Fn(PciDevice)) {
     let pci_segment_groups = &*PCI_SEGMENT_GROUPS.read();
 
-    for pci_segment_group in pci_segment_groups {
-        info!(
-            "PCI segment {} (buses {} through {}):",
-            pci_segment_group.group_id,
-            pci_segment_group.bus_number_start,
-            pci_segment_group.bus_number_end
-        );
+    for group in pci_segment_groups {
+        for bus in group.bus_number_start..group.bus_number_end {
+            for slot in 0..31 {
+                let Some(pci_device) = pci_device(group.group_id, bus, slot, 0) else {
+                    break;
+                };
 
-        let bus = 0;
-        for slot in 0..31 {
-            let Some(pci_device) = pci_device(pci_segment_group.group_id, bus, slot, 0) else {
-                break;
-            };
-
-            f(pci_device)
+                f(pci_device)
+            }
         }
     }
 }

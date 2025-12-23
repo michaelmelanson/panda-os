@@ -1,6 +1,7 @@
 use core::{alloc::Layout, ptr::NonNull};
 
-use log::{debug, info, trace};
+use log::trace;
+use spinning_top::RwSpinlock;
 use virtio_drivers::{
     Hal,
     device::gpu::VirtIOGpu,
@@ -9,7 +10,7 @@ use virtio_drivers::{
         bus::{ConfigurationAccess, DeviceFunction, PciRoot},
     },
 };
-use x86_64::PhysAddr;
+use x86_64::{PhysAddr, VirtAddr};
 
 use crate::{
     memory::{self, global_alloc},
@@ -70,8 +71,6 @@ unsafe impl Hal for VirtioHal {
         pages: usize,
         _direction: virtio_drivers::BufferDirection,
     ) -> (virtio_drivers::PhysAddr, core::ptr::NonNull<u8>) {
-        debug!("dma_alloc: pages={pages}");
-
         let layout = Layout::from_size_align(pages * 4096, 4096).unwrap();
         let virt_addr = global_alloc::allocate(layout);
 
@@ -118,6 +117,14 @@ unsafe impl Hal for VirtioHal {
     }
 }
 
+struct VirtioGpuDevice {
+    gpu: VirtIOGpu<VirtioHal, PciTransport>,
+    framebuffer: VirtAddr,
+    resolution: (u32, u32),
+}
+
+static VIRTIO_GPU_DEVICE: RwSpinlock<Option<VirtioGpuDevice>> = RwSpinlock::new(None);
+
 pub fn init_from_pci_device(pci_device: PciDevice) {
     let mut root = PciRoot::new(pci_device.clone());
     let device_function: DeviceFunction = pci_device.address().into();
@@ -128,23 +135,15 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
 
     let (width, height) = gpu.resolution().expect("failed to get resolution");
 
-    info!("Allocating framebuffer...");
     let framebuffer = gpu
         .setup_framebuffer()
         .expect("Could not create framebuffer");
-    info!("Framebuffer: {:?}", framebuffer.as_ptr());
+    let framebuffer = VirtAddr::new(framebuffer.as_ptr() as u64);
 
-    for y in 0..height {
-        for x in 0..width {
-            let index = ((y * width + x) * 4) as usize;
-
-            framebuffer[index + 0] = 0xAA;
-            framebuffer[index + 1] = 0xBB;
-            framebuffer[index + 2] = 0xCC;
-        }
-    }
-
-    gpu.flush().expect("flush failed");
-
-    loop {}
+    let mut device = VIRTIO_GPU_DEVICE.write();
+    *device = Some(VirtioGpuDevice {
+        gpu,
+        framebuffer,
+        resolution: (width, height),
+    });
 }
