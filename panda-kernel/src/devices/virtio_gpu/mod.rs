@@ -95,7 +95,7 @@ unsafe impl Hal for VirtioHal {
         _size: usize,
     ) -> core::ptr::NonNull<u8> {
         let phys_addr = PhysAddr::new(paddr);
-        let virt_addr = memory::map_physical_address(phys_addr);
+        let virt_addr = memory::physical_address_to_virtual(phys_addr);
         let ptr: *mut u8 = virt_addr.as_mut_ptr();
         core::ptr::NonNull::new(ptr).expect("could not get MMIO virtual address")
     }

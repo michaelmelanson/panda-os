@@ -1,0 +1,20 @@
+[package]
+name = "panda-kernel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+acpi = { workspace = true }
+linked_list_allocator = { workspace = true }
+log = { workspace = true }
+spinning_top = { workspace = true }
+uefi = { workspace = true }
+virtio-drivers = { workspace = true }
+x86_64 = { workspace = true }
+goblin = { workspace = true }
+libpanda = { path = "../userspace/libpanda" }
+
+[[bin]]
+name = "panda-kernel"
+test = true
+bench = false

@@ -1,15 +1,25 @@
+.PHONY: build panda-kernel init run
 
-.PHONY: build
-build:
-	cargo build --target x86_64-unknown-uefi
-	cp target/x86_64-unknown-uefi/debug/panda.efi build/efi/boot/bootx64.efi
+build: panda-kernel init
+	cp target/x86_64-panda-uefi/debug/panda-kernel.efi build/efi/boot/bootx64.efi
+	cp target/x86_64-panda-userspace/debug/init build/efi/init
 	echo "fs0:\\\\efi\\\\boot\\\\bootx64.efi" > build/efi/boot/startup.nsh
 
-.PHONY: run
+panda-kernel:
+	cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json
+
+init:
+	cargo +nightly build -Z build-std=core --package init --target ./x86_64-panda-userspace.json
+
 run:
-	qemu-system-x86_64 -nodefaults -enable-kvm -no-shutdown \
+	rm qemu.log
+	qemu-system-x86_64 -nodefaults -no-shutdown -no-reboot \
+	    -s -S \
+	    -D qemu.log -d int,pcall,cpu_reset,guest_errors,strace \
 	    -machine pc-q35-9.2 -m 1G \
+		-display gtk \
 		-serial stdio \
+		-monitor vc \
 		-device virtio-gpu \
 		-device virtio-mouse \
 		-device virtio-keyboard \

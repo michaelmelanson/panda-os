@@ -16,7 +16,7 @@ impl ::acpi::Handler for AcpiHandler {
         let physical_start = PhysAddr::new(physical_address as u64);
 
         let virtual_start = unsafe {
-            let virtual_start = memory::map_physical_address(physical_start);
+            let virtual_start = memory::physical_address_to_virtual(physical_start);
             NonNull::new_unchecked(virtual_start.as_u64() as *mut _)
         };
 

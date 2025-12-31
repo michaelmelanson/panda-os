@@ -1,0 +1,8 @@
+[unstable]
+build-std = ["core", "compiler_builtins", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.x86_64-panda-userspace]
+rustflags = [
+    "-C", "link-arg=-Tx86_64-panda-userspace.ld"
+]

@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use spinning_top::RwSpinlock;
 use x86_64::{PhysAddr, VirtAddr};
 
-use crate::memory::map_physical_address;
+use crate::memory::physical_address_to_virtual;
 
 use device::PciDevice;
 
@@ -46,7 +46,7 @@ pub fn init() {
         let mcfg = mcfg.expect("No MCFG table found");
         for entry in mcfg.entries() {
             init_pci_bus(
-                map_physical_address(PhysAddr::new(entry.base_address)),
+                physical_address_to_virtual(PhysAddr::new(entry.base_address)),
                 entry.bus_number_start,
                 entry.bus_number_end,
                 entry.pci_segment_group,

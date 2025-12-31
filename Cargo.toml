@@ -1,9 +1,8 @@
-[package]
-name = "panda"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "3"
+members = ["panda-kernel", "userspace/init", "userspace/libpanda"]
 
-[dependencies]
+[workspace.dependencies]
 acpi = "6.0"
 linked_list_allocator = "0.10"
 log = "0.4"
@@ -11,8 +10,4 @@ spinning_top = "0.3.0"
 uefi = { version = "0.36" }
 virtio-drivers = "0.12"
 x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
-
-[[bin]]
-name = "panda"
-test = true
-bench = false
+goblin = { version = "0.10", default-features = false, features = ["alloc", "elf32", "elf64", "endian_fd"] }
