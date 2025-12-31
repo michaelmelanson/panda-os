@@ -2,12 +2,9 @@ use core::ptr::slice_from_raw_parts_mut;
 
 use uefi::{
     CStr16,
-    boot::{self, AllocateType, MemoryType, OpenProtocolParams, get_handle_for_protocol},
+    boot::{self, AllocateType, MemoryType},
     mem::memory_map::MemoryMapOwned,
-    proto::{
-        loaded_image::LoadedImage,
-        media::file::{File, FileAttribute, FileInfo, FileMode},
-    },
+    proto::media::file::{File, FileAttribute, FileInfo, FileMode},
 };
 use x86_64::PhysAddr;
 

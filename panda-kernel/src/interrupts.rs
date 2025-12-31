@@ -15,8 +15,6 @@ use x86_64::{
     },
 };
 
-use crate::memory;
-
 static BREAKPOINT_INTERRUPT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 static DESCRIPTOR_TABLE: RwSpinlock<InterruptDescriptorTable> =
@@ -147,6 +145,6 @@ extern "x86-interrupt" fn page_fault_handler(
     );
 }
 
-extern "x86-interrupt" fn timer_handler(stack_frame: InterruptStackFrame) {
+extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
     //debug!("TIMER");
 }
