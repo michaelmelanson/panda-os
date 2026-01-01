@@ -10,9 +10,6 @@ use crate::memory::{self, MemoryMappingOptions, allocate_frame, allocate_physica
 
 pub fn exec_raw(ptr: *const [u8]) -> ! {
     let data = unsafe { ptr.as_ref().unwrap() };
-
-    info!("Exec of program at {ptr:?}");
-
     let elf = Elf::parse(data).expect("failed to parse ELF binary");
     assert_eq!(elf.is_64, true, "32-bit binaries are not supported");
 
@@ -33,12 +30,6 @@ pub fn exec_raw(ptr: *const [u8]) -> ! {
     );
 
     let rflags = RFlags::INTERRUPT_FLAG;
-    info!(
-        "Jumping to start address {:#0X} (RFLAGS: {rflags:?} / {:#X})",
-        elf.entry,
-        rflags.bits()
-    );
-
     let rflags = rflags.bits();
 
     unsafe {
@@ -52,9 +43,7 @@ pub fn exec_raw(ptr: *const [u8]) -> ! {
             stack_pointer = in(reg) stack_pointer.as_u64()
         );
     }
-    info!("RETURNED");
-
-    loop {}
+    panic!("Exec returned");
 }
 
 fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) {
@@ -72,12 +61,6 @@ fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) {
                     );
                 }
 
-                debug!(
-                    "Load: {:#0X} to {:#0X}",
-                    phys_addr.start_address(),
-                    header.p_vaddr
-                );
-
                 let virt_addr = VirtAddr::new(header.p_vaddr);
 
                 memory::map(
@@ -90,18 +73,6 @@ fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) {
                         writable: header.is_write(),
                     },
                 );
-
-                // debug!("Verifying mapping...");
-                // unsafe {
-                //     for i in 0..4 {
-                //         let src = virt_addr.as_ptr::<u8>().byte_add(i).read();
-                //         let dest = (file_ptr as *const u8)
-                //             .byte_add(header.p_offset as usize + i)
-                //             .read();
-                //         debug!("after mapping: index={i}, src={src:02X}, dest={dest:02X}");
-                //         assert_eq!(src, dest, "mapping failed");
-                //     }
-                // }
             }
 
             _ => trace!("Ignoring {} program header", pt_to_str(header.p_type)),

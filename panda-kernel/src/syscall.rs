@@ -47,14 +47,6 @@ pub fn init() {
     let user_cs = gdt.append(Descriptor::user_code_segment());
     drop(gdt);
 
-    info!(
-        "Kernel CS: {kernel_cs:?} ({:#X}), DS: {kernel_ds:?}",
-        kernel_cs.0
-    );
-    info!("User CS: {user_cs:?}, DS:{user_ds:?}");
-    info!("TSS: {tss:?}");
-    info!("Loading new GDT");
-
     unsafe {
         (*GDT.data_ptr()).load();
         CS::set_reg(kernel_cs);
@@ -62,14 +54,10 @@ pub fn init() {
         SS::set_reg(kernel_ds);
         load_tss(tss);
     }
-    info!("New GDT loaded");
 
-    info!("Setting up system calls");
     Star::write(user_cs, user_ds, kernel_cs, kernel_ds).expect("STAR failed");
     let syscall_entry_ptr = syscall_entry as *const [u8; 10];
     let syscall_entry_addr = syscall_entry_ptr as usize;
-    debug!("Syscall entry address: {syscall_entry_addr:#0X}");
-    debug!("Syscall entry code: {:X?}", unsafe { *syscall_entry_ptr });
 
     LStar::write(VirtAddr::new(syscall_entry_addr as u64));
     unsafe {

@@ -20,16 +20,22 @@ pub fn init_and_exit_boot_services() -> UefiInfo {
     let system_table = ::uefi::table::system_table_raw().expect("No UEFI system table");
     let system_table = unsafe { system_table.as_ref() };
 
+    // this should work, in conjunction with code in `.gdbinit` to calculate an offset
+    // but it seems to give the wrong value
     // {
     //     let loaded_image_handle = get_handle_for_protocol::<LoadedImage>().unwrap();
     //     let loaded_image =
     //         ::uefi::boot::open_protocol_exclusive::<LoadedImage>(loaded_image_handle).unwrap();
     //     let (base_address, _) = loaded_image.info();
     //     let base_address = base_address as usize;
+    //     let address: usize;
+    //     unsafe { core::arch::asm!("lea {}, [rip]", out(reg) address) }
+    //     log::info!("Current address: {address:X?}");
     //     log::info!("Base address: {base_address:X?}");
+
     //     unsafe {
     //         let care_package_ptr = &mut *(0x55420 as *mut [usize; 2]);
-    //         care_package_ptr[1] = base_address.wrapping_sub(0x0000000140000000);
+    //         care_package_ptr[1] = base_address;
     //         care_package_ptr[0] = 0xCA5ECA5E;
     //     }
     // }

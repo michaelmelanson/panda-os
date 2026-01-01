@@ -46,26 +46,6 @@ pub fn inspect_virtual_address(virt_addr: VirtAddr) {
     }
 }
 
-// pub fn make_virtual_address(
-//     l4_index: usize,
-//     l3_index: usize,
-//     l2_index: usize,
-//     l1_index: usize,
-//     offset: usize,
-// ) -> Option<VirtAddr> {
-//     let addr = (l4_index & 0x1FF) << 39
-//         | (l3_index * 0x1FF) << 30
-//         | (l2_index * 0x1FF) << 21
-//         | (l1_index & 0x1FF) << 12
-//         | (offset & 0xFFF);
-
-//     let sign_bit = (addr >> 48) & 1;
-//     let sign_extension = if sign_bit != 0 { 0xFFFF << 48 } else { 0 };
-//     let addr = addr | sign_extension;
-
-//     VirtAddr::try_new(addr as u64).ok()
-// }
-
 pub fn physical_address_to_virtual(addr: PhysAddr) -> VirtAddr {
     // we identity map physical addresses
     VirtAddr::new(addr.as_u64())
@@ -107,7 +87,24 @@ pub fn map(
         let phys_addr = base_phys_addr + i as u64;
         let virt_addr = base_virt_addr + i as u64;
 
-        info!("Mapping {phys_addr:#0X} to virtual {virt_addr:#0X}");
+        debug!(
+            "Mapping {phys_addr:#0X} to virtual {virt_addr:#0X} ({user}, {writable}, {no_execute})",
+            user = if options.user {
+                "user accessible"
+            } else {
+                "kernel-only"
+            },
+            writable = if options.writable {
+                "writable"
+            } else {
+                "read-only"
+            },
+            no_execute = if options.executable {
+                "executable"
+            } else {
+                "non-executable"
+            }
+        );
 
         let mut flags = PageTableFlags::PRESENT;
         if options.user {
@@ -123,13 +120,11 @@ pub fn map(
 
         let (entry, level) = l1_page_table_entry(virt_addr, flags);
         let entry = unsafe { &mut *entry };
-        debug!("Entry before mapping (level {level:?}): {entry:?}");
 
-        without_write_protection(|| {
-            entry.set_addr(phys_addr, flags);
-        });
-
-        debug!("Entry after mapping: {entry:?}");
+        info!(
+            "Updating level {level:?} entry {entry:?} with address {phys_addr:?} and flags {flags:?}"
+        );
+        without_write_protection(|| entry.set_addr(phys_addr, flags));
         tlb::flush(virt_addr);
     }
 }
@@ -147,14 +142,8 @@ fn leaf_page_table_entry(
     let mut page_table = unsafe { &mut *current_page_table() };
     let mut level = PageTableLevel::Four;
 
-    info!("Finding leaf page table entry for {addr:?}:");
     loop {
         let entry = &mut page_table[addr.page_table_index(level)];
-        info!(
-            "  - {level:?} at {:#x}: {entry:?}",
-            entry as *const _ as u64
-        );
-
         if entry.addr() == PhysAddr::zero() {
             return (entry, level);
         }

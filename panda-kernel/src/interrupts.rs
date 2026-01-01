@@ -72,7 +72,6 @@ pub fn init() {
         (*DESCRIPTOR_TABLE.data_ptr()).load();
     }
 
-    info!("Loaded IDT");
     interrupts::enable();
 
     interrupts::int3();
@@ -115,8 +114,9 @@ extern "x86-interrupt" fn double_fault_handler(
         );
     }
 
-    info!("Registers: rax={rax:#x} rcx={rcx:#x} rsi={rsi:#x} rdi={rdi:#x}");
-    panic!("Double fault: error code {error_code}\n{stack_frame:?}");
+    panic!(
+        "Double fault:\n  rax={rax:#x} rcx={rcx:#x} rsi={rsi:#x} rdi={rdi:#x}\n  error code {error_code}\n{stack_frame:?}"
+    );
 }
 
 extern "x86-interrupt" fn page_fault_handler(
@@ -125,8 +125,6 @@ extern "x86-interrupt" fn page_fault_handler(
 ) {
     let address =
         Cr2::read().expect("CR2 contained non-canonical address while handling page fault");
-
-    // memory::inspect_virtual_address(address);
 
     panic!(
         "Page fault:\n  Fault address:   {address:#020x}\n  Current address: {:#020x}\n  Stack pointer:   {:#020x}\n  Caused by {} while executing in {} mode ({error_code:?})",

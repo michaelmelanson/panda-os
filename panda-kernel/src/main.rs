@@ -36,9 +36,7 @@ fn main() -> Status {
 
     let uefi_info = uefi::init_and_exit_boot_services();
 
-    info!("Panda at {:X}", main as *const () as usize);
-
-    info!("Init program: {:?}", uefi_info.init_program);
+    info!("Panda");
 
     unsafe {
         memory::init_from_uefi(&uefi_info.memory_map);
