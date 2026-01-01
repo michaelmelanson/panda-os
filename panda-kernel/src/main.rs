@@ -30,6 +30,7 @@ static LOGGER: Logger = Logger;
 
 #[entry]
 fn main() -> Status {
+    LOGGER.init();
     log::set_logger(&LOGGER).unwrap();
     log::set_max_level(log::LevelFilter::Debug);
 

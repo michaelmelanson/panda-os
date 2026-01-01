@@ -47,6 +47,11 @@ macro_rules! println {
 }
 
 pub struct Logger;
+impl Logger {
+    pub fn init(&self) {
+        _print(format_args!("\x1b[0m"));
+    }
+}
 
 impl log::Log for Logger {
     fn enabled(&self, _metadata: &log::Metadata) -> bool {
