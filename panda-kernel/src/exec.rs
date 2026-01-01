@@ -3,7 +3,7 @@ use goblin::elf::{
     Elf,
     program_header::{PT_LOAD, pt_to_str},
 };
-use log::{debug, info, trace};
+use log::trace;
 use x86_64::{VirtAddr, registers::rflags::RFlags};
 
 use crate::memory::{self, MemoryMappingOptions, allocate_frame, allocate_physical};

@@ -3,7 +3,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use log::{debug, info};
+use log::debug;
 use spinning_top::RwSpinlock;
 use x86_64::{
     PrivilegeLevel,
