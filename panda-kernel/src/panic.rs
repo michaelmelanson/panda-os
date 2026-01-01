@@ -8,6 +8,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     let line = info.location().map(|l| l.line()).unwrap_or(0);
 
     error!("PANIC at [{}:{}]:\n{}", file, line, info.message());
+    crate::breakpoint();
     loop {
         hlt();
     }

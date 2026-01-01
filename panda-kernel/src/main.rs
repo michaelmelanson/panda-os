@@ -50,3 +50,7 @@ fn main() -> Status {
 
     exec_raw(uefi_info.init_program);
 }
+
+pub fn breakpoint() {
+    // do nothing, just give an address to set breakpoints on in `.gdbinit`
+}
