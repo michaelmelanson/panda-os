@@ -5,7 +5,7 @@ use uefi::mem::memory_map::MemoryMapOwned;
 use x86_64::{
     PhysAddr, VirtAddr,
     instructions::tlb,
-    registers::control::{Cr0, Cr0Flags, Cr3},
+    registers::control::{Cr0, Cr0Flags, Cr3, Efer, EferFlags},
     structures::paging::{
         PageTable, PageTableFlags, PhysFrame,
         page_table::{PageTableEntry, PageTableLevel},
@@ -19,6 +19,7 @@ pub unsafe fn init_from_uefi(memory_map: &MemoryMapOwned) {
     let (heap_phys_base, heap_size) = heap_allocator::init_from_uefi(memory_map);
     unsafe {
         global_alloc::init(heap_phys_base, heap_size);
+        Efer::update(|efer| efer.insert(EferFlags::NO_EXECUTE_ENABLE));
     }
 }
 
@@ -157,7 +158,8 @@ fn leaf_page_table_entry(
             return (entry, level);
         }
 
-        if !entry.flags().contains(flags) {
+        let are_flags_valid = entry.flags().contains(flags & !PageTableFlags::NO_EXECUTE);
+        if !are_flags_valid {
             return (entry, level);
         }
 
@@ -174,16 +176,24 @@ fn l1_page_table_entry(
         let (entry, level) = leaf_page_table_entry(addr, flags);
         let entry = unsafe { &mut *entry };
 
-        if entry.addr() == PhysAddr::zero() {
-            let frame = allocate_frame();
-            without_write_protection(|| entry.set_addr(frame.start_address(), flags));
-            tlb::flush(VirtAddr::new(entry as *const _ as u64));
-        } else {
-            without_write_protection(|| entry.set_flags(entry.flags().union(flags)));
-        }
-
         if level == PageTableLevel::One {
             return (entry, level);
+        }
+
+        let entry_flags = (entry.flags() | flags) & !PageTableFlags::NO_EXECUTE;
+
+        if entry.addr() == PhysAddr::zero() {
+            let frame = allocate_frame();
+
+            info!(
+                "Updating level {level:?} entry {entry:?} with address {phys_addr:?} and flags {flags:?}",
+                phys_addr = frame.start_address()
+            );
+            without_write_protection(|| entry.set_addr(frame.start_address(), entry_flags));
+            tlb::flush(VirtAddr::new(entry as *const _ as u64));
+        } else {
+            info!("Updating level {level:?} entry {entry:?} with flags {flags:?}");
+            without_write_protection(|| entry.set_flags(entry_flags));
         }
     }
 }
