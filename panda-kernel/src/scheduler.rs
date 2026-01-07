@@ -7,7 +7,7 @@ use crate::process::{Process, ProcessId, ProcessState};
 
 static SCHEDULER: RwSpinlock<Option<Scheduler>> = RwSpinlock::new(None);
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RTC(u64);
 impl RTC {
     // represents "never" as in "this process has never been scheduled"

@@ -1,3 +1,4 @@
+SHELL := /bin/bash
 .PHONY: build panda-kernel init run test
 
 # Common QEMU parameters
@@ -40,20 +41,20 @@ test:
 		timeout 60 $(QEMU_COMMON) \
 			-accel kvm -accel tcg \
 			-display none \
-			-device isa-debug-exit,iobase=0xf4,iosize=0x04; \
-		EXIT_CODE=$$?; \
+			-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+			2>&1 | tee build/test-$$test.log | grep -E "^(Running |.*\.\.\.|All tests)"; \
+		EXIT_CODE=$${PIPESTATUS[0]}; \
 		if [ $$EXIT_CODE -eq 33 ]; then \
-			echo ""; \
 			echo "Test $$test: PASSED"; \
-		elif [ $$EXIT_CODE -eq 124 ]; then \
 			echo ""; \
+		elif [ $$EXIT_CODE -eq 124 ]; then \
 			echo "Test $$test: TIMEOUT"; \
+			echo "Full log: build/test-$$test.log"; \
 			exit 1; \
 		else \
-			echo ""; \
 			echo "Test $$test: FAILED (exit code $$EXIT_CODE)"; \
+			echo "Full log: build/test-$$test.log"; \
 			exit 1; \
 		fi; \
 	done
-	@echo ""
 	@echo "=== All tests passed ==="
