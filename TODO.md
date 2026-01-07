@@ -33,8 +33,9 @@
 ### 4. Expand Syscalls
 - Subsystem-based architecture: default capability-based Panda syscalls, optional POSIX compatibility layer
 - Resource handles (capabilities) instead of file descriptors
-- `sys_write(handle, buf, len)` - write to resource handle
-- `sys_read(handle, buf, len)` - read from resource handle
+- Message-passing with structured objects (BSON) instead of byte streams
+- `sys_send(handle, object)` - send structured object to resource
+- `sys_recv(handle)` - receive structured object from resource
 - `sys_spawn(path)` - create new process from initrd binary
 - `sys_yield()` - cooperative scheduling / early yield from I/O blocks
 
