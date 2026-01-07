@@ -3,18 +3,21 @@
 
 use ::uefi::{Status, entry};
 use log::info;
-use panda_kernel::{context::Context, process::Process, scheduler, uefi};
+use panda_kernel::{context::Context, initrd, process::Process, scheduler, uefi};
 
 #[entry]
 fn main() -> Status {
     uefi::init();
-    let init_program = uefi::load_init_program();
+    let initrd_data = uefi::load_initrd();
     panda_kernel::init();
+
+    initrd::init(initrd_data);
 
     info!("Panda");
 
     unsafe {
-        let process = Process::from_elf_data(Context::from_current_page_table(), init_program);
+        let init_data = initrd::get_init();
+        let process = Process::from_elf_data(Context::from_current_page_table(), init_data);
 
         scheduler::add_process(process);
         scheduler::exec_next_runnable();

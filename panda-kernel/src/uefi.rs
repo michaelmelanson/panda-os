@@ -18,9 +18,10 @@ pub fn init() {
     ::uefi::helpers::init().unwrap();
 }
 
-/// Load a file from the EFI filesystem. Must be called before exit_boot_services.
-pub fn load_init_program() -> *const [u8] {
-    load_file("\\efi\\init")
+/// Load the initrd TAR archive from the EFI filesystem.
+/// Must be called before exit_boot_services.
+pub fn load_initrd() -> *const [u8] {
+    load_file("\\efi\\initrd.tar")
 }
 
 /// Exit UEFI boot services and return system info. After this, UEFI boot services are unavailable.

@@ -12,6 +12,7 @@ uefi = { workspace = true }
 virtio-drivers = { workspace = true }
 x86_64 = { workspace = true }
 goblin = { workspace = true }
+tar-no-std = { workspace = true }
 libpanda = { path = "../userspace/libpanda" }
 
 [lib]

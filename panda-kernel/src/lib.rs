@@ -17,6 +17,7 @@ extern crate alloc;
 pub mod acpi;
 pub mod context;
 pub mod devices;
+pub mod initrd;
 pub mod interrupts;
 pub mod logging;
 pub mod memory;

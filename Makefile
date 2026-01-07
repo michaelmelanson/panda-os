@@ -15,8 +15,10 @@ QEMU_COMMON = qemu-system-x86_64 -nodefaults \
 
 build: panda-kernel init
 	cp target/x86_64-panda-uefi/debug/panda-kernel.efi build/efi/boot/bootx64.efi
-	cp target/x86_64-panda-userspace/debug/init build/efi/init
-	echo "fs0:\\\\efi\\\\boot\\\\bootx64.efi" > build/efi/boot/startup.nsh
+	mkdir -p build/initrd
+	cp target/x86_64-panda-userspace/debug/init build/initrd/init
+	tar --format=ustar -cf build/efi/initrd.tar -C build/initrd init
+	echo "fs0:\efi\boot\bootx64.efi" > build/efi/boot/startup.nsh
 
 panda-kernel:
 	cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json
