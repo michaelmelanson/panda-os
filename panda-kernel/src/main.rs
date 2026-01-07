@@ -8,23 +8,26 @@
 #![feature(abi_x86_interrupt)]
 #![feature(ptr_cast_array)]
 #![feature(ptr_as_ref_unchecked)]
+#![feature(allocator_api)]
 extern crate alloc;
 
 mod acpi;
+mod context;
 mod devices;
-mod exec;
 mod interrupts;
 mod logging;
 mod memory;
 mod panic;
 mod pci;
+mod process;
+mod scheduler;
 mod syscall;
 mod uefi;
 
 use ::uefi::{Status, entry};
 use log::info;
 
-use crate::{exec::exec_raw, logging::Logger};
+use crate::{context::Context, logging::Logger, process::Process};
 
 static LOGGER: Logger = Logger;
 
@@ -47,8 +50,15 @@ fn main() -> Status {
     interrupts::init();
     pci::init();
     devices::init();
+    scheduler::init();
 
-    exec_raw(uefi_info.init_program);
+    unsafe {
+        let process =
+            Process::from_elf_data(Context::from_current_page_table(), uefi_info.init_program);
+
+        scheduler::add_process(process);
+        scheduler::exec_next_runnable();
+    }
 }
 
 pub fn breakpoint() {
