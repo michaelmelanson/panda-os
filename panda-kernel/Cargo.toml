@@ -14,7 +14,24 @@ x86_64 = { workspace = true }
 goblin = { workspace = true }
 libpanda = { path = "../userspace/libpanda" }
 
+[lib]
+name = "panda_kernel"
+test = false
+bench = false
+
 [[bin]]
 name = "panda-kernel"
-test = true
+test = false
 bench = false
+
+[[test]]
+name = "basic"
+harness = false
+
+[[test]]
+name = "heap"
+harness = false
+
+[[test]]
+name = "pci"
+harness = false

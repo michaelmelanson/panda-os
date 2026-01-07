@@ -18,7 +18,7 @@ impl Write for SerialPortWriter {
     }
 }
 
-pub(crate) fn _print(args: ::core::fmt::Arguments) {
+pub fn _print(args: ::core::fmt::Arguments) {
     SerialPortWriter(0x3f8).write_fmt(args).unwrap();
 }
 
