@@ -35,3 +35,15 @@ harness = false
 [[test]]
 name = "pci"
 harness = false
+
+[[test]]
+name = "memory"
+harness = false
+
+[[test]]
+name = "scheduler"
+harness = false
+
+[[test]]
+name = "process"
+harness = false

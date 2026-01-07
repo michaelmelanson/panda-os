@@ -32,7 +32,7 @@ run:
 		-monitor vc
 
 test:
-	@for test in basic heap pci; do \
+	@for test in basic heap pci memory scheduler process; do \
 		echo "=== Running test: $$test ==="; \
 		cargo +nightly test --package panda-kernel --target ./x86_64-panda-uefi.json --test $$test --no-run 2>&1 | tail -1; \
 		TEST_BIN=$$(cargo +nightly test --package panda-kernel --target ./x86_64-panda-uefi.json --test $$test --no-run --message-format=json 2>/dev/null | jq -r 'select(.executable != null and .target.kind == ["test"]) | .executable'); \
