@@ -36,14 +36,13 @@ pub use uefi::UefiInfo;
 
 static LOGGER: Logger = Logger;
 
-/// Initialize kernel subsystems.
-/// Returns UefiInfo for main to use for loading userspace processes.
-pub fn init() -> UefiInfo {
+/// Initialize kernel subsystems. Caller must call uefi::init() first.
+pub fn init() {
     LOGGER.init();
     log::set_logger(&LOGGER).unwrap();
     log::set_max_level(log::LevelFilter::Debug);
 
-    let uefi_info = uefi::init_and_exit_boot_services();
+    let uefi_info = uefi::exit_boot_services();
 
     unsafe {
         memory::init_from_uefi(&uefi_info.memory_map);
@@ -55,8 +54,6 @@ pub fn init() -> UefiInfo {
     pci::init();
     devices::init();
     scheduler::init();
-
-    uefi_info
 }
 
 /// Trait for test functions that can print their name
@@ -119,6 +116,7 @@ macro_rules! test_harness {
                 ::uefi::boot::set_image_handle(image);
                 ::uefi::table::set_system_table(system_table.cast());
             }
+            $crate::uefi::init();
             $crate::init();
             let tests: &[&dyn $crate::Testable] = &[$(&$test),*];
             $crate::run_tests(tests);

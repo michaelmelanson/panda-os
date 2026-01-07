@@ -11,34 +11,22 @@ use x86_64::PhysAddr;
 pub struct UefiInfo {
     pub acpi2_rsdp: Option<PhysAddr>,
     pub memory_map: MemoryMapOwned,
-    pub init_program: *const [u8],
 }
 
-pub fn init_and_exit_boot_services() -> UefiInfo {
+/// Initialize UEFI helpers. Call this before using other UEFI functions.
+pub fn init() {
     ::uefi::helpers::init().unwrap();
+}
 
+/// Load a file from the EFI filesystem. Must be called before exit_boot_services.
+pub fn load_init_program() -> *const [u8] {
+    load_file("\\efi\\init")
+}
+
+/// Exit UEFI boot services and return system info. After this, UEFI boot services are unavailable.
+pub fn exit_boot_services() -> UefiInfo {
     let system_table = ::uefi::table::system_table_raw().expect("No UEFI system table");
     let system_table = unsafe { system_table.as_ref() };
-
-    // this should work, in conjunction with code in `.gdbinit` to calculate an offset
-    // but it seems to give the wrong value
-    // {
-    //     let loaded_image_handle = get_handle_for_protocol::<LoadedImage>().unwrap();
-    //     let loaded_image =
-    //         ::uefi::boot::open_protocol_exclusive::<LoadedImage>(loaded_image_handle).unwrap();
-    //     let (base_address, _) = loaded_image.info();
-    //     let base_address = base_address as usize;
-    //     let address: usize;
-    //     unsafe { core::arch::asm!("lea {}, [rip]", out(reg) address) }
-    //     log::info!("Current address: {address:X?}");
-    //     log::info!("Base address: {base_address:X?}");
-
-    //     unsafe {
-    //         let care_package_ptr = &mut *(0x55420 as *mut [usize; 2]);
-    //         care_package_ptr[1] = base_address;
-    //         care_package_ptr[0] = 0xCA5ECA5E;
-    //     }
-    // }
 
     let mut acpi2_rsdp = None;
 
@@ -58,14 +46,11 @@ pub fn init_and_exit_boot_services() -> UefiInfo {
         }
     }
 
-    let init_program = load_file("\\efi\\init");
-
     let memory_map = unsafe { uefi::boot::exit_boot_services(None) };
 
     UefiInfo {
         acpi2_rsdp,
         memory_map,
-        init_program,
     }
 }
 
