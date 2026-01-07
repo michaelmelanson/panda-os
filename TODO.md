@@ -31,15 +31,16 @@
 - Currently scheduler can only run one process to completion
 
 ### 4. Expand Syscalls
-- Subsystem-based architecture: default Panda syscalls, optional POSIX compatibility layer
-- `sys_write(fd, buf, len)` - write to file descriptor
-- `sys_read(fd, buf, len)` - read from file descriptor
+- Subsystem-based architecture: default capability-based Panda syscalls, optional POSIX compatibility layer
+- Resource handles (capabilities) instead of file descriptors
+- `sys_write(handle, buf, len)` - write to resource handle
+- `sys_read(handle, buf, len)` - read from resource handle
 - `sys_spawn(path)` - create new process from initrd binary
 - `sys_yield()` - cooperative scheduling / early yield from I/O blocks
 
 ### 5. Basic Console I/O
-- Connect serial port to stdin/stdout (fd 0, 1)
-- Implement write() to serial output
+- Console as capability granted to init process
+- Implement write to serial output
 - Simple line-buffered input from keyboard
 
 ## Medium-term Goals
@@ -61,8 +62,8 @@
 
 ### 9. Basic VFS Abstraction
 - In-memory filesystem (tmpfs)
-- File descriptor table per process
-- open/close/read/write on files
+- Capability table per process (resource handles)
+- open returns capability, close releases it
 
 ### 10. Userspace Library (libpanda)
 - Native Panda syscall wrappers
