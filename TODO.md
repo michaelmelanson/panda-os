@@ -1,14 +1,25 @@
 # Panda OS TODO
 
+## Known Issues
+
+- Process exit panics the kernel (`syscall.rs:140`)
+- NX bit disabled (`memory/mod.rs:117`) - all user pages executable
+- Single static kernel stack (4KB) - could overflow
+- Bump allocator never frees memory
+- 63 unsafe blocks with limited safety wrappers
+- Identity mapping limits address space usage
+- Global mutable state with potential deadlock risk
+- ACPI handler completely unimplemented (27 todo!() macros)
+
 ## Immediate Priorities
 
 ### 1. Fix Process Exit
-- Process exit currently panics the kernel (`syscall.rs:140`)
+- Process exit currently panics the kernel
 - Should clean up process and return control to scheduler
 - Test process lifecycle (create, run, exit, schedule next)
 
 ### 2. Fix NX (No-Execute) Bit
-- Currently disabled in `memory/mod.rs:117` due to "reserved write" page fault
+- Currently disabled due to "reserved write" page fault
 - All user pages are executable - security vulnerability
 - Debug page table flag propagation
 - Check CR4.PAE and IA32_EFER.NXE settings
@@ -20,10 +31,11 @@
 - Currently scheduler can only run one process to completion
 
 ### 4. Expand Syscalls
+- Subsystem-based architecture: default Panda syscalls, optional POSIX compatibility layer
 - `sys_write(fd, buf, len)` - write to file descriptor
 - `sys_read(fd, buf, len)` - read from file descriptor
-- `sys_brk(addr)` - heap allocation
-- `sys_yield()` - cooperative scheduling
+- `sys_spawn(path)` - create new process from initrd binary
+- `sys_yield()` - cooperative scheduling / early yield from I/O blocks
 
 ### 5. Basic Console I/O
 - Connect serial port to stdin/stdout (fd 0, 1)
@@ -33,57 +45,49 @@
 ## Medium-term Goals
 
 ### 6. Multiple Processes
-- Load multiple ELF binaries
-- Test round-robin scheduling
+- Spawn processes from initrd binaries (not fork/exec)
+- Test scheduling with multiple concurrent processes
 - Add `sys_getpid()`
 
-### 7. Proper Memory Allocator
+### 7. Deadline-based Scheduler
+- Optimize for latency over throughput
+- Niceness for processes that yield early (I/O bound)
+- Preemption based on deadlines
+
+### 8. Proper Memory Allocator
 - Replace bump allocator (never frees memory)
 - Implement linked list or buddy allocator
 - Add memory pressure handling / OOM
 
-### 8. Basic VFS Abstraction
+### 9. Basic VFS Abstraction
 - In-memory filesystem (tmpfs)
 - File descriptor table per process
 - open/close/read/write on files
 
-### 9. Userspace Library (libpanda)
-- Mini libc functionality
+### 10. Userspace Library (libpanda)
+- Native Panda syscall wrappers
 - printf implementation
 - String/memory functions
 - Userspace heap allocator
 
-### 10. Keyboard Input
+### 11. Keyboard Input
 - PS/2 or Virtio input device driver
 - Interrupt-driven input
 - Ring buffer for key events
 
 ## Long-term Goals
 
-### 11. Block Device & Filesystem
+### 12. Block Device & Filesystem
 - Virtio block driver
-- Simple filesystem (FAT or custom)
+- Simple FAT filesystem
 - Persistent storage
 
-### 12. Shell
+### 13. Shell
 - Command interpreter
-- Process spawning
+- Process spawning via sys_spawn
 - Built-in commands
 
-### 13. fork/exec/wait
-- Process creation from userspace
-- Copy-on-write page tables
-- Parent-child relationships
-
-### 14. Improved Scheduler
-- Time slices
-- Priority levels
-- Fair scheduling algorithm
-
-## Known Issues
-
-- Single static kernel stack (4KB) - could overflow
-- 63 unsafe blocks with limited safety wrappers
-- Identity mapping limits address space usage
-- Global mutable state with potential deadlock risk
-- ACPI handler completely unimplemented (27 todo!() macros)
+### 14. POSIX Compatibility Subsystem
+- Optional layer mapping POSIX calls to Panda syscalls
+- fork/exec emulation via spawn where possible
+- Compatibility for porting existing software
