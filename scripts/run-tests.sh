@@ -24,12 +24,14 @@ for test in "${TESTS[@]}"; do
     if [ "$TEST_TYPE" = "kernel" ]; then
         BUILD_DIR="$PROJECT_DIR/build/test-$test"
         LOG_FILE="$PROJECT_DIR/build/test-$test.log"
+        EXPECTED_FILE=""
     else
         BUILD_DIR="$PROJECT_DIR/build/utest-$test"
         LOG_FILE="$PROJECT_DIR/build/utest-$test.log"
+        EXPECTED_FILE="$PROJECT_DIR/userspace/tests/$test/expected.txt"
     fi
 
-    "$SCRIPT_DIR/run-qemu-test.sh" "$test" "$BUILD_DIR" "$LOG_FILE" &
+    "$SCRIPT_DIR/run-qemu-test.sh" "$test" "$BUILD_DIR" "$LOG_FILE" 60 "$EXPECTED_FILE" &
     pids+=($!)
 done
 

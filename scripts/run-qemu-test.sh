@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run a single test in QEMU and report pass/fail
-# Usage: run-qemu-test.sh <test-name> <build-dir> <log-file>
+# Usage: run-qemu-test.sh <test-name> <build-dir> <log-file> [expected-file]
 #
 # Exit codes:
 #   0 - test passed
@@ -11,6 +11,7 @@ TEST_NAME="$1"
 BUILD_DIR="$2"
 LOG_FILE="$3"
 TIMEOUT="${4:-60}"
+EXPECTED_FILE="${5:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -34,10 +35,35 @@ QEMU_CMD=(
 timeout "$TIMEOUT" "${QEMU_CMD[@]}" > "$LOG_FILE" 2>&1
 EXIT_CODE=$?
 
-if [ $EXIT_CODE -eq 33 ]; then
-    exit 0  # passed
-elif [ $EXIT_CODE -eq 124 ]; then
+if [ $EXIT_CODE -eq 124 ]; then
     exit 2  # timeout
-else
+elif [ $EXIT_CODE -ne 33 ]; then
     exit 1  # failed
 fi
+
+# QEMU exited successfully, now check expected log patterns if specified
+if [ -n "$EXPECTED_FILE" ] && [ -f "$EXPECTED_FILE" ]; then
+    # Extract just the LOG: messages from the test output
+    LOG_MESSAGES=$(grep "INFO: LOG:" "$LOG_FILE" | sed 's/.*INFO: LOG: //')
+
+    # Read expected patterns (skip comments and blank lines)
+    EXPECTED_PATTERNS=$(grep -v '^#' "$EXPECTED_FILE" | grep -v '^[[:space:]]*$')
+
+    # Check that each expected pattern appears in order
+    LINE_NUM=0
+    while IFS= read -r pattern; do
+        LINE_NUM=$((LINE_NUM + 1))
+        # Find the pattern in remaining log messages
+        MATCH_LINE=$(echo "$LOG_MESSAGES" | grep -n -F "$pattern" | head -1 | cut -d: -f1)
+        if [ -z "$MATCH_LINE" ]; then
+            echo "Expected log not found: '$pattern' (expected.txt line $LINE_NUM)" >&2
+            echo "Remaining log messages:" >&2
+            echo "$LOG_MESSAGES" | head -5 >&2
+            exit 1
+        fi
+        # Remove all lines up to and including the match
+        LOG_MESSAGES=$(echo "$LOG_MESSAGES" | tail -n +$((MATCH_LINE + 1)))
+    done <<< "$EXPECTED_PATTERNS"
+fi
+
+exit 0  # passed

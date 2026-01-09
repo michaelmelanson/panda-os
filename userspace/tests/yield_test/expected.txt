@@ -1,0 +1,19 @@
+# Expected log statements in order
+# Lines starting with # are comments
+# Each line is matched as a substring against LOG: output
+
+Parent: spawning child
+Parent: before yield
+Child: before yield
+Parent: after yield
+Parent: before yield
+Child: after yield
+Child: before yield
+Parent: after yield
+Parent: before yield
+Child: after yield
+Child: before yield
+Parent: after yield
+Parent: done
+Child: after yield
+Child: done
