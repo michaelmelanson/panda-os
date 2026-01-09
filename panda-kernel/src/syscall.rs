@@ -143,6 +143,11 @@ extern "sysv64" fn syscall_handler(
             let exit_code = arg0;
             info!("Process exiting with code {exit_code}");
 
+            // If the process exits with non-zero code, fail the test immediately
+            if exit_code != 0 {
+                crate::qemu::exit_qemu(crate::qemu::QemuExitCode::Failed);
+            }
+
             // Get current process ID and remove it from scheduler
             let current_pid = scheduler::current_process_id();
             info!("Removing process {:?}", current_pid);
@@ -255,7 +260,7 @@ extern "sysv64" fn syscall_handler(
                 Err(_) => return -1,
             };
 
-            info!("SPAWN: path={}", path);
+            debug!("SPAWN: path={}", path);
 
             // Open the executable file
             let Some(mut resource) = vfs::open(path) else {
@@ -290,13 +295,12 @@ extern "sysv64" fn syscall_handler(
             let elf_data = elf_data.into_boxed_slice();
             let elf_ptr: *const [u8] = Box::leak(elf_data);
 
-            let process = Process::from_elf_data(unsafe { Context::from_current_page_table() }, elf_ptr);
+            let process = Process::from_elf_data(Context::new_user_context(), elf_ptr);
             let pid = process.id();
-            info!("SPAWN: created process {:?}", pid);
+            debug!("SPAWN: created process {:?}", pid);
 
             // Add to scheduler
             scheduler::add_process(process);
-
             // Return the process ID (as a simple integer for now)
             // ProcessId is opaque, but we can return a success indicator
             0

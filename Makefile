@@ -6,6 +6,7 @@ USERSPACE_TESTS := vfs_test preempt_test spawn_test
 
 # Extra binaries needed for specific tests (space-separated)
 spawn_test_EXTRAS := spawn_child
+export spawn_test_EXTRAS
 
 # Build targets
 build: panda-kernel init

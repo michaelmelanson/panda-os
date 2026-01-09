@@ -64,8 +64,8 @@ impl Scheduler {
     }
 
     /// Find the next runnable process and prepare it for execution.
-    /// Returns the IP and SP for exec, or None if no runnable processes.
-    pub fn prepare_next_runnable(&mut self) -> Option<(x86_64::VirtAddr, x86_64::VirtAddr)> {
+    /// Returns the IP, SP, and page table address for exec, or None if no runnable processes.
+    pub fn prepare_next_runnable(&mut self) -> Option<(x86_64::VirtAddr, x86_64::VirtAddr, x86_64::PhysAddr)> {
         // ensure no processes are currently running
         assert!(
             self.states
@@ -200,8 +200,10 @@ pub unsafe fn exec_next_runnable() -> ! {
     // Lock is now dropped
 
     match exec_params {
-        Some((ip, sp)) => {
+        Some((ip, sp, page_table)) => {
             info!("exec_next_runnable: jumping to userspace");
+            // Switch to the process's page table
+            unsafe { crate::memory::switch_page_table(page_table); }
             // Start preemption timer before jumping to userspace
             start_timer();
             unsafe { exec_userspace(ip, sp) }

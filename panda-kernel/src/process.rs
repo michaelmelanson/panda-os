@@ -154,6 +154,10 @@ impl Process {
         let elf = Elf::parse(data).expect("failed to parse ELF binary");
         assert_eq!(elf.is_64, true, "32-bit binaries are not supported");
 
+        // Save current page table and switch to the new context's page table
+        let saved_page_table = memory::current_page_table_phys();
+        unsafe { context.activate(); }
+
         let mut mappings = load_elf(&elf, data);
 
         // Allocate stack
@@ -171,6 +175,9 @@ impl Process {
         let stack_pointer = stack_base + stack_size as u64 - 8; // 8-byte aligned
         mappings.push(stack_mapping);
 
+        // Switch back to the original page table
+        unsafe { memory::switch_page_table(saved_page_table); }
+
         Process {
             id: ProcessId::new(),
             state: ProcessState::Runnable,
@@ -184,9 +191,10 @@ impl Process {
         }
     }
 
-    /// Get the IP and SP needed for exec. Used by scheduler to exec after releasing locks.
-    pub fn exec_params(&self) -> (VirtAddr, VirtAddr) {
-        (self.ip, self.sp)
+    /// Get the IP, SP, and page table address needed for exec.
+    /// Used by scheduler to exec after releasing locks.
+    pub fn exec_params(&self) -> (VirtAddr, VirtAddr, x86_64::PhysAddr) {
+        (self.ip, self.sp, self.context.page_table_phys())
     }
 
     pub(crate) fn state(&self) -> ProcessState {

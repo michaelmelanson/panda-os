@@ -91,6 +91,59 @@ unsafe fn deallocate_frame_raw(frame: PhysFrame) {
     }
 }
 
+/// Create a new PML4 page table with kernel mappings copied from the current one.
+/// Returns the physical address of the new page table.
+///
+/// Copies kernel identity mappings from the current page table, but NOT the
+/// userspace mappings. This ensures each process has its own userspace
+/// address space while sharing kernel mappings.
+pub fn create_user_page_table() -> PhysAddr {
+    let frame = allocate_frame_raw();
+    let new_pml4 = frame.start_address().as_u64() as *mut PageTable;
+
+    // PML4 entry indices for userspace virtual addresses:
+    // 0xa0000000000 >> 39 = 20 (0x14)
+    // 0xb0000000000 >> 39 = 22 (0x16)
+    // We skip these entries to give each process its own userspace mappings.
+    const USERSPACE_PML4_START: usize = 20;
+    const USERSPACE_PML4_END: usize = 23; // exclusive
+
+    let current_pml4 = current_page_table();
+    unsafe {
+        let src_table = &*current_pml4;
+        let dst_table = &mut *new_pml4;
+
+        // Zero the entire table first
+        core::ptr::write_bytes(dst_table, 0, 1);
+
+        // Copy only kernel entries (skip userspace range)
+        for i in 0..512 {
+            if i >= USERSPACE_PML4_START && i < USERSPACE_PML4_END {
+                continue; // Skip userspace entries
+            }
+            dst_table[i] = src_table[i].clone();
+        }
+    }
+
+    frame.start_address()
+}
+
+/// Switch to a different page table.
+///
+/// # Safety
+/// The page table must be valid and contain correct kernel mappings.
+pub unsafe fn switch_page_table(pml4_phys: PhysAddr) {
+    let frame = PhysFrame::from_start_address(pml4_phys).unwrap();
+    unsafe {
+        Cr3::write(frame, Cr3::read().1);
+    }
+}
+
+/// Get the current page table's physical address.
+pub fn current_page_table_phys() -> PhysAddr {
+    Cr3::read().0.start_address()
+}
+
 pub struct MemoryMappingOptions {
     pub user: bool,
     pub executable: bool,
