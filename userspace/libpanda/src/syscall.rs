@@ -3,7 +3,7 @@ use core::arch::asm;
 // Re-export ABI constants
 pub use panda_abi::{
     FileStat, SEEK_CUR, SEEK_END, SEEK_SET, SYSCALL_CLOSE, SYSCALL_EXIT, SYSCALL_FSTAT,
-    SYSCALL_LOG, SYSCALL_OPEN, SYSCALL_READ, SYSCALL_SEEK,
+    SYSCALL_LOG, SYSCALL_OPEN, SYSCALL_READ, SYSCALL_SEEK, SYSCALL_SPAWN,
 };
 
 #[inline(always)]
@@ -105,4 +105,11 @@ pub fn fstat(handle: u32, stat: &mut FileStat) -> isize {
         0,
         0,
     )
+}
+
+/// Spawn a new process from an executable path, returning 0 on success or -1 on error
+#[inline(always)]
+pub fn spawn(path: &str) -> isize {
+    let bytes = path.as_bytes();
+    syscall(SYSCALL_SPAWN, bytes.as_ptr() as usize, bytes.len(), 0, 0, 0, 0)
 }

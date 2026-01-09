@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["panda-abi", "panda-kernel", "userspace/init", "userspace/libpanda", "userspace/tests/vfs_test", "userspace/tests/preempt_test"]
+members = ["panda-abi", "panda-kernel", "userspace/init", "userspace/libpanda", "userspace/tests/vfs_test", "userspace/tests/preempt_test", "userspace/tests/spawn_test", "userspace/tests/spawn_child"]
 
 [workspace.dependencies]
 acpi = "6.0"

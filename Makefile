@@ -2,7 +2,10 @@ SHELL := /bin/bash
 .PHONY: build panda-kernel init run test userspace-test
 
 KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic
-USERSPACE_TESTS := vfs_test preempt_test
+USERSPACE_TESTS := vfs_test preempt_test spawn_test
+
+# Extra binaries needed for specific tests (space-separated)
+spawn_test_EXTRAS := spawn_child
 
 # Build targets
 build: panda-kernel init
@@ -42,9 +45,14 @@ userspace-test: panda-kernel
 	@echo "Building userspace tests..."
 	@for test in $(USERSPACE_TESTS); do \
 		cargo +nightly build -Z build-std=core --package $$test --target ./x86_64-panda-userspace.json; \
+		extras_var=$${test}_EXTRAS; \
+		for extra in $${!extras_var}; do \
+			cargo +nightly build -Z build-std=core --package $$extra --target ./x86_64-panda-userspace.json; \
+		done; \
 	done
 	@for test in $(USERSPACE_TESTS); do \
-		./scripts/setup-userspace-test.sh $$test; \
+		extras_var=$${test}_EXTRAS; \
+		./scripts/setup-userspace-test.sh $$test $${!extras_var}; \
 	done
 	@echo "Running userspace tests..."
 	@./scripts/run-tests.sh userspace $(USERSPACE_TESTS)

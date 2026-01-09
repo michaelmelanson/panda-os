@@ -1,9 +1,10 @@
+use alloc::{boxed::Box, vec::Vec};
 use core::{arch::naked_asm, slice, str};
 
 use log::{debug, error, info};
 use spinning_top::Spinlock;
 
-use crate::{handle::HandleId, scheduler, vfs};
+use crate::{context::Context, handle::HandleId, process::Process, scheduler, vfs};
 use x86_64::{
     VirtAddr,
     instructions::tables::load_tss,
@@ -245,6 +246,60 @@ extern "sysv64" fn syscall_handler(
                     -1
                 }
             })
+        }
+        panda_abi::SYSCALL_SPAWN => {
+            // arg0 = path pointer, arg1 = path length
+            let path = unsafe { slice::from_raw_parts(arg0 as *const u8, arg1) };
+            let path = match str::from_utf8(path) {
+                Ok(p) => p,
+                Err(_) => return -1,
+            };
+
+            info!("SPAWN: path={}", path);
+
+            // Open the executable file
+            let Some(mut resource) = vfs::open(path) else {
+                error!("SPAWN: failed to open {}", path);
+                return -1;
+            };
+
+            // Get file size and read contents
+            let Some(file) = resource.as_file() else {
+                error!("SPAWN: {} is not a file", path);
+                return -1;
+            };
+
+            let stat = file.stat();
+            let mut elf_data: Vec<u8> = Vec::new();
+            elf_data.resize(stat.size as usize, 0);
+
+            match file.read(&mut elf_data) {
+                Ok(n) if n == stat.size as usize => {}
+                Ok(n) => {
+                    error!("SPAWN: incomplete read: {} of {} bytes", n, stat.size);
+                    return -1;
+                }
+                Err(e) => {
+                    error!("SPAWN: failed to read {}: {:?}", path, e);
+                    return -1;
+                }
+            }
+
+            // Create new process from ELF data
+            // We leak the Vec to get a stable pointer that outlives this function
+            let elf_data = elf_data.into_boxed_slice();
+            let elf_ptr: *const [u8] = Box::leak(elf_data);
+
+            let process = Process::from_elf_data(unsafe { Context::from_current_page_table() }, elf_ptr);
+            let pid = process.id();
+            info!("SPAWN: created process {:?}", pid);
+
+            // Add to scheduler
+            scheduler::add_process(process);
+
+            // Return the process ID (as a simple integer for now)
+            // ProcessId is opaque, but we can return a success indicator
+            0
         }
         _ => -1,
     }
