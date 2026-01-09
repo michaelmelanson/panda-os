@@ -4,7 +4,7 @@ use core::{arch::naked_asm, slice, str};
 use log::{debug, error, info};
 use spinning_top::Spinlock;
 
-use crate::{context::Context, handle::HandleId, process::Process, scheduler, vfs};
+use crate::{context::Context, handle::{HandleId, ResourceType}, process::Process, scheduler, vfs};
 use x86_64::{
     VirtAddr,
     instructions::tables::load_tss,
@@ -173,7 +173,7 @@ extern "sysv64" fn syscall_handler(
             match vfs::open(path) {
                 Some(file) => {
                     let handle = scheduler::with_current_process(|proc| {
-                        proc.handles_mut().insert(file)
+                        proc.handles_mut().insert_file(file)
                     });
                     handle as isize
                 }
@@ -183,9 +183,12 @@ extern "sysv64" fn syscall_handler(
         panda_abi::SYSCALL_CLOSE => {
             let handle = arg0 as HandleId;
             scheduler::with_current_process(|proc| {
-                proc.handles_mut().remove(handle);
-            });
-            0
+                if proc.handles_mut().remove_typed(handle, ResourceType::File).is_some() {
+                    0
+                } else {
+                    -1
+                }
+            })
         }
         panda_abi::SYSCALL_READ => {
             let handle = arg0 as HandleId;
@@ -194,15 +197,11 @@ extern "sysv64" fn syscall_handler(
             debug!("READ: handle={}, buf_ptr={:#x}, buf_len={}", handle, buf_ptr as usize, buf_len);
 
             scheduler::with_current_process(|proc| {
-                if let Some(resource) = proc.handles_mut().get_mut(handle) {
-                    if let Some(file) = resource.as_file() {
-                        let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
-                        match file.read(buf) {
-                            Ok(n) => n as isize,
-                            Err(_) => -1,
-                        }
-                    } else {
-                        -1
+                if let Some(file) = proc.handles_mut().get_file_mut(handle) {
+                    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
+                    match file.read(buf) {
+                        Ok(n) => n as isize,
+                        Err(_) => -1,
                     }
                 } else {
                     -1
@@ -222,14 +221,10 @@ extern "sysv64" fn syscall_handler(
             };
 
             scheduler::with_current_process(|proc| {
-                if let Some(resource) = proc.handles_mut().get_mut(handle) {
-                    if let Some(file) = resource.as_file() {
-                        match file.seek(seek_from) {
-                            Ok(pos) => pos as isize,
-                            Err(_) => -1,
-                        }
-                    } else {
-                        -1
+                if let Some(file) = proc.handles_mut().get_file_mut(handle) {
+                    match file.seek(seek_from) {
+                        Ok(pos) => pos as isize,
+                        Err(_) => -1,
                     }
                 } else {
                     -1
@@ -241,17 +236,13 @@ extern "sysv64" fn syscall_handler(
             let stat_ptr = arg1 as *mut panda_abi::FileStat;
 
             scheduler::with_current_process(|proc| {
-                if let Some(resource) = proc.handles_mut().get_mut(handle) {
-                    if let Some(file) = resource.as_file() {
-                        let stat = file.stat();
-                        unsafe {
-                            (*stat_ptr).size = stat.size;
-                            (*stat_ptr).is_dir = stat.is_dir;
-                        }
-                        0
-                    } else {
-                        -1
+                if let Some(file) = proc.handles_mut().get_file_mut(handle) {
+                    let stat = file.stat();
+                    unsafe {
+                        (*stat_ptr).size = stat.size;
+                        (*stat_ptr).is_dir = stat.is_dir;
                     }
+                    0
                 } else {
                     -1
                 }
@@ -348,15 +339,11 @@ fn handle_send(
             let buf_ptr = arg0 as *mut u8;
             let buf_len = arg1;
             scheduler::with_current_process(|proc| {
-                if let Some(resource) = proc.handles_mut().get_mut(handle) {
-                    if let Some(file) = resource.as_file() {
-                        let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
-                        match file.read(buf) {
-                            Ok(n) => n as isize,
-                            Err(_) => -1,
-                        }
-                    } else {
-                        -1
+                if let Some(file) = proc.handles_mut().get_file_mut(handle) {
+                    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
+                    match file.read(buf) {
+                        Ok(n) => n as isize,
+                        Err(_) => -1,
                     }
                 } else {
                     -1
@@ -377,14 +364,10 @@ fn handle_send(
                 _ => return -1,
             };
             scheduler::with_current_process(|proc| {
-                if let Some(resource) = proc.handles_mut().get_mut(handle) {
-                    if let Some(file) = resource.as_file() {
-                        match file.seek(seek_from) {
-                            Ok(pos) => pos as isize,
-                            Err(_) => -1,
-                        }
-                    } else {
-                        -1
+                if let Some(file) = proc.handles_mut().get_file_mut(handle) {
+                    match file.seek(seek_from) {
+                        Ok(pos) => pos as isize,
+                        Err(_) => -1,
                     }
                 } else {
                     -1
@@ -394,17 +377,13 @@ fn handle_send(
         OP_FILE_STAT => {
             let stat_ptr = arg0 as *mut FileStat;
             scheduler::with_current_process(|proc| {
-                if let Some(resource) = proc.handles_mut().get_mut(handle) {
-                    if let Some(file) = resource.as_file() {
-                        let stat = file.stat();
-                        unsafe {
-                            (*stat_ptr).size = stat.size;
-                            (*stat_ptr).is_dir = stat.is_dir;
-                        }
-                        0
-                    } else {
-                        -1
+                if let Some(file) = proc.handles_mut().get_file_mut(handle) {
+                    let stat = file.stat();
+                    unsafe {
+                        (*stat_ptr).size = stat.size;
+                        (*stat_ptr).is_dir = stat.is_dir;
                     }
+                    0
                 } else {
                     -1
                 }
@@ -412,9 +391,12 @@ fn handle_send(
         }
         OP_FILE_CLOSE => {
             scheduler::with_current_process(|proc| {
-                proc.handles_mut().remove(handle);
-            });
-            0
+                if proc.handles_mut().remove_typed(handle, ResourceType::File).is_some() {
+                    0
+                } else {
+                    -1
+                }
+            })
         }
 
         // Process operations
@@ -462,7 +444,7 @@ fn handle_send(
             match vfs::open(path) {
                 Some(file) => {
                     let handle = scheduler::with_current_process(|proc| {
-                        proc.handles_mut().insert(file)
+                        proc.handles_mut().insert_file(file)
                     });
                     handle as isize
                 }
