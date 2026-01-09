@@ -15,6 +15,7 @@
 extern crate alloc;
 
 pub mod acpi;
+pub mod apic;
 pub mod context;
 pub mod devices;
 pub mod handle;
@@ -54,6 +55,7 @@ pub fn init() {
     acpi::init(uefi_info.acpi2_rsdp.expect("No ACPI2 RSDP"));
     syscall::init();
     interrupts::init();
+    apic::init();
     pci::init();
     devices::init();
 }

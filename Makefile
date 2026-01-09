@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .PHONY: build panda-kernel init run test userspace-test
 
-KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii
+KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic
 USERSPACE_TESTS := vfs_test
 
 # Build targets

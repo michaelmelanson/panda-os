@@ -19,6 +19,9 @@ static BREAKPOINT_INTERRUPT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 pub use x86_64::structures::idt::PageFaultHandlerFunc;
 
+/// Type alias for IRQ handler functions.
+pub type IrqHandlerFunc = extern "x86-interrupt" fn(InterruptStackFrame);
+
 static DESCRIPTOR_TABLE: RwSpinlock<InterruptDescriptorTable> =
     RwSpinlock::new(InterruptDescriptorTable::new());
 
@@ -35,6 +38,28 @@ pub fn set_page_fault_handler(handler: Option<PageFaultHandlerFunc>) {
             .set_stack_index(1);
     }
     drop(descriptor_table);
+}
+
+/// Set a handler for an IRQ vector (0x20-0xFF).
+///
+/// Vector numbers 0x00-0x1F are reserved for CPU exceptions.
+/// Pass `None` to restore the default handler (which just sends EOI).
+pub fn set_irq_handler(vector: u8, handler: Option<IrqHandlerFunc>) {
+    assert!(vector >= 0x20, "Vectors 0x00-0x1F are reserved for CPU exceptions");
+
+    let mut descriptor_table = DESCRIPTOR_TABLE.write();
+    let handler = handler.unwrap_or(default_irq_handler);
+    let kernel_cs = SegmentSelector::new(1, PrivilegeLevel::Ring0);
+    unsafe {
+        descriptor_table[vector]
+            .set_handler_fn(handler)
+            .set_code_selector(kernel_cs);
+    }
+    drop(descriptor_table);
+}
+
+extern "x86-interrupt" fn default_irq_handler(_stack_frame: InterruptStackFrame) {
+    crate::apic::eoi();
 }
 
 pub fn init() {
@@ -82,7 +107,12 @@ pub fn init() {
             .set_stack_index(1);
     }
 
-    descriptor_table[0x20].set_handler_fn(timer_handler);
+    // Timer interrupt (vector 0x20) from Local APIC
+    unsafe {
+        descriptor_table[0x20]
+            .set_handler_fn(default_irq_handler)
+            .set_code_selector(kernel_cs);
+    }
     drop(descriptor_table);
 
     unsafe {
@@ -158,8 +188,4 @@ extern "x86-interrupt" fn default_page_fault_handler(
             "kernel"
         }
     );
-}
-
-extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
-    //debug!("TIMER");
 }
