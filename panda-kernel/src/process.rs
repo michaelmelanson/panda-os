@@ -50,9 +50,14 @@ fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
                     header.p_vaddr, header.p_memsz, header.p_filesz
                 );
 
+                // Align down to page boundary for mapping
+                let page_offset = virt_addr.as_u64() & 0xFFF;
+                let aligned_virt_addr = virt_addr.align_down(4096u64);
+                let aligned_size = header.p_memsz as usize + page_offset as usize;
+
                 let mapping = memory::allocate_and_map(
-                    virt_addr,
-                    header.p_memsz as usize,
+                    aligned_virt_addr,
+                    aligned_size,
                     MemoryMappingOptions {
                         user: true,
                         executable: header.is_executable(),
@@ -61,7 +66,7 @@ fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
                 );
                 info!("Mapping complete, copying data");
 
-                // Copy ELF data to the mapped region
+                // Copy ELF data to the mapped region (at the original unaligned address)
                 // Temporarily disable write protection to allow kernel writes to read-only pages
                 let src_ptr = unsafe { file_ptr.byte_add(header.p_offset as usize) as *const u8 };
                 memory::without_write_protection(|| unsafe {

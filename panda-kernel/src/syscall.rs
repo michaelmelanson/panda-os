@@ -21,11 +21,11 @@ use x86_64::{
 static GDT: Spinlock<GlobalDescriptorTable> = Spinlock::new(GlobalDescriptorTable::new());
 static TSS: Spinlock<TaskStateSegment> = Spinlock::new(TaskStateSegment::new());
 
-#[repr(align(0x100))]
+#[repr(align(0x1000))]
 struct KernelStack {
-    inner: [u8; 0x1000],
+    inner: [u8; 0x10000], // 64KB kernel stack
 }
-static KERNEL_STACK: KernelStack = KernelStack { inner: [0; 0x1000] };
+static KERNEL_STACK: KernelStack = KernelStack { inner: [0; 0x10000] };
 
 static USER_STACK_PTR: usize = 0x0badc0de;
 
@@ -77,7 +77,7 @@ extern "C" fn syscall_entry() {
         "swapgs",
         "mov gs:[0x0], rsp",
         "lea rsp, [{kernel_stack}]",
-        "add rsp, 0x1000",
+        "add rsp, 0x10000",
 
         "push rbx",
         "push rbp",
@@ -180,6 +180,7 @@ extern "sysv64" fn syscall_handler(
             let handle = arg0 as HandleId;
             let buf_ptr = arg1 as *mut u8;
             let buf_len = arg2;
+            debug!("READ: handle={}, buf_ptr={:#x}, buf_len={}", handle, buf_ptr as usize, buf_len);
 
             scheduler::with_current_process(|proc| {
                 if let Some(resource) = proc.handles_mut().get_mut(handle) {

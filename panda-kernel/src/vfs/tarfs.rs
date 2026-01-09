@@ -146,6 +146,7 @@ struct TarFile {
     pos: usize,
 }
 
+
 // Safety: Data pointer is from static UEFI allocation
 unsafe impl Send for TarFile {}
 unsafe impl Sync for TarFile {}
