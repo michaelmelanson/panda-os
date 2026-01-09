@@ -1,0 +1,3 @@
+# Preemption test expected log output
+Preempt test: starting long computation
+Preempt test: computation completed correctly

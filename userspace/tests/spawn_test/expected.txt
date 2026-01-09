@@ -1,0 +1,7 @@
+# Spawn test expected log output
+# Parent starts, spawns child, then both run (order may vary after spawn)
+Spawn test: starting
+Spawn test: child spawned successfully
+Spawn test: parent exiting with code 0
+Child process running!
+Child process exiting with code 0

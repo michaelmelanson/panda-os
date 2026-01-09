@@ -1,0 +1,3 @@
+# VFS test expected log output
+VFS test starting
+VFS test passed
