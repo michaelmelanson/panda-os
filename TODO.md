@@ -2,7 +2,6 @@
 
 ## Known Issues
 
-- Process exit panics the kernel (`syscall.rs:140`)
 - Single static kernel stack (4KB) - could overflow
 - 63 unsafe blocks with limited safety wrappers
 - Identity mapping limits address space usage
@@ -10,17 +9,6 @@
 - ACPI handler completely unimplemented (27 todo!() macros)
 
 ## Immediate Priorities
-
-### Refactor to RAII pattern
-- Allocating frames, memory maps, etc should return an RAII guard
-- When this guard goes out of scope it should deallocate the resource
-- This should allow processes to hold on to their resources via handles which go out of socpe when the process terminates
-- Be sure it supports reference counting for shared resources
-
-### Fix Process Exit
-- Process exit currently panics the kernel
-- Should clean up process and return control to scheduler
-- Test process lifecycle (create, run, exit, schedule next)
 
 ### Implement Context Switching
 - Save/restore registers in Process struct (rsp, rip, general purpose)
