@@ -4,7 +4,6 @@
 
 - Process exit panics the kernel (`syscall.rs:140`)
 - Single static kernel stack (4KB) - could overflow
-- Bump allocator never frees memory
 - 63 unsafe blocks with limited safety wrappers
 - Identity mapping limits address space usage
 - Global mutable state with potential deadlock risk
@@ -55,10 +54,9 @@
 - Niceness for processes that yield early (I/O bound)
 - Preemption based on deadlines
 
-### Proper Memory Allocator
-- Replace bump allocator (never frees memory)
-- Implement linked list or buddy allocator
-- Add memory pressure handling / OOM
+### Memory Pressure Handling
+- Add OOM (out-of-memory) handling
+- Consider adding memory pressure notifications
 
 ### Basic VFS Abstraction
 - In-memory filesystem (tmpfs)
