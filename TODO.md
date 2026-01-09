@@ -10,20 +10,12 @@
 
 ## Immediate Priorities
 
-### Implement Context Switching
-- Save/restore registers in Process struct (rsp, rip, general purpose)
-- Modify syscall handler to save state before switching
-- Enable timer-based preemption (timer interrupt handler is empty)
-- Currently scheduler can only run one process to completion
-
 ### Expand Syscalls
 - Subsystem-based architecture: default capability-based Panda syscalls, optional POSIX compatibility layer
 - Resource handles (capabilities) instead of file descriptors
 - Message-passing with structured objects (BSON) instead of byte streams
 - `sys_send(handle, object)` - send structured object to resource
 - `sys_recv(handle)` - receive structured object from resource
-- `sys_spawn(path)` - create new process from initrd binary
-- `sys_yield()` - cooperative scheduling / early yield from I/O blocks
 
 ### Basic Console I/O
 - Console as capability granted to init process
@@ -31,11 +23,6 @@
 - Simple line-buffered input from keyboard
 
 ## Medium-term Goals
-
-### Multiple Processes
-- Spawn processes from initrd binaries (not fork/exec)
-- Test scheduling with multiple concurrent processes
-- Add `sys_getpid()`
 
 ### Deadline-based Scheduler
 - Optimize for latency over throughput
@@ -52,7 +39,6 @@
 - open returns capability, close releases it
 
 ### Userspace Library (libpanda)
-- Native Panda syscall wrappers
 - printf implementation
 - String/memory functions
 - Userspace heap allocator
