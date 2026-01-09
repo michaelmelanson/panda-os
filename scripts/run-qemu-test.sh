@@ -44,7 +44,8 @@ fi
 # QEMU exited successfully, now check expected log patterns if specified
 if [ -n "$EXPECTED_FILE" ] && [ -f "$EXPECTED_FILE" ]; then
     # Extract just the LOG: messages from the test output
-    LOG_MESSAGES=$(grep "INFO: LOG:" "$LOG_FILE" | sed 's/.*INFO: LOG: //')
+    # Use -a to treat binary files (with escape sequences) as text
+    LOG_MESSAGES=$(grep -a "INFO: LOG:" "$LOG_FILE" | sed 's/.*INFO: LOG: //')
 
     # Read expected patterns (skip comments and blank lines)
     EXPECTED_PATTERNS=$(grep -v '^#' "$EXPECTED_FILE" | grep -v '^[[:space:]]*$')

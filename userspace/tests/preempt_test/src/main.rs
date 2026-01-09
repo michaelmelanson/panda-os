@@ -8,10 +8,10 @@
 #![no_std]
 #![no_main]
 
-use libpanda::syscall::syscall_log;
+use libpanda::environment;
 
 libpanda::main! {
-    syscall_log("Preempt test: starting long computation");
+    environment::log("Preempt test: starting long computation");
 
     // Run a computation that takes long enough to be preempted multiple times.
     // The 10ms timer should fire many times during this loop.
@@ -29,10 +29,10 @@ libpanda::main! {
     let expected = (iterations - 1) * iterations / 2;
 
     if sum != expected {
-        syscall_log("FAIL: computation produced incorrect result");
+        environment::log("FAIL: computation produced incorrect result");
         return 1;
     }
 
-    syscall_log("Preempt test: computation completed correctly");
+    environment::log("Preempt test: computation completed correctly");
     0
 }

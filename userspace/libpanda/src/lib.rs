@@ -1,4 +1,8 @@
 #![no_std]
+
+pub mod environment;
+pub mod file;
+pub mod process;
 pub mod syscall;
 
 /// Entry point macro for userspace programs.

@@ -2,8 +2,17 @@ use core::arch::asm;
 
 // Re-export ABI constants
 pub use panda_abi::{
-    FileStat, SEEK_CUR, SEEK_END, SEEK_SET, SYSCALL_CLOSE, SYSCALL_EXIT, SYSCALL_FSTAT,
-    SYSCALL_LOG, SYSCALL_OPEN, SYSCALL_READ, SYSCALL_SEEK, SYSCALL_SPAWN, SYSCALL_YIELD,
+    // Well-known handles
+    HANDLE_ENVIRONMENT, HANDLE_SELF,
+    // Operation codes
+    OP_ENVIRONMENT_LOG, OP_ENVIRONMENT_OPEN, OP_ENVIRONMENT_SPAWN, OP_ENVIRONMENT_TIME,
+    OP_FILE_CLOSE, OP_FILE_READ, OP_FILE_SEEK, OP_FILE_STAT, OP_FILE_WRITE,
+    OP_PROCESS_EXIT, OP_PROCESS_GET_PID, OP_PROCESS_SIGNAL, OP_PROCESS_WAIT, OP_PROCESS_YIELD,
+    // Shared types
+    FileStat, SEEK_CUR, SEEK_END, SEEK_SET,
+    // Legacy syscall numbers (deprecated)
+    SYSCALL_CLOSE, SYSCALL_EXIT, SYSCALL_FSTAT, SYSCALL_LOG, SYSCALL_OPEN, SYSCALL_READ,
+    SYSCALL_SEEK, SYSCALL_SEND, SYSCALL_SPAWN, SYSCALL_YIELD,
 };
 
 #[inline(always)]
@@ -118,4 +127,28 @@ pub fn spawn(path: &str) -> isize {
 #[inline(always)]
 pub fn yield_now() {
     let _ = syscall(SYSCALL_YIELD, 0, 0, 0, 0, 0, 0);
+}
+
+/// Send an operation to a resource handle (unified syscall interface)
+///
+/// This is the low-level syscall wrapper. Prefer using the typed wrappers
+/// in `file`, `process`, and `environment` modules.
+#[inline(always)]
+pub fn send(
+    handle: u32,
+    operation: u32,
+    arg0: usize,
+    arg1: usize,
+    arg2: usize,
+    arg3: usize,
+) -> isize {
+    syscall(
+        SYSCALL_SEND,
+        handle as usize,
+        operation as usize,
+        arg0,
+        arg1,
+        arg2,
+        arg3,
+    )
 }

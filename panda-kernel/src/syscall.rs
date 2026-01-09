@@ -321,6 +321,221 @@ extern "sysv64" fn syscall_handler(
                 );
             }
         }
+        panda_abi::SYSCALL_SEND => {
+            // arg0 = handle, arg1 = operation, arg2-arg5 = operation args
+            let handle = arg0 as u32;
+            let operation = arg1 as u32;
+            handle_send(handle, operation, arg2, arg3, return_rip, user_rsp)
+        }
         _ => -1,
+    }
+}
+
+/// Handle the unified send syscall
+fn handle_send(
+    handle: u32,
+    operation: u32,
+    arg0: usize,
+    arg1: usize,
+    return_rip: usize,
+    user_rsp: usize,
+) -> isize {
+    use panda_abi::*;
+
+    match operation {
+        // File operations
+        OP_FILE_READ => {
+            let buf_ptr = arg0 as *mut u8;
+            let buf_len = arg1;
+            scheduler::with_current_process(|proc| {
+                if let Some(resource) = proc.handles_mut().get_mut(handle) {
+                    if let Some(file) = resource.as_file() {
+                        let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
+                        match file.read(buf) {
+                            Ok(n) => n as isize,
+                            Err(_) => -1,
+                        }
+                    } else {
+                        -1
+                    }
+                } else {
+                    -1
+                }
+            })
+        }
+        OP_FILE_WRITE => {
+            // TODO: File::write not yet implemented in VFS
+            -1
+        }
+        OP_FILE_SEEK => {
+            let offset = ((arg1 as u64) << 32 | arg0 as u64) as i64;
+            let whence = arg1;
+            let seek_from = match whence {
+                SEEK_SET => vfs::SeekFrom::Start(offset as u64),
+                SEEK_CUR => vfs::SeekFrom::Current(offset),
+                SEEK_END => vfs::SeekFrom::End(offset),
+                _ => return -1,
+            };
+            scheduler::with_current_process(|proc| {
+                if let Some(resource) = proc.handles_mut().get_mut(handle) {
+                    if let Some(file) = resource.as_file() {
+                        match file.seek(seek_from) {
+                            Ok(pos) => pos as isize,
+                            Err(_) => -1,
+                        }
+                    } else {
+                        -1
+                    }
+                } else {
+                    -1
+                }
+            })
+        }
+        OP_FILE_STAT => {
+            let stat_ptr = arg0 as *mut FileStat;
+            scheduler::with_current_process(|proc| {
+                if let Some(resource) = proc.handles_mut().get_mut(handle) {
+                    if let Some(file) = resource.as_file() {
+                        let stat = file.stat();
+                        unsafe {
+                            (*stat_ptr).size = stat.size;
+                            (*stat_ptr).is_dir = stat.is_dir;
+                        }
+                        0
+                    } else {
+                        -1
+                    }
+                } else {
+                    -1
+                }
+            })
+        }
+        OP_FILE_CLOSE => {
+            scheduler::with_current_process(|proc| {
+                proc.handles_mut().remove(handle);
+            });
+            0
+        }
+
+        // Process operations
+        OP_PROCESS_YIELD => {
+            unsafe {
+                scheduler::yield_current(
+                    VirtAddr::new(return_rip as u64),
+                    VirtAddr::new(user_rsp as u64),
+                );
+            }
+        }
+        OP_PROCESS_EXIT => {
+            let exit_code = arg0;
+            info!("Process exiting with code {exit_code}");
+            if exit_code != 0 {
+                crate::qemu::exit_qemu(crate::qemu::QemuExitCode::Failed);
+            }
+            let current_pid = scheduler::current_process_id();
+            scheduler::remove_process(current_pid);
+            unsafe { scheduler::exec_next_runnable(); }
+        }
+        OP_PROCESS_GET_PID => {
+            // For now, just return 0 for self - we'll implement proper PIDs later
+            0
+        }
+        OP_PROCESS_WAIT => {
+            // TODO: Implement wait for child process
+            -1
+        }
+        OP_PROCESS_SIGNAL => {
+            // TODO: Implement signals
+            -1
+        }
+
+        // Environment operations
+        OP_ENVIRONMENT_OPEN => {
+            let path_ptr = arg0 as *const u8;
+            let path_len = arg1;
+            let path = unsafe { slice::from_raw_parts(path_ptr, path_len) };
+            let path = match str::from_utf8(path) {
+                Ok(p) => p,
+                Err(_) => return -1,
+            };
+
+            match vfs::open(path) {
+                Some(file) => {
+                    let handle = scheduler::with_current_process(|proc| {
+                        proc.handles_mut().insert(file)
+                    });
+                    handle as isize
+                }
+                None => -1,
+            }
+        }
+        OP_ENVIRONMENT_SPAWN => {
+            let path_ptr = arg0 as *const u8;
+            let path_len = arg1;
+            let path = unsafe { slice::from_raw_parts(path_ptr, path_len) };
+            let path = match str::from_utf8(path) {
+                Ok(p) => p,
+                Err(_) => return -1,
+            };
+
+            debug!("SPAWN: path={}", path);
+
+            let Some(mut resource) = vfs::open(path) else {
+                error!("SPAWN: failed to open {}", path);
+                return -1;
+            };
+
+            let Some(file) = resource.as_file() else {
+                error!("SPAWN: {} is not a file", path);
+                return -1;
+            };
+
+            let stat = file.stat();
+            let mut elf_data: Vec<u8> = Vec::new();
+            elf_data.resize(stat.size as usize, 0);
+
+            match file.read(&mut elf_data) {
+                Ok(n) if n == stat.size as usize => {}
+                Ok(n) => {
+                    error!("SPAWN: incomplete read: {} of {} bytes", n, stat.size);
+                    return -1;
+                }
+                Err(e) => {
+                    error!("SPAWN: failed to read {}: {:?}", path, e);
+                    return -1;
+                }
+            }
+
+            let elf_data = elf_data.into_boxed_slice();
+            let elf_ptr: *const [u8] = Box::leak(elf_data);
+
+            let process = Process::from_elf_data(Context::new_user_context(), elf_ptr);
+            let pid = process.id();
+            debug!("SPAWN: created process {:?}", pid);
+
+            scheduler::add_process(process);
+            // TODO: Return a process handle instead of 0
+            0
+        }
+        OP_ENVIRONMENT_LOG => {
+            let msg_ptr = arg0 as *const u8;
+            let msg_len = arg1;
+            let msg = unsafe { slice::from_raw_parts(msg_ptr, msg_len) };
+            let msg = match str::from_utf8(msg) {
+                Ok(m) => m,
+                Err(_) => return -1,
+            };
+            info!("LOG: {msg}");
+            0
+        }
+        OP_ENVIRONMENT_TIME => {
+            // TODO: Implement getting time
+            0
+        }
+
+        _ => {
+            error!("Unknown operation: {:#x}", operation);
+            -1
+        }
     }
 }

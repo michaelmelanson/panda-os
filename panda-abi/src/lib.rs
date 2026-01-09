@@ -5,7 +5,14 @@
 
 #![no_std]
 
+// =============================================================================
 // Syscall numbers
+// =============================================================================
+
+/// The unified send syscall - all operations go through this
+pub const SYSCALL_SEND: usize = 0x30;
+
+// Legacy syscalls (deprecated, will be removed)
 pub const SYSCALL_LOG: usize = 0x10;
 pub const SYSCALL_EXIT: usize = 0x11;
 pub const SYSCALL_SPAWN: usize = 0x12;
@@ -16,10 +23,66 @@ pub const SYSCALL_READ: usize = 0x22;
 pub const SYSCALL_SEEK: usize = 0x23;
 pub const SYSCALL_FSTAT: usize = 0x24;
 
+// =============================================================================
+// Well-known handles
+// =============================================================================
+
+/// Handle to the current process (Process resource)
+pub const HANDLE_SELF: u32 = 0;
+
+/// Handle to the system environment (Environment resource)
+pub const HANDLE_ENVIRONMENT: u32 = 1;
+
+// =============================================================================
+// Operation codes
+// =============================================================================
+
+// File operations (0x1_0000 - 0x1_FFFF)
+/// Read from file: (buf_ptr, buf_len) -> bytes_read
+pub const OP_FILE_READ: u32 = 0x1_0000;
+/// Write to file: (buf_ptr, buf_len) -> bytes_written
+pub const OP_FILE_WRITE: u32 = 0x1_0001;
+/// Seek in file: (offset_lo, offset_hi, whence) -> new_position
+pub const OP_FILE_SEEK: u32 = 0x1_0002;
+/// Get file stats: (stat_ptr) -> 0 or error
+pub const OP_FILE_STAT: u32 = 0x1_0003;
+/// Close file: () -> 0 or error
+pub const OP_FILE_CLOSE: u32 = 0x1_0004;
+
+// Process operations (0x2_0000 - 0x2_FFFF)
+/// Yield execution: () -> 0
+pub const OP_PROCESS_YIELD: u32 = 0x2_0000;
+/// Exit process: (code) -> !
+pub const OP_PROCESS_EXIT: u32 = 0x2_0001;
+/// Get process ID: () -> pid
+pub const OP_PROCESS_GET_PID: u32 = 0x2_0002;
+/// Wait for child: () -> exit_code or error
+pub const OP_PROCESS_WAIT: u32 = 0x2_0003;
+/// Signal process: (signal) -> 0 or error
+pub const OP_PROCESS_SIGNAL: u32 = 0x2_0004;
+
+// Environment operations (0x3_0000 - 0x3_FFFF)
+/// Open file: (path_ptr, path_len, flags) -> handle
+pub const OP_ENVIRONMENT_OPEN: u32 = 0x3_0000;
+/// Spawn process: (path_ptr, path_len) -> process_handle
+pub const OP_ENVIRONMENT_SPAWN: u32 = 0x3_0001;
+/// Log message: (msg_ptr, msg_len) -> 0
+pub const OP_ENVIRONMENT_LOG: u32 = 0x3_0002;
+/// Get time: () -> timestamp
+pub const OP_ENVIRONMENT_TIME: u32 = 0x3_0003;
+
+// =============================================================================
+// Constants
+// =============================================================================
+
 // Seek whence values
 pub const SEEK_SET: usize = 0;
 pub const SEEK_CUR: usize = 1;
 pub const SEEK_END: usize = 2;
+
+// =============================================================================
+// Shared types
+// =============================================================================
 
 /// File stat structure shared between kernel and userspace
 #[repr(C)]

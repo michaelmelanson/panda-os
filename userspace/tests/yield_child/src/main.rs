@@ -1,14 +1,15 @@
 #![no_std]
 #![no_main]
 
-use libpanda::syscall::{syscall_log, yield_now};
+use libpanda::environment;
+use libpanda::process;
 
 libpanda::main! {
-    for i in 0..3 {
-        syscall_log("Child: before yield");
-        yield_now();
-        syscall_log("Child: after yield");
+    for _ in 0..3 {
+        environment::log("Child: before yield");
+        process::yield_now();
+        environment::log("Child: after yield");
     }
-    syscall_log("Child: done");
+    environment::log("Child: done");
     0
 }

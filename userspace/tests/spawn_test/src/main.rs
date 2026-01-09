@@ -1,19 +1,19 @@
 #![no_std]
 #![no_main]
 
-use libpanda::syscall::{spawn, syscall_log};
+use libpanda::environment;
 
 libpanda::main! {
-    syscall_log("Spawn test: starting");
+    environment::log("Spawn test: starting");
 
     // Spawn a child process
-    let result = spawn("/initrd/spawn_child");
+    let result = environment::spawn("/initrd/spawn_child");
     if result < 0 {
-        syscall_log("FAIL: spawn returned error");
+        environment::log("FAIL: spawn returned error");
         return 1;
     }
 
-    syscall_log("Spawn test: child spawned successfully");
-    syscall_log("Spawn test: parent exiting with code 0");
+    environment::log("Spawn test: child spawned successfully");
+    environment::log("Spawn test: parent exiting with code 0");
     0
 }

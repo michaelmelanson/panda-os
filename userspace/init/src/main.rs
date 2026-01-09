@@ -1,9 +1,9 @@
 #![no_std]
 #![no_main]
 
-use libpanda::syscall::syscall_log;
+use libpanda::environment;
 
 libpanda::main! {
-    syscall_log("HELLO FROM USERSPACE");
+    environment::log("HELLO FROM USERSPACE");
     0
 }
