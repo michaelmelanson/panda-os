@@ -1,11 +1,23 @@
+//! Process scheduler with preemptive multitasking.
+
 use core::arch::x86_64::_rdtsc;
 
 use alloc::collections::{BTreeMap, BinaryHeap};
+use log::{debug, info};
 use spinning_top::RwSpinlock;
+use x86_64::structures::idt::InterruptStackFrame;
 
-use crate::process::{Process, ProcessId, ProcessState};
+use crate::apic;
+use crate::interrupts::{self, IrqHandlerFunc};
+use crate::process::{exec_userspace, Process, ProcessId, ProcessState};
 
 static SCHEDULER: RwSpinlock<Option<Scheduler>> = RwSpinlock::new(None);
+
+/// Timer interrupt vector
+const TIMER_VECTOR: u8 = 0x20;
+
+/// Time slice in milliseconds
+const TIME_SLICE_MS: u32 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RTC(u64);
@@ -62,10 +74,10 @@ impl Scheduler {
                 .is_empty()
         );
 
-        log::info!("prepare_next_runnable: looking for runnable process");
+        info!("prepare_next_runnable: looking for runnable process");
         let (_, next_pid) = self.states.entry(ProcessState::Runnable).or_default().pop()?;
 
-        log::info!("prepare_next_runnable: found process {:?}", next_pid);
+        info!("prepare_next_runnable: found process {:?}", next_pid);
         self.change_state(next_pid, ProcessState::Running);
         self.current_pid = next_pid;
 
@@ -73,7 +85,7 @@ impl Scheduler {
             panic!("No process exists with PID {next_pid:?}");
         };
 
-        log::info!("prepare_next_runnable: prepared for exec");
+        info!("prepare_next_runnable: prepared for exec");
         next_process.reset_last_scheduled();
         Some(next_process.exec_params())
     }
@@ -141,6 +153,36 @@ pub fn init(init_process: Process) {
     *scheduler = Some(Scheduler::new(init_process));
 }
 
+/// Initialize preemptive scheduling (install timer interrupt handler).
+pub fn init_preemption() {
+    interrupts::set_irq_handler(TIMER_VECTOR, Some(timer_interrupt_handler as IrqHandlerFunc));
+    debug!("Preemption initialized with {}ms time slice", TIME_SLICE_MS);
+}
+
+/// Start the preemption timer. Called before jumping to userspace.
+fn start_timer() {
+    apic::set_timer_oneshot(TIME_SLICE_MS);
+}
+
+/// Timer interrupt handler for preemption.
+///
+/// When this fires, we need to save the interrupted process's state and switch
+/// to the next runnable process. The interrupt stack frame contains RIP, CS,
+/// RFLAGS, RSP, SS - but we also need to save general-purpose registers.
+///
+/// For now, with only one process, we just restart the timer and return.
+/// Full context switching will be implemented when we have multiple processes.
+extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    // Send EOI first
+    apic::eoi();
+
+    debug!("Timer interrupt");
+
+    // For now, just restart the timer - with one process there's nothing to switch to
+    // TODO: Implement full context switch when we have multiple processes
+    start_timer();
+}
+
 pub fn add_process(process: Process) {
     let mut scheduler = SCHEDULER.write();
     let scheduler = scheduler
@@ -150,8 +192,6 @@ pub fn add_process(process: Process) {
 }
 
 pub unsafe fn exec_next_runnable() -> ! {
-    use crate::process::exec_userspace;
-
     let exec_params = {
         let mut scheduler = SCHEDULER.write();
         let scheduler = scheduler
@@ -163,11 +203,13 @@ pub unsafe fn exec_next_runnable() -> ! {
 
     match exec_params {
         Some((ip, sp)) => {
-            log::info!("exec_next_runnable: jumping to userspace");
+            info!("exec_next_runnable: jumping to userspace");
+            // Start preemption timer before jumping to userspace
+            start_timer();
             unsafe { exec_userspace(ip, sp) }
         }
         None => {
-            log::info!("No runnable processes, halting");
+            info!("No runnable processes, halting");
             // Exit QEMU if isa-debug-exit device is present (used by tests)
             crate::qemu::exit_qemu(crate::qemu::QemuExitCode::Success);
         }

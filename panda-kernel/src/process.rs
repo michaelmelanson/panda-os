@@ -18,6 +18,32 @@ use crate::{
     scheduler::RTC,
 };
 
+/// Saved CPU register state for context switching.
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct SavedState {
+    // General-purpose registers
+    pub rax: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    // Instruction and stack pointers
+    pub rip: u64,
+    pub rsp: u64,
+    pub rflags: u64,
+}
+
 /// Jump to userspace at the given IP and SP. This function never returns.
 /// Must be called with no locks held, as it will not return to release them.
 pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr) -> ! {
@@ -114,6 +140,8 @@ pub struct Process {
     ip: VirtAddr,
     mappings: Vec<Mapping>,
     handles: HandleTable,
+    /// Saved CPU state when process is preempted. Only valid when state is Runnable.
+    saved_state: Option<SavedState>,
 }
 
 impl Process {
@@ -152,6 +180,7 @@ impl Process {
             ip: VirtAddr::new(elf.entry),
             mappings,
             handles: HandleTable::new(),
+            saved_state: None,
         }
     }
 
@@ -182,5 +211,23 @@ impl Process {
 
     pub fn handles_mut(&mut self) -> &mut HandleTable {
         &mut self.handles
+    }
+
+    /// Save the CPU state when preempting this process.
+    pub fn save_state(&mut self, state: SavedState) {
+        self.saved_state = Some(state);
+        // Update IP/SP from saved state for next exec
+        self.ip = VirtAddr::new(state.rip);
+        self.sp = VirtAddr::new(state.rsp);
+    }
+
+    /// Get the saved state, if any.
+    pub fn saved_state(&self) -> Option<&SavedState> {
+        self.saved_state.as_ref()
+    }
+
+    /// Take and clear the saved state.
+    pub fn take_saved_state(&mut self) -> Option<SavedState> {
+        self.saved_state.take()
     }
 }
