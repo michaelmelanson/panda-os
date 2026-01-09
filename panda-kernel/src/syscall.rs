@@ -63,7 +63,6 @@ pub fn init() {
     unsafe {
         Efer::update(|efer| {
             efer.insert(EferFlags::SYSTEM_CALL_EXTENSIONS);
-            efer.remove(EferFlags::NO_EXECUTE_ENABLE);
         });
     }
 

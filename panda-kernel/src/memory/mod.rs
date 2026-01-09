@@ -114,10 +114,9 @@ pub fn map(
         if options.writable {
             flags |= PageTableFlags::WRITABLE;
         }
-        // seems to be causing a 'reserved write' page fault
-        // if !options.executable {
-        //     flags |= PageTableFlags::NO_EXECUTE;
-        // }
+        if !options.executable {
+            flags |= PageTableFlags::NO_EXECUTE;
+        }
 
         let (entry, level) = l1_page_table_entry(virt_addr, flags);
         let entry = unsafe { &mut *entry };

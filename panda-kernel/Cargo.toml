@@ -48,3 +48,7 @@ harness = false
 [[test]]
 name = "process"
 harness = false
+
+[[test]]
+name = "nx_bit"
+harness = false

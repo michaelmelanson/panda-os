@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .PHONY: build panda-kernel init run test
 
-TESTS := basic heap pci memory scheduler process
+TESTS := basic heap pci memory scheduler process nx_bit
 
 # Common QEMU parameters (without drive, added per-test)
 QEMU_COMMON = qemu-system-x86_64 -nodefaults \

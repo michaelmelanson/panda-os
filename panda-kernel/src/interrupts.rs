@@ -17,8 +17,25 @@ use x86_64::{
 
 static BREAKPOINT_INTERRUPT_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+pub use x86_64::structures::idt::PageFaultHandlerFunc;
+
 static DESCRIPTOR_TABLE: RwSpinlock<InterruptDescriptorTable> =
     RwSpinlock::new(InterruptDescriptorTable::new());
+
+/// Set a custom page fault handler. Pass `None` to restore the default handler.
+pub fn set_page_fault_handler(handler: Option<PageFaultHandlerFunc>) {
+    let mut descriptor_table = DESCRIPTOR_TABLE.write();
+    let handler = handler.unwrap_or(default_page_fault_handler);
+    let kernel_cs = SegmentSelector::new(1, PrivilegeLevel::Ring0);
+    unsafe {
+        descriptor_table
+            .page_fault
+            .set_handler_fn(handler)
+            .set_code_selector(kernel_cs)
+            .set_stack_index(1);
+    }
+    drop(descriptor_table);
+}
 
 pub fn init() {
     let mut descriptor_table = DESCRIPTOR_TABLE.write();
@@ -60,7 +77,7 @@ pub fn init() {
         // 14 = 0x0E
         descriptor_table
             .page_fault
-            .set_handler_fn(page_fault_handler)
+            .set_handler_fn(default_page_fault_handler)
             .set_code_selector(kernel_cs)
             .set_stack_index(1);
     }
@@ -119,15 +136,15 @@ extern "x86-interrupt" fn double_fault_handler(
     );
 }
 
-extern "x86-interrupt" fn page_fault_handler(
+extern "x86-interrupt" fn default_page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
-    let address =
+    let fault_address =
         Cr2::read().expect("CR2 contained non-canonical address while handling page fault");
 
     panic!(
-        "Page fault:\n  Fault address:   {address:#020x}\n  Current address: {:#020x}\n  Stack pointer:   {:#020x}\n  Caused by {} while executing in {} mode ({error_code:?})",
+        "Page fault:\n  Fault address:   {fault_address:#020x}\n  Current address: {:#020x}\n  Stack pointer:   {:#020x}\n  Caused by {} while executing in {} mode ({error_code:?})",
         stack_frame.instruction_pointer,
         stack_frame.stack_pointer,
         if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
