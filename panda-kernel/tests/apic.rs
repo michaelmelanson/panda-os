@@ -15,7 +15,9 @@ panda_kernel::test_harness!(
     calibration_produces_nonzero_ticks,
     calibration_produces_reasonable_frequency,
     timer_oneshot_fires_interrupt,
-    timer_stop_prevents_interrupt
+    timer_stop_prevents_interrupt,
+    timer_fires_multiple_times,
+    timer_resumes_execution_after_interrupt
 );
 
 /// Timer calibration should produce a non-zero ticks_per_ms value.
@@ -63,6 +65,91 @@ fn timer_oneshot_fires_interrupt() {
     assert!(
         TIMER_FIRED.load(Ordering::SeqCst) >= 1,
         "Timer interrupt should have fired"
+    );
+
+    // Restore default handler
+    interrupts::set_irq_handler(TIMER_VECTOR, None);
+}
+
+/// Timer can fire multiple times when restarted in the handler.
+fn timer_fires_multiple_times() {
+    static MULTI_TIMER_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    extern "x86-interrupt" fn multi_timer_handler(_stack_frame: InterruptStackFrame) {
+        MULTI_TIMER_COUNT.fetch_add(1, Ordering::SeqCst);
+        apic::eoi();
+        // Restart timer for next interrupt
+        apic::set_timer_oneshot(1);
+    }
+
+    // Install handler that restarts timer
+    interrupts::set_irq_handler(TIMER_VECTOR, Some(multi_timer_handler));
+    MULTI_TIMER_COUNT.store(0, Ordering::SeqCst);
+
+    // Start first timer
+    apic::set_timer_oneshot(1);
+
+    // Wait for multiple interrupts
+    let mut spins = 0u32;
+    while MULTI_TIMER_COUNT.load(Ordering::SeqCst) < 5 {
+        core::hint::spin_loop();
+        spins += 1;
+        if spins > 500_000_000 {
+            panic!(
+                "Only got {} timer interrupts, expected at least 5",
+                MULTI_TIMER_COUNT.load(Ordering::SeqCst)
+            );
+        }
+    }
+
+    // Stop the timer
+    apic::stop_timer();
+
+    let count = MULTI_TIMER_COUNT.load(Ordering::SeqCst);
+    assert!(count >= 5, "Expected at least 5 timer interrupts, got {}", count);
+
+    // Restore default handler
+    interrupts::set_irq_handler(TIMER_VECTOR, None);
+}
+
+/// Execution resumes correctly after timer interrupt.
+fn timer_resumes_execution_after_interrupt() {
+    static RESUME_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static LOOP_PROGRESS: AtomicUsize = AtomicUsize::new(0);
+
+    extern "x86-interrupt" fn resume_timer_handler(_stack_frame: InterruptStackFrame) {
+        RESUME_COUNT.fetch_add(1, Ordering::SeqCst);
+        apic::eoi();
+    }
+
+    // Install handler
+    interrupts::set_irq_handler(TIMER_VECTOR, Some(resume_timer_handler));
+    RESUME_COUNT.store(0, Ordering::SeqCst);
+    LOOP_PROGRESS.store(0, Ordering::SeqCst);
+
+    // Set a timer
+    apic::set_timer_oneshot(1);
+
+    // Run a loop that should be interrupted but continue after
+    for i in 0..10_000_000u64 {
+        LOOP_PROGRESS.store(i as usize, Ordering::SeqCst);
+        core::hint::black_box(i);
+    }
+
+    let progress = LOOP_PROGRESS.load(Ordering::SeqCst);
+    let interrupts = RESUME_COUNT.load(Ordering::SeqCst);
+
+    // Loop should have completed
+    assert!(
+        progress >= 9_999_999,
+        "Loop should have completed, only got to {}",
+        progress
+    );
+
+    // At least one interrupt should have fired
+    assert!(
+        interrupts >= 1,
+        "At least one timer interrupt should have fired"
     );
 
     // Restore default handler

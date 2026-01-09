@@ -148,15 +148,13 @@ impl Scheduler {
 }
 
 pub fn init(init_process: Process) {
+    // Install timer interrupt handler for preemption
+    interrupts::set_irq_handler(TIMER_VECTOR, Some(timer_interrupt_handler as IrqHandlerFunc));
+    debug!("Preemption initialized with {}ms time slice", TIME_SLICE_MS);
+
     let mut scheduler = SCHEDULER.write();
     assert!(scheduler.is_none(), "scheduler already initialized");
     *scheduler = Some(Scheduler::new(init_process));
-}
-
-/// Initialize preemptive scheduling (install timer interrupt handler).
-pub fn init_preemption() {
-    interrupts::set_irq_handler(TIMER_VECTOR, Some(timer_interrupt_handler as IrqHandlerFunc));
-    debug!("Preemption initialized with {}ms time slice", TIME_SLICE_MS);
 }
 
 /// Start the preemption timer. Called before jumping to userspace.

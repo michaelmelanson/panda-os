@@ -56,7 +56,6 @@ pub fn init() {
     syscall::init();
     interrupts::init();
     apic::init();
-    scheduler::init_preemption();
     pci::init();
     devices::init();
 }
