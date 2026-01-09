@@ -125,7 +125,7 @@ extern "sysv64" fn syscall_handler(
     );
 
     match code {
-        libpanda::syscall::SYSCALL_LOG => {
+        panda_abi::SYSCALL_LOG => {
             let data = unsafe { slice::from_raw_parts(arg0 as *const u8, arg1) };
             let message = match str::from_utf8(data) {
                 Ok(message) => message,
@@ -138,7 +138,7 @@ extern "sysv64" fn syscall_handler(
             info!("LOG: {message}");
             0
         }
-        libpanda::syscall::SYSCALL_EXIT => {
+        panda_abi::SYSCALL_EXIT => {
             let exit_code = arg0;
             info!("Process exiting with code {exit_code}");
 
@@ -151,7 +151,7 @@ extern "sysv64" fn syscall_handler(
             // Schedule next process (does not return)
             unsafe { scheduler::exec_next_runnable(); }
         }
-        libpanda::syscall::SYSCALL_OPEN => {
+        panda_abi::SYSCALL_OPEN => {
             // arg0 = path pointer, arg1 = path length
             let path = unsafe { slice::from_raw_parts(arg0 as *const u8, arg1) };
             let path = match str::from_utf8(path) {
@@ -169,14 +169,14 @@ extern "sysv64" fn syscall_handler(
                 None => -1,
             }
         }
-        libpanda::syscall::SYSCALL_CLOSE => {
+        panda_abi::SYSCALL_CLOSE => {
             let handle = arg0 as HandleId;
             scheduler::with_current_process(|proc| {
                 proc.handles_mut().remove(handle);
             });
             0
         }
-        libpanda::syscall::SYSCALL_READ => {
+        panda_abi::SYSCALL_READ => {
             let handle = arg0 as HandleId;
             let buf_ptr = arg1 as *mut u8;
             let buf_len = arg2;
@@ -198,15 +198,15 @@ extern "sysv64" fn syscall_handler(
                 }
             })
         }
-        libpanda::syscall::SYSCALL_SEEK => {
+        panda_abi::SYSCALL_SEEK => {
             let handle = arg0 as HandleId;
             let offset = arg1 as i64;
             let whence = arg2;
 
             let seek_from = match whence {
-                libpanda::syscall::SEEK_SET => vfs::SeekFrom::Start(offset as u64),
-                libpanda::syscall::SEEK_CUR => vfs::SeekFrom::Current(offset),
-                libpanda::syscall::SEEK_END => vfs::SeekFrom::End(offset),
+                panda_abi::SEEK_SET => vfs::SeekFrom::Start(offset as u64),
+                panda_abi::SEEK_CUR => vfs::SeekFrom::Current(offset),
+                panda_abi::SEEK_END => vfs::SeekFrom::End(offset),
                 _ => return -1,
             };
 
@@ -225,9 +225,9 @@ extern "sysv64" fn syscall_handler(
                 }
             })
         }
-        libpanda::syscall::SYSCALL_FSTAT => {
+        panda_abi::SYSCALL_FSTAT => {
             let handle = arg0 as HandleId;
-            let stat_ptr = arg1 as *mut libpanda::syscall::FileStat;
+            let stat_ptr = arg1 as *mut panda_abi::FileStat;
 
             scheduler::with_current_process(|proc| {
                 if let Some(resource) = proc.handles_mut().get_mut(handle) {

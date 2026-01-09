@@ -13,7 +13,7 @@ virtio-drivers = { workspace = true }
 x86_64 = { workspace = true }
 goblin = { workspace = true }
 tar-no-std = { workspace = true }
-libpanda = { path = "../userspace/libpanda" }
+panda-abi = { path = "../panda-abi" }
 
 [lib]
 name = "panda_kernel"

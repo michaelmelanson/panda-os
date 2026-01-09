@@ -168,9 +168,8 @@ pub unsafe fn exec_next_runnable() -> ! {
         }
         None => {
             log::info!("No runnable processes, halting");
-            loop {
-                x86_64::instructions::hlt();
-            }
+            // Exit QEMU if isa-debug-exit device is present (used by tests)
+            crate::qemu::exit_qemu(crate::qemu::QemuExitCode::Success);
         }
     }
 }

@@ -1,7 +1,6 @@
 [package]
-name = "libpanda"
+name = "panda-abi"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-panda-abi = { path = "../../panda-abi" }

@@ -1,12 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["panda-kernel", "userspace/init", "userspace/libpanda"]
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
+members = ["panda-abi", "panda-kernel", "userspace/init", "userspace/libpanda", "userspace/tests/vfs_test"]
 
 [workspace.dependencies]
 acpi = "6.0"

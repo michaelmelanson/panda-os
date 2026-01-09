@@ -1,19 +1,10 @@
 use core::arch::asm;
 
-pub const SYSCALL_LOG: usize = 0x10;
-pub const SYSCALL_EXIT: usize = 0x11;
-pub const SYSCALL_OPEN: usize = 0x20;
-pub const SYSCALL_CLOSE: usize = 0x21;
-pub const SYSCALL_READ: usize = 0x22;
-pub const SYSCALL_SEEK: usize = 0x23;
-pub const SYSCALL_FSTAT: usize = 0x24;
-
-/// Seek from start of file
-pub const SEEK_SET: usize = 0;
-/// Seek from current position
-pub const SEEK_CUR: usize = 1;
-/// Seek from end of file
-pub const SEEK_END: usize = 2;
+// Re-export ABI constants
+pub use panda_abi::{
+    FileStat, SEEK_CUR, SEEK_END, SEEK_SET, SYSCALL_CLOSE, SYSCALL_EXIT, SYSCALL_FSTAT,
+    SYSCALL_LOG, SYSCALL_OPEN, SYSCALL_READ, SYSCALL_SEEK,
+};
 
 #[inline(always)]
 fn syscall(
@@ -100,14 +91,6 @@ pub fn seek(handle: u32, offset: i64, whence: usize) -> isize {
         0,
         0,
     )
-}
-
-/// File stat structure returned by fstat
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct FileStat {
-    pub size: u64,
-    pub is_dir: bool,
 }
 
 /// Get file stats by handle, returning 0 on success or -1 on error
