@@ -423,6 +423,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "yield_child"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
+name = "yield_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
 name = "zerocopy"
 version = "0.8.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"

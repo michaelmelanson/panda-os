@@ -9,6 +9,7 @@
 pub const SYSCALL_LOG: usize = 0x10;
 pub const SYSCALL_EXIT: usize = 0x11;
 pub const SYSCALL_SPAWN: usize = 0x12;
+pub const SYSCALL_YIELD: usize = 0x13;
 pub const SYSCALL_OPEN: usize = 0x20;
 pub const SYSCALL_CLOSE: usize = 0x21;
 pub const SYSCALL_READ: usize = 0x22;

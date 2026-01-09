@@ -2,6 +2,8 @@
 
 use core::arch::x86_64::_rdtsc;
 
+use core::cmp::Reverse;
+
 use alloc::collections::{BTreeMap, BinaryHeap};
 use log::{debug, info};
 use spinning_top::RwSpinlock;
@@ -35,7 +37,9 @@ impl RTC {
 
 struct Scheduler {
     processes: BTreeMap<ProcessId, Process>,
-    states: BTreeMap<ProcessState, BinaryHeap<(RTC, ProcessId)>>,
+    /// Maps each process state to a min-heap of (last_scheduled, pid).
+    /// Using Reverse<RTC> so that processes with the lowest RTC (least recently scheduled) are picked first.
+    states: BTreeMap<ProcessState, BinaryHeap<(Reverse<RTC>, ProcessId)>>,
     /// The currently running process. Only valid after exec_next_runnable() is called.
     current_pid: ProcessId,
 }
@@ -56,9 +60,10 @@ impl Scheduler {
             let state_map = self.states.entry(state).or_default();
 
             if process.state() == state {
-                state_map.push((process.last_scheduled(), pid));
+                state_map.push((Reverse(process.last_scheduled()), pid));
             } else {
-                state_map.retain(|(_, other_pid)| pid == *other_pid);
+                // Remove this process from states it doesn't belong to
+                state_map.retain(|(_, other_pid)| *other_pid != pid);
             }
         }
     }
@@ -119,20 +124,20 @@ impl Scheduler {
         process.set_state(state);
 
         self.remove_from_state(prior_state, pid);
-        self.add_to_state(prior_state, pid, last_scheduled);
+        self.add_to_state(state, pid, last_scheduled);
     }
 
     fn remove_from_state(&mut self, state: ProcessState, pid: ProcessId) {
         self.state_map(state)
-            .retain(|(_, other_pid)| pid == *other_pid);
+            .retain(|(_, other_pid)| *other_pid != pid);
     }
 
-    fn state_map(&mut self, state: ProcessState) -> &mut BinaryHeap<(RTC, ProcessId)> {
+    fn state_map(&mut self, state: ProcessState) -> &mut BinaryHeap<(Reverse<RTC>, ProcessId)> {
         self.states.entry(state).or_default()
     }
 
     fn add_to_state(&mut self, state: ProcessState, pid: ProcessId, last_scheduled: RTC) {
-        self.state_map(state).push((last_scheduled, pid));
+        self.state_map(state).push((Reverse(last_scheduled), pid));
     }
 
     fn new(init_process: Process) -> Self {
@@ -249,4 +254,41 @@ where
         .get_mut(&pid)
         .expect("Current process not found");
     f(process)
+}
+
+/// Yield the current process: save its state and switch to the next runnable.
+/// The return_ip and return_sp are where the process should resume.
+///
+/// # Safety
+/// This function does not return to the caller. It switches to a different process.
+pub unsafe fn yield_current(return_ip: x86_64::VirtAddr, return_sp: x86_64::VirtAddr) -> ! {
+    use crate::process::SavedState;
+
+    {
+        let mut scheduler = SCHEDULER.write();
+        let scheduler = scheduler
+            .as_mut()
+            .expect("Scheduler has not been initialized");
+
+        let pid = scheduler.current_process_id();
+        let process = scheduler
+            .processes
+            .get_mut(&pid)
+            .expect("Current process not found");
+
+        // Save where to resume (only RIP/RSP needed for syscall yield)
+        let state = SavedState {
+            rip: return_ip.as_u64(),
+            rsp: return_sp.as_u64(),
+            ..Default::default()
+        };
+        process.save_state(state);
+
+        // Mark as runnable (not running)
+        scheduler.change_state(pid, ProcessState::Runnable);
+    }
+    // Lock dropped
+
+    // Switch to next process
+    unsafe { exec_next_runnable(); }
 }

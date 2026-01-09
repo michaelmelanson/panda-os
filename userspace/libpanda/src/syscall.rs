@@ -3,7 +3,7 @@ use core::arch::asm;
 // Re-export ABI constants
 pub use panda_abi::{
     FileStat, SEEK_CUR, SEEK_END, SEEK_SET, SYSCALL_CLOSE, SYSCALL_EXIT, SYSCALL_FSTAT,
-    SYSCALL_LOG, SYSCALL_OPEN, SYSCALL_READ, SYSCALL_SEEK, SYSCALL_SPAWN,
+    SYSCALL_LOG, SYSCALL_OPEN, SYSCALL_READ, SYSCALL_SEEK, SYSCALL_SPAWN, SYSCALL_YIELD,
 };
 
 #[inline(always)]
@@ -112,4 +112,10 @@ pub fn fstat(handle: u32, stat: &mut FileStat) -> isize {
 pub fn spawn(path: &str) -> isize {
     let bytes = path.as_bytes();
     syscall(SYSCALL_SPAWN, bytes.as_ptr() as usize, bytes.len(), 0, 0, 0, 0)
+}
+
+/// Yield the CPU to another process
+#[inline(always)]
+pub fn yield_now() {
+    let _ = syscall(SYSCALL_YIELD, 0, 0, 0, 0, 0, 0);
 }

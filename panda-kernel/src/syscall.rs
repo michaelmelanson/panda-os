@@ -76,24 +76,27 @@ pub fn init() {
 extern "C" fn syscall_entry() {
     naked_asm!(
         "swapgs",
-        "mov gs:[0x0], rsp",
+        "mov gs:[0x0], rsp",        // Save user RSP
         "lea rsp, [{kernel_stack}]",
         "add rsp, 0x10000",
 
         "push rbx",
         "push rbp",
-        "push r11",
+        "push r11",                 // Save RFLAGS (in r11 from syscall)
         "push r12",
         "push r13",
         "push r14",
         "push r15",
 
-        "push rcx",
-        "push rax", // syscall code as 7th argument (on stack)
-        "mov rcx, r10", // this is the only argument that differs from sysv64
+        "push rcx",                 // Save return RIP (in rcx from syscall)
+        // Stack args for handler: user_rsp, return_rip, syscall_code
+        "push gs:[0x0]",            // arg8: user_rsp
+        "push rcx",                 // arg7: return_rip
+        "push rax",                 // syscall code as 7th argument
+        "mov rcx, r10",             // arg3 (sysv64 uses r10 instead of rcx)
         "call {handler}",
-        "add rsp, 8", // pop the syscall code we pushed
-        "pop rcx",
+        "add rsp, 24",              // pop the 3 stack args
+        "pop rcx",                  // Restore return RIP
         // rax now contains the return value from syscall_handler
 
         "pop r15",
@@ -120,6 +123,8 @@ extern "sysv64" fn syscall_handler(
     _arg4: usize,
     _arg5: usize,
     code: usize,
+    return_rip: usize,
+    user_rsp: usize,
 ) -> isize {
     debug!(
         "SYSCALL: code={code:X}, args: {arg0:X}, {arg1:X}, {arg2:X}, {arg3:X}"
@@ -304,6 +309,17 @@ extern "sysv64" fn syscall_handler(
             // Return the process ID (as a simple integer for now)
             // ProcessId is opaque, but we can return a success indicator
             0
+        }
+        panda_abi::SYSCALL_YIELD => {
+            debug!("YIELD: return_rip={:#x}, user_rsp={:#x}", return_rip, user_rsp);
+
+            // Yield to next process (does not return)
+            unsafe {
+                scheduler::yield_current(
+                    VirtAddr::new(return_rip as u64),
+                    VirtAddr::new(user_rsp as u64),
+                );
+            }
         }
         _ => -1,
     }
