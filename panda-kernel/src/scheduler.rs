@@ -51,7 +51,9 @@ impl Scheduler {
         }
     }
 
-    pub unsafe fn exec_next_runnable(&mut self) -> ! {
+    /// Find the next runnable process and prepare it for execution.
+    /// Returns the IP and SP for exec, or None if no runnable processes.
+    pub fn prepare_next_runnable(&mut self) -> Option<(x86_64::VirtAddr, x86_64::VirtAddr)> {
         // ensure no processes are currently running
         assert!(
             self.states
@@ -60,11 +62,10 @@ impl Scheduler {
                 .is_empty()
         );
 
-        let Some((_, next_pid)) = self.states.entry(ProcessState::Runnable).or_default().pop()
-        else {
-            panic!("No runnable processes");
-        };
+        log::info!("prepare_next_runnable: looking for runnable process");
+        let (_, next_pid) = self.states.entry(ProcessState::Runnable).or_default().pop()?;
 
+        log::info!("prepare_next_runnable: found process {:?}", next_pid);
         self.change_state(next_pid, ProcessState::Running);
         self.current_pid = next_pid;
 
@@ -72,10 +73,9 @@ impl Scheduler {
             panic!("No process exists with PID {next_pid:?}");
         };
 
+        log::info!("prepare_next_runnable: prepared for exec");
         next_process.reset_last_scheduled();
-        unsafe {
-            next_process.exec();
-        }
+        Some(next_process.exec_params())
     }
 
     /// Remove a process from the scheduler and drop it (releasing resources).
@@ -150,12 +150,28 @@ pub fn add_process(process: Process) {
 }
 
 pub unsafe fn exec_next_runnable() -> ! {
-    let mut scheduler = SCHEDULER.write();
-    let scheduler = scheduler
-        .as_mut()
-        .expect("Scheduler has not been initialized");
-    unsafe {
-        scheduler.exec_next_runnable();
+    use crate::process::exec_userspace;
+
+    let exec_params = {
+        let mut scheduler = SCHEDULER.write();
+        let scheduler = scheduler
+            .as_mut()
+            .expect("Scheduler has not been initialized");
+        scheduler.prepare_next_runnable()
+    };
+    // Lock is now dropped
+
+    match exec_params {
+        Some((ip, sp)) => {
+            log::info!("exec_next_runnable: jumping to userspace");
+            unsafe { exec_userspace(ip, sp) }
+        }
+        None => {
+            log::info!("No runnable processes, halting");
+            loop {
+                x86_64::instructions::hlt();
+            }
+        }
     }
 }
 
@@ -175,4 +191,21 @@ pub fn current_process_id() -> ProcessId {
         .as_ref()
         .expect("Scheduler has not been initialized");
     scheduler.current_process_id()
+}
+
+/// Execute a closure with mutable access to the current process.
+pub fn with_current_process<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut Process) -> R,
+{
+    let mut scheduler = SCHEDULER.write();
+    let scheduler = scheduler
+        .as_mut()
+        .expect("Scheduler has not been initialized");
+    let pid = scheduler.current_process_id();
+    let process = scheduler
+        .processes
+        .get_mut(&pid)
+        .expect("Current process not found");
+    f(process)
 }

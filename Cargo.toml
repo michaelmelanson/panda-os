@@ -2,6 +2,12 @@
 resolver = "3"
 members = ["panda-kernel", "userspace/init", "userspace/libpanda"]
 
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
 [workspace.dependencies]
 acpi = "6.0"
 linked_list_allocator = { version = "0.10", features = ["use_spin"] }

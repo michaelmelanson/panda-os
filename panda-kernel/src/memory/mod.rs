@@ -280,7 +280,7 @@ fn l1_page_table_entry(
     }
 }
 
-fn without_write_protection(f: impl FnOnce()) {
+pub fn without_write_protection(f: impl FnOnce()) {
     unsafe {
         Cr0::update(|cr0| cr0.remove(Cr0Flags::WRITE_PROTECT));
     }

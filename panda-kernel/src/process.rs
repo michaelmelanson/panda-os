@@ -8,14 +8,35 @@ use goblin::elf::{
     Elf,
     program_header::{PT_LOAD, pt_to_str},
 };
-use log::{debug, trace};
+use log::{info, trace};
 use x86_64::{VirtAddr, registers::rflags::RFlags};
 
 use crate::{
     context::Context,
+    handle::HandleTable,
     memory::{self, Mapping, MemoryMappingOptions},
     scheduler::RTC,
 };
+
+/// Jump to userspace at the given IP and SP. This function never returns.
+/// Must be called with no locks held, as it will not return to release them.
+pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr) -> ! {
+    let rflags = RFlags::INTERRUPT_FLAG.bits();
+
+    info!("Jumping to userspace: IP={:#x}, SP={:#x}", ip.as_u64(), sp.as_u64());
+
+    unsafe {
+        asm!(
+            "mov rsp, {stack_pointer}",
+            "swapgs",  // Switch from kernel GS to user GS before returning to userspace
+            "sysretq",
+            in("rcx") ip.as_u64(),
+            in("r11") rflags,
+            stack_pointer = in(reg) sp.as_u64(),
+            options(noreturn)
+        );
+    }
+}
 
 fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
     let mut mappings = Vec::new();
@@ -24,6 +45,10 @@ fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
         match header.p_type {
             PT_LOAD => {
                 let virt_addr = VirtAddr::new(header.p_vaddr);
+                info!(
+                    "Loading PT_LOAD: vaddr={:#x}, memsz={:#x}, filesz={:#x}",
+                    header.p_vaddr, header.p_memsz, header.p_filesz
+                );
 
                 let mapping = memory::allocate_and_map(
                     virt_addr,
@@ -34,16 +59,19 @@ fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
                         writable: header.is_write(),
                     },
                 );
+                info!("Mapping complete, copying data");
 
                 // Copy ELF data to the mapped region
+                // Temporarily disable write protection to allow kernel writes to read-only pages
                 let src_ptr = unsafe { file_ptr.byte_add(header.p_offset as usize) as *const u8 };
-                unsafe {
+                memory::without_write_protection(|| unsafe {
                     core::ptr::copy_nonoverlapping(
                         src_ptr,
                         virt_addr.as_mut_ptr(),
                         header.p_filesz as usize,
                     );
-                }
+                });
+                info!("Data copied");
 
                 mappings.push(mapping);
             }
@@ -52,6 +80,7 @@ fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
         }
     }
 
+    info!("ELF loading complete, {} segments loaded", mappings.len());
     mappings
 }
 
@@ -79,6 +108,7 @@ pub struct Process {
     sp: VirtAddr,
     ip: VirtAddr,
     mappings: Vec<Mapping>,
+    handles: HandleTable,
 }
 
 impl Process {
@@ -116,24 +146,13 @@ impl Process {
             sp: stack_pointer,
             ip: VirtAddr::new(elf.entry),
             mappings,
+            handles: HandleTable::new(),
         }
     }
 
-    pub unsafe fn exec(&self) -> ! {
-        let rflags = RFlags::INTERRUPT_FLAG;
-        let rflags = rflags.bits();
-
-        unsafe {
-            asm!(
-                "mov rsp, {stack_pointer}",
-                "sysretq",
-                in("ecx") self.ip.as_u64(),
-                in("r11") rflags,
-                stack_pointer = in(reg) self.sp.as_u64()
-            );
-        }
-
-        panic!("Exec returned");
+    /// Get the IP and SP needed for exec. Used by scheduler to exec after releasing locks.
+    pub fn exec_params(&self) -> (VirtAddr, VirtAddr) {
+        (self.ip, self.sp)
     }
 
     pub(crate) fn state(&self) -> ProcessState {
@@ -150,5 +169,13 @@ impl Process {
 
     pub fn reset_last_scheduled(&mut self) {
         self.last_scheduled = RTC::now();
+    }
+
+    pub fn handles(&self) -> &HandleTable {
+        &self.handles
+    }
+
+    pub fn handles_mut(&mut self) -> &mut HandleTable {
+        &mut self.handles
     }
 }

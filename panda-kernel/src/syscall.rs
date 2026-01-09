@@ -1,9 +1,9 @@
-use core::{arch::naked_asm, slice};
+use core::{arch::naked_asm, slice, str};
 
 use log::{debug, error, info};
 use spinning_top::Spinlock;
 
-use crate::scheduler;
+use crate::{handle::HandleId, scheduler, vfs};
 use x86_64::{
     VirtAddr,
     instructions::tables::load_tss,
@@ -88,11 +88,12 @@ extern "C" fn syscall_entry() {
         "push r15",
 
         "push rcx",
-        "push rax", // this last argument must be put on the stack
+        "push rax", // syscall code as 7th argument (on stack)
         "mov rcx, r10", // this is the only argument that differs from sysv64
         "call {handler}",
-        "pop rax",
+        "add rsp, 8", // pop the syscall code we pushed
         "pop rcx",
+        // rax now contains the return value from syscall_handler
 
         "pop r15",
         "pop r14",
@@ -115,12 +116,12 @@ extern "sysv64" fn syscall_handler(
     arg1: usize,
     arg2: usize,
     arg3: usize,
-    arg4: usize,
-    arg5: usize,
+    _arg4: usize,
+    _arg5: usize,
     code: usize,
-) {
+) -> isize {
     debug!(
-        "SYSCALL: code={code:X}, args: {arg0:X}, {arg1:X}, {arg2:X}, {arg3:X}, {arg4:X}, {arg5:X}"
+        "SYSCALL: code={code:X}, args: {arg0:X}, {arg1:X}, {arg2:X}, {arg3:X}"
     );
 
     match code {
@@ -130,11 +131,12 @@ extern "sysv64" fn syscall_handler(
                 Ok(message) => message,
                 Err(e) => {
                     error!("Invalid log message: {e:?}");
-                    return;
+                    return -1;
                 }
             };
 
             info!("LOG: {message}");
+            0
         }
         libpanda::syscall::SYSCALL_EXIT => {
             let exit_code = arg0;
@@ -142,11 +144,107 @@ extern "sysv64" fn syscall_handler(
 
             // Get current process ID and remove it from scheduler
             let current_pid = scheduler::current_process_id();
+            info!("Removing process {:?}", current_pid);
             scheduler::remove_process(current_pid);
+            info!("Process removed, scheduling next");
 
             // Schedule next process (does not return)
             unsafe { scheduler::exec_next_runnable(); }
         }
-        _ => {}
+        libpanda::syscall::SYSCALL_OPEN => {
+            // arg0 = path pointer, arg1 = path length
+            let path = unsafe { slice::from_raw_parts(arg0 as *const u8, arg1) };
+            let path = match str::from_utf8(path) {
+                Ok(p) => p,
+                Err(_) => return -1,
+            };
+
+            match vfs::open(path) {
+                Some(file) => {
+                    let handle = scheduler::with_current_process(|proc| {
+                        proc.handles_mut().insert(file)
+                    });
+                    handle as isize
+                }
+                None => -1,
+            }
+        }
+        libpanda::syscall::SYSCALL_CLOSE => {
+            let handle = arg0 as HandleId;
+            scheduler::with_current_process(|proc| {
+                proc.handles_mut().remove(handle);
+            });
+            0
+        }
+        libpanda::syscall::SYSCALL_READ => {
+            let handle = arg0 as HandleId;
+            let buf_ptr = arg1 as *mut u8;
+            let buf_len = arg2;
+
+            scheduler::with_current_process(|proc| {
+                if let Some(resource) = proc.handles_mut().get_mut(handle) {
+                    if let Some(file) = resource.as_file() {
+                        let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
+                        match file.read(buf) {
+                            Ok(n) => n as isize,
+                            Err(_) => -1,
+                        }
+                    } else {
+                        -1
+                    }
+                } else {
+                    -1
+                }
+            })
+        }
+        libpanda::syscall::SYSCALL_SEEK => {
+            let handle = arg0 as HandleId;
+            let offset = arg1 as i64;
+            let whence = arg2;
+
+            let seek_from = match whence {
+                libpanda::syscall::SEEK_SET => vfs::SeekFrom::Start(offset as u64),
+                libpanda::syscall::SEEK_CUR => vfs::SeekFrom::Current(offset),
+                libpanda::syscall::SEEK_END => vfs::SeekFrom::End(offset),
+                _ => return -1,
+            };
+
+            scheduler::with_current_process(|proc| {
+                if let Some(resource) = proc.handles_mut().get_mut(handle) {
+                    if let Some(file) = resource.as_file() {
+                        match file.seek(seek_from) {
+                            Ok(pos) => pos as isize,
+                            Err(_) => -1,
+                        }
+                    } else {
+                        -1
+                    }
+                } else {
+                    -1
+                }
+            })
+        }
+        libpanda::syscall::SYSCALL_FSTAT => {
+            let handle = arg0 as HandleId;
+            let stat_ptr = arg1 as *mut libpanda::syscall::FileStat;
+
+            scheduler::with_current_process(|proc| {
+                if let Some(resource) = proc.handles_mut().get_mut(handle) {
+                    if let Some(file) = resource.as_file() {
+                        let stat = file.stat();
+                        unsafe {
+                            (*stat_ptr).size = stat.size;
+                            (*stat_ptr).is_dir = stat.is_dir;
+                        }
+                        0
+                    } else {
+                        -1
+                    }
+                } else {
+                    -1
+                }
+            })
+        }
+        _ => -1,
     }
 }

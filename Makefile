@@ -17,7 +17,8 @@ build: panda-kernel init
 	cp target/x86_64-panda-uefi/debug/panda-kernel.efi build/efi/boot/bootx64.efi
 	mkdir -p build/initrd
 	cp target/x86_64-panda-userspace/debug/init build/initrd/init
-	tar --format=ustar -cf build/efi/initrd.tar -C build/initrd init
+	echo "Hello from the initrd!" > build/initrd/hello.txt
+	tar --format=ustar -cf build/efi/initrd.tar -C build/initrd init hello.txt
 	echo "fs0:\efi\boot\bootx64.efi" > build/efi/boot/startup.nsh
 
 panda-kernel:
@@ -31,8 +32,6 @@ run:
 	$(QEMU_COMMON) \
 		-drive format=raw,file=fat:rw:build \
 		-no-shutdown -no-reboot \
-		-s -S \
-		-D qemu.log -d int,pcall,cpu_reset,guest_errors,strace \
 		-display gtk \
 		-monitor vc
 

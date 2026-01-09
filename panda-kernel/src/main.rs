@@ -1,9 +1,11 @@
 #![no_main]
 #![no_std]
 
+extern crate alloc;
+
 use ::uefi::{Status, entry};
 use log::info;
-use panda_kernel::{context::Context, initrd, process::Process, scheduler, uefi};
+use panda_kernel::{context::Context, initrd, process::Process, scheduler, uefi, vfs};
 
 #[entry]
 fn main() -> Status {
@@ -13,13 +15,20 @@ fn main() -> Status {
 
     initrd::init(initrd_data);
 
+    // Mount initrd as /initrd
+    let tarfs = vfs::TarFs::from_tar_data(initrd_data);
+    vfs::mount("/initrd", alloc::boxed::Box::new(tarfs));
+
     info!("Panda");
 
     unsafe {
         let init_data = initrd::get_init();
+        info!("Creating init process from ELF data");
         let init_process = Process::from_elf_data(Context::from_current_page_table(), init_data);
 
+        info!("Initializing scheduler");
         scheduler::init(init_process);
+        info!("Calling exec_next_runnable");
         scheduler::exec_next_runnable();
     }
 }

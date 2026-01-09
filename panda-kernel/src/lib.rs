@@ -17,6 +17,7 @@ extern crate alloc;
 pub mod acpi;
 pub mod context;
 pub mod devices;
+pub mod handle;
 pub mod initrd;
 pub mod interrupts;
 pub mod logging;
@@ -27,6 +28,7 @@ pub mod qemu;
 pub mod scheduler;
 pub mod syscall;
 pub mod uefi;
+pub mod vfs;
 
 // Panic handler is defined in each binary (main.rs, tests/*) not in lib
 

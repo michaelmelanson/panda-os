@@ -2,6 +2,18 @@ use core::arch::asm;
 
 pub const SYSCALL_LOG: usize = 0x10;
 pub const SYSCALL_EXIT: usize = 0x11;
+pub const SYSCALL_OPEN: usize = 0x20;
+pub const SYSCALL_CLOSE: usize = 0x21;
+pub const SYSCALL_READ: usize = 0x22;
+pub const SYSCALL_SEEK: usize = 0x23;
+pub const SYSCALL_FSTAT: usize = 0x24;
+
+/// Seek from start of file
+pub const SEEK_SET: usize = 0;
+/// Seek from current position
+pub const SEEK_CUR: usize = 1;
+/// Seek from end of file
+pub const SEEK_END: usize = 2;
 
 #[inline(always)]
 fn syscall(
@@ -12,7 +24,8 @@ fn syscall(
     arg3: usize,
     arg4: usize,
     arg5: usize,
-) {
+) -> isize {
+    let result: isize;
     unsafe {
         asm!(
             "syscall",
@@ -23,24 +36,90 @@ fn syscall(
             in("r10") arg3,
             in("r8") arg4,
             in("r9") arg5,
-            out("rcx") _
+            lateout("rax") result,
+            out("rcx") _,
+            out("r11") _,
         );
     }
+    result
 }
 
 #[inline(always)]
 pub fn syscall_log(message: &str) {
     let bytes = message.as_bytes();
     let (data, len) = (bytes.as_ptr(), bytes.len());
-    syscall(SYSCALL_LOG, data as usize, len, 0, 0, 0, 0);
+    let _ = syscall(SYSCALL_LOG, data as usize, len, 0, 0, 0, 0);
 }
 
 #[inline(always)]
 pub fn syscall_exit(code: usize) -> ! {
-    syscall(SYSCALL_EXIT, code, 0, 0, 0, 0, 0);
+    let _ = syscall(SYSCALL_EXIT, code, 0, 0, 0, 0, 0);
     loop {
         unsafe {
             asm!("int3", "hlt");
         }
     }
+}
+
+/// Open a file, returning a handle or -1 on error
+#[inline(always)]
+pub fn open(path: &str) -> isize {
+    let bytes = path.as_bytes();
+    syscall(SYSCALL_OPEN, bytes.as_ptr() as usize, bytes.len(), 0, 0, 0, 0)
+}
+
+/// Close a handle
+#[inline(always)]
+pub fn close(handle: u32) {
+    let _ = syscall(SYSCALL_CLOSE, handle as usize, 0, 0, 0, 0, 0);
+}
+
+/// Read from a handle into a buffer, returning bytes read or -1 on error
+#[inline(always)]
+pub fn read(handle: u32, buf: &mut [u8]) -> isize {
+    syscall(
+        SYSCALL_READ,
+        handle as usize,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        0,
+        0,
+        0,
+    )
+}
+
+/// Seek within a file, returning new position or -1 on error
+#[inline(always)]
+pub fn seek(handle: u32, offset: i64, whence: usize) -> isize {
+    syscall(
+        SYSCALL_SEEK,
+        handle as usize,
+        offset as usize,
+        whence,
+        0,
+        0,
+        0,
+    )
+}
+
+/// File stat structure returned by fstat
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct FileStat {
+    pub size: u64,
+    pub is_dir: bool,
+}
+
+/// Get file stats by handle, returning 0 on success or -1 on error
+#[inline(always)]
+pub fn fstat(handle: u32, stat: &mut FileStat) -> isize {
+    syscall(
+        SYSCALL_FSTAT,
+        handle as usize,
+        stat as *mut FileStat as usize,
+        0,
+        0,
+        0,
+        0,
+    )
 }
