@@ -17,9 +17,9 @@ fn main() -> Status {
 
     unsafe {
         let init_data = initrd::get_init();
-        let process = Process::from_elf_data(Context::from_current_page_table(), init_data);
+        let init_process = Process::from_elf_data(Context::from_current_page_table(), init_data);
 
-        scheduler::add_process(process);
+        scheduler::init(init_process);
         scheduler::exec_next_runnable();
     }
 }

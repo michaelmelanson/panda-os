@@ -52,3 +52,7 @@ harness = false
 [[test]]
 name = "nx_bit"
 harness = false
+
+[[test]]
+name = "raii"
+harness = false

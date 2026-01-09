@@ -2,6 +2,8 @@ use core::{arch::naked_asm, slice};
 
 use log::{debug, error, info};
 use spinning_top::Spinlock;
+
+use crate::scheduler;
 use x86_64::{
     VirtAddr,
     instructions::tables::load_tss,
@@ -135,8 +137,15 @@ extern "sysv64" fn syscall_handler(
             info!("LOG: {message}");
         }
         libpanda::syscall::SYSCALL_EXIT => {
-            let code = arg0;
-            panic!("Process exited with code {code}");
+            let exit_code = arg0;
+            info!("Process exiting with code {exit_code}");
+
+            // Get current process ID and remove it from scheduler
+            let current_pid = scheduler::current_process_id();
+            scheduler::remove_process(current_pid);
+
+            // Schedule next process (does not return)
+            unsafe { scheduler::exec_next_runnable(); }
         }
         _ => {}
     }

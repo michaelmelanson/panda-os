@@ -54,7 +54,6 @@ pub fn init() {
     interrupts::init();
     pci::init();
     devices::init();
-    scheduler::init();
 }
 
 /// Trait for test functions that can print their name

@@ -24,6 +24,8 @@ impl RTC {
 struct Scheduler {
     processes: BTreeMap<ProcessId, Process>,
     states: BTreeMap<ProcessState, BinaryHeap<(RTC, ProcessId)>>,
+    /// The currently running process. Only valid after exec_next_runnable() is called.
+    current_pid: ProcessId,
 }
 
 impl Scheduler {
@@ -64,6 +66,7 @@ impl Scheduler {
         };
 
         self.change_state(next_pid, ProcessState::Running);
+        self.current_pid = next_pid;
 
         let Some(next_process) = self.processes.get_mut(&next_pid) else {
             panic!("No process exists with PID {next_pid:?}");
@@ -73,6 +76,25 @@ impl Scheduler {
         unsafe {
             next_process.exec();
         }
+    }
+
+    /// Remove a process from the scheduler and drop it (releasing resources).
+    pub fn remove_process(&mut self, pid: ProcessId) {
+        // Remove from state maps
+        for state in [ProcessState::Runnable, ProcessState::Running] {
+            self.states
+                .entry(state)
+                .or_default()
+                .retain(|(_, other_pid)| *other_pid != pid);
+        }
+
+        // Remove and drop the process (this releases all resources)
+        self.processes.remove(&pid);
+    }
+
+    /// Get the currently running process ID.
+    pub fn current_process_id(&self) -> ProcessId {
+        self.current_pid
     }
 
     fn change_state(&mut self, pid: ProcessId, state: ProcessState) {
@@ -101,18 +123,22 @@ impl Scheduler {
         self.state_map(state).push((last_scheduled, pid));
     }
 
-    fn new() -> Self {
-        Self {
+    fn new(init_process: Process) -> Self {
+        let init_pid = init_process.id();
+        let mut scheduler = Self {
             processes: Default::default(),
             states: Default::default(),
-        }
+            current_pid: init_pid,
+        };
+        scheduler.add(init_process);
+        scheduler
     }
 }
 
-pub fn init() {
+pub fn init(init_process: Process) {
     let mut scheduler = SCHEDULER.write();
     assert!(scheduler.is_none(), "scheduler already initialized");
-    *scheduler = Some(Scheduler::new());
+    *scheduler = Some(Scheduler::new(init_process));
 }
 
 pub fn add_process(process: Process) {
@@ -131,4 +157,22 @@ pub unsafe fn exec_next_runnable() -> ! {
     unsafe {
         scheduler.exec_next_runnable();
     }
+}
+
+/// Remove a process from the scheduler and drop it (releasing resources).
+pub fn remove_process(pid: ProcessId) {
+    let mut scheduler = SCHEDULER.write();
+    let scheduler = scheduler
+        .as_mut()
+        .expect("Scheduler has not been initialized");
+    scheduler.remove_process(pid);
+}
+
+/// Get the currently running process ID.
+pub fn current_process_id() -> ProcessId {
+    let scheduler = SCHEDULER.read();
+    let scheduler = scheduler
+        .as_ref()
+        .expect("Scheduler has not been initialized");
+    scheduler.current_process_id()
 }
