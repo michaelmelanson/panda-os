@@ -27,6 +27,8 @@ pub mod logging;
 pub mod memory;
 pub mod pci;
 pub mod process;
+pub mod process_handle;
+pub mod process_info;
 pub mod qemu;
 pub mod resource;
 pub mod scheduler;

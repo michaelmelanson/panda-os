@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::{
     arch::{asm, naked_asm},
@@ -15,6 +16,7 @@ use crate::{
     context::Context,
     handle::HandleTable,
     memory::{self, Mapping, MappingBacking, MemoryMappingOptions},
+    process_info::ProcessInfo,
     scheduler::RTC,
 };
 
@@ -53,13 +55,21 @@ pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr, saved_state: Option<Sav
     let rflags = RFlags::INTERRUPT_FLAG.bits();
 
     if let Some(state) = saved_state {
-        debug!("Resuming syscall at IP={:#x}, SP={:#x}", ip.as_u64(), sp.as_u64());
+        debug!(
+            "Resuming syscall at IP={:#x}, SP={:#x}",
+            ip.as_u64(),
+            sp.as_u64()
+        );
         // Use naked helper to restore all registers including rbx/rbp
         unsafe {
             exec_userspace_with_state(ip.as_u64(), sp.as_u64(), rflags, &state);
         }
     } else {
-        debug!("Jumping to userspace: IP={:#x}, SP={:#x}", ip.as_u64(), sp.as_u64());
+        debug!(
+            "Jumping to userspace: IP={:#x}, SP={:#x}",
+            ip.as_u64(),
+            sp.as_u64()
+        );
         unsafe {
             asm!(
                 "mov rsp, {stack_pointer}",
@@ -96,9 +106,8 @@ unsafe extern "sysv64" fn exec_userspace_with_state(
     //   0x80: rsp, 0x88: rflags
     naked_asm!(
         // Save arguments we need later
-        "mov r11, rdx",             // r11 = rflags for sysretq
-        "mov r10, rcx",             // r10 = state pointer (temp)
-
+        "mov r11, rdx", // r11 = rflags for sysretq
+        "mov r10, rcx", // r10 = state pointer (temp)
         // Restore callee-saved registers from state
         "mov rbx, [r10 + 0x08]",
         "mov rbp, [r10 + 0x30]",
@@ -106,15 +115,12 @@ unsafe extern "sysv64" fn exec_userspace_with_state(
         "mov r13, [r10 + 0x60]",
         "mov r14, [r10 + 0x68]",
         "mov r15, [r10 + 0x70]",
-
         // Restore syscall argument registers
         "mov r8,  [r10 + 0x38]",
         "mov r9,  [r10 + 0x40]",
-        "mov rax, [r10 + 0x00]",    // syscall number
-
+        "mov rax, [r10 + 0x00]", // syscall number
         // Save ip (rdi) and sp (rsi) before we overwrite them
-        "mov rcx, rdi",             // rcx = return ip for sysretq
-
+        "mov rcx, rdi", // rcx = return ip for sysretq
         // Restore remaining syscall args (rdi, rsi, rdx, r10)
         "mov rdi, [r10 + 0x28]",
         // rsi still holds sp, save it
@@ -122,9 +128,8 @@ unsafe extern "sysv64" fn exec_userspace_with_state(
         "mov rsi, [r10 + 0x20]",
         "mov rdx, [r10 + 0x18]",
         "mov r10, [r10 + 0x48]",
-
         // Set user stack pointer and return
-        "pop rsp",                  // rsp = user sp
+        "pop rsp", // rsp = user sp
         "swapgs",
         "sysretq",
     )
@@ -206,6 +211,9 @@ pub struct Process {
     saved_state: Option<SavedState>,
     /// Heap mapping - demand-paged, resizable. Size represents current brk offset from HEAP_BASE.
     heap: Mapping,
+    /// External process info visible to handle holders.
+    /// Survives process exit until all handles are dropped.
+    info: Arc<ProcessInfo>,
 }
 
 impl Process {
@@ -220,7 +228,9 @@ impl Process {
 
         // Save current page table and switch to the new context's page table
         let saved_page_table = memory::current_page_table_phys();
-        unsafe { context.activate(); }
+        unsafe {
+            context.activate();
+        }
 
         let mut mappings = load_elf(&elf, data);
 
@@ -240,7 +250,9 @@ impl Process {
         mappings.push(stack_mapping);
 
         // Switch back to the original page table
-        unsafe { memory::switch_page_table(saved_page_table); }
+        unsafe {
+            memory::switch_page_table(saved_page_table);
+        }
 
         // Create demand-paged heap mapping (initially zero size)
         let heap = Mapping::new(
@@ -249,8 +261,9 @@ impl Process {
             MappingBacking::DemandPaged,
         );
 
+        let id = ProcessId::new();
         Process {
-            id: ProcessId::new(),
+            id,
             state: ProcessState::Runnable,
             last_scheduled: RTC::zero(),
             context,
@@ -260,13 +273,29 @@ impl Process {
             handles: HandleTable::new(),
             saved_state: None,
             heap,
+            info: Arc::new(ProcessInfo::new(id)),
         }
+    }
+
+    /// Get the process info (for creating handles).
+    pub fn info(&self) -> &Arc<ProcessInfo> {
+        &self.info
+    }
+
+    /// Set the exit code. Called when process terminates.
+    pub fn set_exit_code(&self, code: i32) {
+        self.info.set_exit_code(code);
     }
 
     /// Get the IP, SP, and page table address needed for exec.
     /// Used by scheduler to exec after releasing locks.
     pub fn exec_params(&self) -> (VirtAddr, VirtAddr, x86_64::PhysAddr, Option<&SavedState>) {
-        (self.ip, self.sp, self.context.page_table_phys(), self.saved_state.as_ref())
+        (
+            self.ip,
+            self.sp,
+            self.context.page_table_phys(),
+            self.saved_state.as_ref(),
+        )
     }
 
     pub(crate) fn state(&self) -> ProcessState {
@@ -343,11 +372,15 @@ impl Process {
         // If shrinking, need to switch to process's page table for unmapping
         if new_size < old_size {
             let saved_pt = memory::current_page_table_phys();
-            unsafe { self.context.activate(); }
+            unsafe {
+                self.context.activate();
+            }
 
             self.heap.resize(new_size);
 
-            unsafe { memory::switch_page_table(saved_pt); }
+            unsafe {
+                memory::switch_page_table(saved_pt);
+            }
         } else {
             // Growing just updates the size - pages allocated on demand
             self.heap.resize(new_size);

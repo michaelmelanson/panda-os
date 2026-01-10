@@ -18,7 +18,10 @@ pub struct CalleeSavedRegs {
     pub r15: u64,
 }
 
-use crate::{context::Context, handle::ResourceType, process::Process, resource, scheduler, vfs};
+use crate::{
+    context::Context, handle::ResourceType, process::Process, process_handle::ProcessHandle,
+    resource, scheduler, vfs,
+};
 use x86_64::{
     VirtAddr,
     instructions::tables::load_tss,
@@ -368,11 +371,13 @@ fn handle_send(
             );
         },
         OP_PROCESS_EXIT => {
-            let exit_code = arg0;
+            let exit_code = arg0 as i32;
             info!("Process exiting with code {exit_code}");
             if exit_code != 0 {
                 crate::qemu::exit_qemu(crate::qemu::QemuExitCode::Failed);
             }
+            // Set exit code in process info (visible to parent via handle)
+            scheduler::with_current_process(|proc| proc.set_exit_code(exit_code));
             let current_pid = scheduler::current_process_id();
             scheduler::remove_process(current_pid);
             unsafe {
@@ -470,11 +475,17 @@ fn handle_send(
 
             let process = Process::from_elf_data(Context::new_user_context(), elf_ptr);
             let pid = process.id();
+            let process_info = process.info().clone();
             debug!("SPAWN: created process {:?}", pid);
 
             scheduler::add_process(process);
-            // TODO: Return a process handle instead of 0
-            0
+
+            // Create a handle for the parent to track the child
+            let handle = ProcessHandle::new(process_info);
+            let handle_id = scheduler::with_current_process(|proc| {
+                proc.handles_mut().insert_process(Box::new(handle))
+            });
+            handle_id as isize
         }
         OP_ENVIRONMENT_LOG => {
             let msg_ptr = arg0 as *const u8;
