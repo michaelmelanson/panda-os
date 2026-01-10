@@ -11,7 +11,7 @@ This file is a table of contents into the docs/ directory. Keep detailed documen
 
 - [docs/BUILDING.md](docs/BUILDING.md) - Build commands, custom targets, cargo invocations
 - [docs/TESTING.md](docs/TESTING.md) - Writing and running kernel and userspace tests
-- [docs/SYSCALLS.md](docs/SYSCALLS.md) - Syscall ABI, register conventions, blocking behavior
+- [docs/SYSCALLS.md](docs/SYSCALLS.md) - Syscall ABI, register conventions, blocking behaviour
 - [docs/KERNEL_INTERNALS.md](docs/KERNEL_INTERNALS.md) - Syscall entry/exit, process states, wakers
 
 ## Quick Reference
