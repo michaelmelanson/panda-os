@@ -64,6 +64,22 @@ extern "x86-interrupt" fn default_irq_handler(_stack_frame: InterruptStackFrame)
     crate::apic::eoi();
 }
 
+/// Set a raw handler for an IRQ line (naked function, not x86-interrupt).
+///
+/// Used for handlers that need full register control, such as context switching
+/// where we need to save/restore all GPRs.
+pub fn set_raw_handler(irq: u8, handler: u64) {
+    let vector = IRQ_BASE_VECTOR.saturating_add(irq);
+
+    let mut descriptor_table = DESCRIPTOR_TABLE.write();
+    let kernel_cs = SegmentSelector::new(1, PrivilegeLevel::Ring0);
+    unsafe {
+        descriptor_table[vector]
+            .set_handler_addr(x86_64::VirtAddr::new(handler))
+            .set_code_selector(kernel_cs);
+    }
+}
+
 pub fn init() {
     let mut descriptor_table = DESCRIPTOR_TABLE.write();
     let kernel_cs = SegmentSelector::new(1, PrivilegeLevel::Ring0);

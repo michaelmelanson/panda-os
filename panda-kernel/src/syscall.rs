@@ -36,17 +36,29 @@ use x86_64::{
 static GDT: Spinlock<GlobalDescriptorTable> = Spinlock::new(GlobalDescriptorTable::new());
 static TSS: Spinlock<TaskStateSegment> = Spinlock::new(TaskStateSegment::new());
 
+/// User mode code segment selector (ring 3). Set during GDT initialization.
+static USER_CS_SELECTOR: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(0);
+
+/// Get the user code segment selector. Must be called after syscall::init().
+pub fn user_code_selector() -> u16 {
+    USER_CS_SELECTOR.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 #[repr(align(0x1000))]
 struct KernelStack {
     inner: [u8; 0x10000], // 64KB kernel stack
 }
 
 // Syscall handler stack - used by syscall_entry via manual RSP switch
-static SYSCALL_STACK: KernelStack = KernelStack { inner: [0; 0x10000] };
+static SYSCALL_STACK: KernelStack = KernelStack {
+    inner: [0; 0x10000],
+};
 
 // Privilege level transition stack - used by CPU when transitioning ring 3 → ring 0
 // This is separate from SYSCALL_STACK so interrupts during syscall handling work correctly
-static PRIVILEGE_STACK: KernelStack = KernelStack { inner: [0; 0x10000] };
+static PRIVILEGE_STACK: KernelStack = KernelStack {
+    inner: [0; 0x10000],
+};
 
 static USER_STACK_PTR: usize = 0x0badc0de;
 
@@ -59,17 +71,16 @@ pub fn init() {
     let mut tss = TSS.lock();
     // Privilege stack table entries must point to the TOP of the stack (stacks grow downward)
     // This stack is used by the CPU for ring 3 → ring 0 transitions (interrupts from userspace)
-    let privilege_stack_top = PRIVILEGE_STACK.inner.as_ptr() as u64 + PRIVILEGE_STACK.inner.len() as u64;
+    let privilege_stack_top =
+        PRIVILEGE_STACK.inner.as_ptr() as u64 + PRIVILEGE_STACK.inner.len() as u64;
     tss.privilege_stack_table[0] = VirtAddr::new(privilege_stack_top);
     tss.privilege_stack_table[1] = VirtAddr::new(privilege_stack_top);
     tss.privilege_stack_table[2] = VirtAddr::new(privilege_stack_top);
     // IST entries must point to the TOP of the stack (stacks grow downward)
-    tss.interrupt_stack_table[0] = VirtAddr::new(
-        INTERRUPT_STACK_0.as_ptr() as u64 + INTERRUPT_STACK_SIZE as u64
-    );
-    tss.interrupt_stack_table[1] = VirtAddr::new(
-        INTERRUPT_STACK_1.as_ptr() as u64 + INTERRUPT_STACK_SIZE as u64
-    );
+    tss.interrupt_stack_table[0] =
+        VirtAddr::new(INTERRUPT_STACK_0.as_ptr() as u64 + INTERRUPT_STACK_SIZE as u64);
+    tss.interrupt_stack_table[1] =
+        VirtAddr::new(INTERRUPT_STACK_1.as_ptr() as u64 + INTERRUPT_STACK_SIZE as u64);
     drop(tss);
 
     let mut gdt = GDT.lock();
@@ -79,6 +90,9 @@ pub fn init() {
     let user_ds = gdt.append(Descriptor::user_data_segment());
     let user_cs = gdt.append(Descriptor::user_code_segment());
     drop(gdt);
+
+    // Store user CS selector for use by interrupt handlers
+    USER_CS_SELECTOR.store(user_cs.0, core::sync::atomic::Ordering::Relaxed);
 
     unsafe {
         (*GDT.data_ptr()).load();
@@ -170,9 +184,7 @@ extern "sysv64" fn syscall_handler(
     user_rsp: usize,
     callee_saved: *const CalleeSavedRegs,
 ) -> isize {
-    debug!(
-        "SYSCALL: code={code:X}, args: {arg0:X}, {arg1:X}, {arg2:X}, {arg3:X}"
-    );
+    debug!("SYSCALL: code={code:X}, args: {arg0:X}, {arg1:X}, {arg2:X}, {arg3:X}");
 
     // Build syscall args for potential restart
     let syscall_args = SyscallArgs {
@@ -193,7 +205,16 @@ extern "sysv64" fn syscall_handler(
             // arg0 = handle, arg1 = operation, arg2-arg5 = operation args
             let handle = arg0 as u32;
             let operation = arg1 as u32;
-            handle_send(handle, operation, arg2, arg3, return_rip, user_rsp, &syscall_args, &callee_saved)
+            handle_send(
+                handle,
+                operation,
+                arg2,
+                arg3,
+                return_rip,
+                user_rsp,
+                &syscall_args,
+                &callee_saved,
+            )
         }
         _ => -1,
     }
@@ -222,8 +243,8 @@ fn handle_send(
     syscall_args: &SyscallArgs,
     callee_saved: &CalleeSavedRegs,
 ) -> isize {
-    use panda_abi::*;
     use crate::process::SavedState;
+    use panda_abi::*;
 
     match operation {
         // File operations
@@ -327,25 +348,25 @@ fn handle_send(
                 }
             })
         }
-        OP_FILE_CLOSE => {
-            scheduler::with_current_process(|proc| {
-                if proc.handles_mut().remove_typed(handle, ResourceType::File).is_some() {
-                    0
-                } else {
-                    -1
-                }
-            })
-        }
+        OP_FILE_CLOSE => scheduler::with_current_process(|proc| {
+            if proc
+                .handles_mut()
+                .remove_typed(handle, ResourceType::File)
+                .is_some()
+            {
+                0
+            } else {
+                -1
+            }
+        }),
 
         // Process operations
-        OP_PROCESS_YIELD => {
-            unsafe {
-                scheduler::yield_current(
-                    VirtAddr::new(return_rip as u64),
-                    VirtAddr::new(user_rsp as u64),
-                );
-            }
-        }
+        OP_PROCESS_YIELD => unsafe {
+            scheduler::yield_current(
+                VirtAddr::new(return_rip as u64),
+                VirtAddr::new(user_rsp as u64),
+            );
+        },
         OP_PROCESS_EXIT => {
             let exit_code = arg0;
             info!("Process exiting with code {exit_code}");
@@ -354,7 +375,9 @@ fn handle_send(
             }
             let current_pid = scheduler::current_process_id();
             scheduler::remove_process(current_pid);
-            unsafe { scheduler::exec_next_runnable(); }
+            unsafe {
+                scheduler::exec_next_runnable();
+            }
         }
         OP_PROCESS_GET_PID => {
             // For now, just return 0 for self - we'll implement proper PIDs later
@@ -398,9 +421,8 @@ fn handle_send(
 
             match resource::open(uri) {
                 Some(res) => {
-                    let handle = scheduler::with_current_process(|proc| {
-                        proc.handles_mut().insert_file(res)
-                    });
+                    let handle =
+                        scheduler::with_current_process(|proc| proc.handles_mut().insert_file(res));
                     handle as isize
                 }
                 None => -1,

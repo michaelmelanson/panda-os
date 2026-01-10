@@ -38,6 +38,10 @@ Not yet implemented:
 
 10. **GPU blitting/composition API**: The virtio-gpu driver just provides a framebuffer and flush. The kernel needs to manage this framebuffer and expose blitting/composition operations to userspace (e.g., create surface, blit surface to screen, flush region). A windowing system would allocate surfaces and the kernel composites them.
 
+## Technical debt
+
+- **Reorganise kernel modules**: scheduler.rs is getting large. Split into submodules (e.g., `scheduler/mod.rs`, `scheduler/context_switch.rs`, `scheduler/process.rs`). Similarly for other growing modules.
+
 ## Known issues
 
 - **proc-macro2 >= 1.0.104 causes test failures**: The `log!` macros generate incorrect code when used in x86-interrupt handlers with proc-macro2 1.0.104+. Cargo.lock pins proc-macro2 to 1.0.103 as a workaround.

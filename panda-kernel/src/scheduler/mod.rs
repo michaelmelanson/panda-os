@@ -1,22 +1,21 @@
 //! Process scheduler with preemptive multitasking.
 
-use core::arch::x86_64::_rdtsc;
+mod context_switch;
 
+use core::arch::x86_64::_rdtsc;
 use core::cmp::Reverse;
 
 use alloc::collections::{BTreeMap, BinaryHeap};
+use alloc::sync::Arc;
 use log::{debug, info};
 use spinning_top::RwSpinlock;
-use x86_64::structures::idt::InterruptStackFrame;
-
-use alloc::sync::Arc;
 
 use crate::apic;
-use crate::interrupts::{self, IrqHandlerFunc};
-use crate::process::{exec_userspace, Process, ProcessId, ProcessState, SavedState};
+use crate::interrupts;
+use crate::process::{Process, ProcessId, ProcessState, SavedState, exec_userspace};
 use crate::waker::Waker;
 
-static SCHEDULER: RwSpinlock<Option<Scheduler>> = RwSpinlock::new(None);
+pub(crate) static SCHEDULER: RwSpinlock<Option<Scheduler>> = RwSpinlock::new(None);
 
 /// Timer IRQ line (maps to vector 0x20)
 const TIMER_IRQ: u8 = 0;
@@ -38,7 +37,7 @@ impl RTC {
     }
 }
 
-struct Scheduler {
+pub(crate) struct Scheduler {
     processes: BTreeMap<ProcessId, Process>,
     /// Maps each process state to a min-heap of (last_scheduled, pid).
     /// Using Reverse<RTC> so that processes with the lowest RTC (least recently scheduled) are picked first.
@@ -59,7 +58,11 @@ impl Scheduler {
             panic!("No process with PID {pid:?}");
         };
 
-        for state in [ProcessState::Runnable, ProcessState::Running, ProcessState::Blocked] {
+        for state in [
+            ProcessState::Runnable,
+            ProcessState::Running,
+            ProcessState::Blocked,
+        ] {
             let state_map = self.states.entry(state).or_default();
 
             if process.state() == state {
@@ -74,7 +77,14 @@ impl Scheduler {
     /// Find the next runnable process and prepare it for execution.
     /// Returns the IP, SP, page table address, and optional saved state for exec.
     /// The saved state is used when resuming from a blocked syscall to re-execute it.
-    pub fn prepare_next_runnable(&mut self) -> Option<(x86_64::VirtAddr, x86_64::VirtAddr, x86_64::PhysAddr, Option<SavedState>)> {
+    pub fn prepare_next_runnable(
+        &mut self,
+    ) -> Option<(
+        x86_64::VirtAddr,
+        x86_64::VirtAddr,
+        x86_64::PhysAddr,
+        Option<SavedState>,
+    )> {
         // ensure no processes are currently running
         assert!(
             self.states
@@ -83,7 +93,11 @@ impl Scheduler {
                 .is_empty()
         );
 
-        let (_, next_pid) = self.states.entry(ProcessState::Runnable).or_default().pop()?;
+        let (_, next_pid) = self
+            .states
+            .entry(ProcessState::Runnable)
+            .or_default()
+            .pop()?;
 
         self.change_state(next_pid, ProcessState::Running);
         self.current_pid = next_pid;
@@ -102,7 +116,11 @@ impl Scheduler {
     /// Remove a process from the scheduler and drop it (releasing resources).
     pub fn remove_process(&mut self, pid: ProcessId) {
         // Remove from state maps
-        for state in [ProcessState::Runnable, ProcessState::Running, ProcessState::Blocked] {
+        for state in [
+            ProcessState::Runnable,
+            ProcessState::Running,
+            ProcessState::Blocked,
+        ] {
             self.states
                 .entry(state)
                 .or_default()
@@ -154,11 +172,21 @@ impl Scheduler {
         scheduler.add(init_process);
         scheduler
     }
+
+    /// Check if there are other runnable processes besides the current one.
+    pub(super) fn has_other_runnable(&self) -> bool {
+        self.states
+            .get(&ProcessState::Runnable)
+            .map_or(false, |heap| !heap.is_empty())
+    }
 }
 
 pub fn init(init_process: Process) {
-    // Install timer interrupt handler for preemption
-    interrupts::set_irq_handler(TIMER_IRQ, Some(timer_interrupt_handler as IrqHandlerFunc));
+    // Install naked timer interrupt handler for preemptive context switching
+    interrupts::set_raw_handler(
+        TIMER_IRQ,
+        context_switch::timer_interrupt_entry as *const () as u64,
+    );
     debug!("Preemption initialized with {}ms time slice", TIME_SLICE_MS);
 
     let mut scheduler = SCHEDULER.write();
@@ -167,25 +195,8 @@ pub fn init(init_process: Process) {
 }
 
 /// Start the preemption timer. Called before jumping to userspace.
-fn start_timer() {
+pub(super) fn start_timer() {
     apic::set_timer_oneshot(TIME_SLICE_MS);
-}
-
-/// Timer interrupt handler for preemption.
-///
-/// When this fires, we need to save the interrupted process's state and switch
-/// to the next runnable process. The interrupt stack frame contains RIP, CS,
-/// RFLAGS, RSP, SS - but we also need to save general-purpose registers.
-///
-/// For now, with only one process, we just restart the timer and return.
-/// Full context switching will be implemented when we have multiple processes.
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Send EOI first
-    apic::eoi();
-
-    // For now, just restart the timer - with one process there's nothing to switch to
-    // TODO: Implement full context switch when we have multiple processes
-    start_timer();
 }
 
 pub fn add_process(process: Process) {
@@ -217,7 +228,9 @@ pub unsafe fn exec_next_runnable() -> ! {
             Some((ip, sp, page_table, saved_state)) => {
                 debug!("exec_next_runnable: jumping to userspace");
                 // Switch to the process's page table
-                unsafe { crate::memory::switch_page_table(page_table); }
+                unsafe {
+                    crate::memory::switch_page_table(page_table);
+                }
                 // Start preemption timer before jumping to userspace
                 start_timer();
                 unsafe { exec_userspace(ip, sp, saved_state) }
@@ -299,7 +312,9 @@ pub unsafe fn yield_current(return_ip: x86_64::VirtAddr, return_sp: x86_64::Virt
     // Lock dropped
 
     // Switch to next process
-    unsafe { exec_next_runnable(); }
+    unsafe {
+        exec_next_runnable();
+    }
 }
 
 /// Block the current process on a waker: save its state and switch to the next runnable.
@@ -343,7 +358,9 @@ pub unsafe fn block_current_on(
     // Lock dropped
 
     // Switch to next process
-    unsafe { exec_next_runnable(); }
+    unsafe {
+        exec_next_runnable();
+    }
 }
 
 /// Wake a blocked process, making it runnable again.
