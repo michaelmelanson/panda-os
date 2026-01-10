@@ -1,4 +1,4 @@
-# Syscall Architecture
+# Syscall architecture
 
 The kernel uses a resource-oriented syscall design with a single entry point.
 
@@ -23,7 +23,7 @@ The syscall uses the standard x86_64 syscall convention:
 
 The `syscall` instruction clobbers `rcx` (saves RIP) and `r11` (saves RFLAGS).
 
-## Callee-Saved Register Preservation
+## Callee-saved register preservation
 
 The kernel preserves callee-saved registers (rbx, rbp, r12-r15) across syscalls:
 
@@ -31,7 +31,7 @@ The kernel preserves callee-saved registers (rbx, rbp, r12-r15) across syscalls:
 - **Blocking syscalls**: When a syscall blocks (e.g., reading from keyboard with no input), the kernel saves all registers in `SavedState` so they can be restored when the process resumes
 - **Yield**: Process yields don't need register restoration since they return immediately with rax=0
 
-## Blocking and Wakers
+## Blocking and wakers
 
 When a syscall cannot complete immediately (e.g., `OP_FILE_READ` on a keyboard with no input):
 
@@ -51,7 +51,7 @@ Use the libpanda API rather than raw syscalls:
 
 ```rust
 use libpanda::environment;  // System operations
-use libpanda::file;         // File operations  
+use libpanda::file;         // File operations
 use libpanda::process;      // Process operations
 
 // Environment operations (via HANDLE_ENVIRONMENT)

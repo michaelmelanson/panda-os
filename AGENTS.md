@@ -1,6 +1,6 @@
 # Agent Guidelines for Panda
 
-This file is a table of contents into the docs/ directory. Keep detailed documentation there, not here.
+This file is a table of contents into the docs/ directory. Keep detailed documentation there, not here. Keep them up to date as the system evolves.
 
 ## Style
 

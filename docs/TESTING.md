@@ -1,8 +1,8 @@
-# Testing Guide
+# Testing guide
 
 This document describes how to write and run tests for the Panda kernel.
 
-## Running Tests
+## Running tests
 
 ```bash
 # Run all tests (kernel and userspace)
@@ -15,11 +15,11 @@ make kernel-test
 make userspace-test
 ```
 
-## Kernel Tests
+## Kernel tests
 
 Kernel tests run inside QEMU and test kernel functionality directly. They are located in `panda-kernel/tests/`.
 
-### Writing a Kernel Test
+### Writing a kernel test
 
 Create a new file in `panda-kernel/tests/`, for example `panda-kernel/tests/my_feature.rs`:
 
@@ -47,7 +47,7 @@ Key points:
 - Use `assert!`, `assert_eq!`, etc. for assertions
 - Tests have access to kernel internals including the allocator
 
-### Registering a Kernel Test
+### Registering a kernel test
 
 Add your test name to `KERNEL_TESTS` in `Makefile`:
 
@@ -55,7 +55,7 @@ Add your test name to `KERNEL_TESTS` in `Makefile`:
 KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic my_feature
 ```
 
-### Example: Heap Test
+### Example: heap test
 
 ```rust
 #![no_std]
@@ -80,11 +80,11 @@ fn vec_allocation() {
 }
 ```
 
-## Userspace Tests
+## Userspace tests
 
 Userspace tests are standalone programs that run as processes on top of the kernel. They are located in `userspace/tests/`.
 
-### Writing a Userspace Test
+### Writing a userspace test
 
 1. Create a new crate in `userspace/tests/`:
 
@@ -114,14 +114,14 @@ use libpanda::environment;
 
 libpanda::main! {
     environment::log("My test starting");
-    
+
     // Test logic here...
-    
+
     if some_condition_failed {
         environment::log("FAIL: something went wrong");
         return 1;  // Non-zero exit code fails the test
     }
-    
+
     environment::log("My test passed");
     0  // Zero exit code means success
 }
@@ -135,7 +135,7 @@ My test starting
 My test passed
 ```
 
-### Registering a Userspace Test
+### Registering a userspace test
 
 Add your test name to `USERSPACE_TESTS` in `Makefile`:
 
@@ -143,7 +143,7 @@ Add your test name to `USERSPACE_TESTS` in `Makefile`:
 USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test my_test
 ```
 
-### Tests with Multiple Binaries
+### Tests with multiple binaries
 
 Some tests require additional helper programs (e.g., spawn_test needs spawn_child). Define extras in the Makefile:
 
@@ -154,11 +154,11 @@ export my_test_EXTRAS
 
 ### Userspace API
 
-Tests use the libpanda API organized by resource type:
+Tests use the libpanda API organised by resource type:
 
 ```rust
 use libpanda::environment;  // System operations
-use libpanda::file;         // File operations  
+use libpanda::file;         // File operations
 use libpanda::process;      // Process operations
 
 // Environment operations (via HANDLE_ENVIRONMENT)
@@ -181,7 +181,7 @@ process::getpid();                     // Get process ID
 process::wait(child_handle);           // Wait for child
 ```
 
-### Expected Output Matching
+### Expected output matching
 
 The test framework extracts log messages and verifies they appear in order:
 
@@ -197,13 +197,13 @@ VFS test starting
 VFS test passed
 ```
 
-### Exit Codes
+### Exit codes
 
 - Exit code 0: Test passed
 - Exit code non-zero: Test failed (QEMU exits immediately)
 - Timeout (60s default): Test failed
 
-## Test Infrastructure
+## Test infrastructure
 
 ### Scripts
 
@@ -212,7 +212,7 @@ VFS test passed
 - `scripts/setup-kernel-test.sh` - Prepares kernel test environment
 - `scripts/setup-userspace-test.sh` - Prepares userspace test environment
 
-### Build Directories
+### Build directories
 
 Tests are built to:
 - Kernel tests: `build/test-<name>/`

@@ -1,4 +1,4 @@
-# Building and Running
+# Building and running
 
 ## Prerequisites
 
@@ -6,7 +6,7 @@
 - QEMU with x86_64 and UEFI support
 - OVMF firmware files in `firmware/`
 
-## Build Commands
+## Build commands
 
 ```bash
 # Build kernel and userspace
@@ -29,7 +29,7 @@ make shell
 make run
 ```
 
-## Custom Targets
+## Custom targets
 
 The project uses custom target specifications:
 
@@ -38,7 +38,7 @@ The project uses custom target specifications:
 
 These are required because the kernel runs in a freestanding environment without the standard library.
 
-## Cargo Invocations
+## Cargo invocations
 
 The Makefile wraps cargo with the correct flags:
 

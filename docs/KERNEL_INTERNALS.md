@@ -1,6 +1,6 @@
-# Kernel Internals
+# Kernel internals
 
-## Syscall Entry and Exit
+## Syscall entry and exit
 
 The syscall handler is in `panda-kernel/src/syscall.rs`.
 
@@ -29,7 +29,7 @@ When a syscall blocks (returns `WouldBlock`), the normal return path is bypassed
 3. Scheduler switches to another process
 4. On resume, `exec_userspace_with_state` restores all registers and re-executes syscall
 
-## Process States
+## Process states
 
 ```
 Runnable  <---> Running
@@ -42,7 +42,7 @@ Runnable  <---> Running
 - `Running`: Currently executing (exactly one process)
 - `Blocked`: Waiting on a waker (keyboard input, etc.)
 
-## Waker System
+## Waker system
 
 Devices use wakers for async notification:
 
@@ -58,7 +58,7 @@ scheduler::block_current_on(waker, ...);
 waker.wake();  // Moves process to Runnable
 ```
 
-## Key Files
+## Key files
 
 - `syscall.rs` - Syscall entry/exit, handler dispatch
 - `scheduler.rs` - Process scheduling, blocking, waking
