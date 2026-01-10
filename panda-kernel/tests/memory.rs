@@ -1,8 +1,8 @@
 #![no_std]
 #![no_main]
 
-use x86_64::{PhysAddr, VirtAddr};
 use panda_kernel::memory;
+use x86_64::PhysAddr;
 
 panda_kernel::test_harness!(
     physical_to_virtual_identity_mapping,

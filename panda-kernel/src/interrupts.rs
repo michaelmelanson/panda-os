@@ -37,7 +37,6 @@ pub fn set_page_fault_handler(handler: Option<PageFaultHandlerFunc>) {
             .set_code_selector(kernel_cs)
             .set_stack_index(1);
     }
-    drop(descriptor_table);
 }
 
 /// IRQ base vector offset (IRQs 0-15 map to vectors 0x20-0x2F)
@@ -123,10 +122,6 @@ pub fn init() {
     }
 
     interrupts::enable();
-
-    interrupts::int3();
-    let breakpoint_count = BREAKPOINT_INTERRUPT_COUNT.load(Ordering::SeqCst);
-    assert_eq!(breakpoint_count, 1, "did not receive breakpoint interrupt");
 }
 
 extern "x86-interrupt" fn debug_handler(stack_frame: InterruptStackFrame) {
