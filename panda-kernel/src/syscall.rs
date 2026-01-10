@@ -26,20 +26,36 @@ static TSS: Spinlock<TaskStateSegment> = Spinlock::new(TaskStateSegment::new());
 struct KernelStack {
     inner: [u8; 0x10000], // 64KB kernel stack
 }
-static KERNEL_STACK: KernelStack = KernelStack { inner: [0; 0x10000] };
+
+// Syscall handler stack - used by syscall_entry via manual RSP switch
+static SYSCALL_STACK: KernelStack = KernelStack { inner: [0; 0x10000] };
+
+// Privilege level transition stack - used by CPU when transitioning ring 3 → ring 0
+// This is separate from SYSCALL_STACK so interrupts during syscall handling work correctly
+static PRIVILEGE_STACK: KernelStack = KernelStack { inner: [0; 0x10000] };
 
 static USER_STACK_PTR: usize = 0x0badc0de;
 
-static INTERRUPT_STACK_0: [u8; 1000] = [0; 1000];
-static INTERRUPT_STACK_1: [u8; 1000] = [0; 1000];
+const INTERRUPT_STACK_SIZE: usize = 8192; // 8KB per interrupt stack
+// IST stacks for specific interrupt handlers (page fault, double fault, etc.)
+static INTERRUPT_STACK_0: [u8; INTERRUPT_STACK_SIZE] = [0; INTERRUPT_STACK_SIZE];
+static INTERRUPT_STACK_1: [u8; INTERRUPT_STACK_SIZE] = [0; INTERRUPT_STACK_SIZE];
 
 pub fn init() {
     let mut tss = TSS.lock();
-    tss.privilege_stack_table[0] = VirtAddr::new(KERNEL_STACK.inner.as_ptr() as u64);
-    tss.privilege_stack_table[1] = VirtAddr::new(KERNEL_STACK.inner.as_ptr() as u64);
-    tss.privilege_stack_table[2] = VirtAddr::new(KERNEL_STACK.inner.as_ptr() as u64);
-    tss.interrupt_stack_table[0] = VirtAddr::new(INTERRUPT_STACK_0.as_ptr() as u64);
-    tss.interrupt_stack_table[1] = VirtAddr::new(INTERRUPT_STACK_1.as_ptr() as u64);
+    // Privilege stack table entries must point to the TOP of the stack (stacks grow downward)
+    // This stack is used by the CPU for ring 3 → ring 0 transitions (interrupts from userspace)
+    let privilege_stack_top = PRIVILEGE_STACK.inner.as_ptr() as u64 + PRIVILEGE_STACK.inner.len() as u64;
+    tss.privilege_stack_table[0] = VirtAddr::new(privilege_stack_top);
+    tss.privilege_stack_table[1] = VirtAddr::new(privilege_stack_top);
+    tss.privilege_stack_table[2] = VirtAddr::new(privilege_stack_top);
+    // IST entries must point to the TOP of the stack (stacks grow downward)
+    tss.interrupt_stack_table[0] = VirtAddr::new(
+        INTERRUPT_STACK_0.as_ptr() as u64 + INTERRUPT_STACK_SIZE as u64
+    );
+    tss.interrupt_stack_table[1] = VirtAddr::new(
+        INTERRUPT_STACK_1.as_ptr() as u64 + INTERRUPT_STACK_SIZE as u64
+    );
     drop(tss);
 
     let mut gdt = GDT.lock();
@@ -111,7 +127,7 @@ extern "C" fn syscall_entry() {
         "swapgs",
         "sysretq",
         handler = sym syscall_handler,
-        kernel_stack = sym KERNEL_STACK
+        kernel_stack = sym SYSCALL_STACK
     )
 }
 
@@ -429,6 +445,23 @@ fn handle_send(
         OP_PROCESS_SIGNAL => {
             // TODO: Implement signals
             -1
+        }
+        OP_PROCESS_BRK => {
+            let new_brk = arg0;
+            debug!("BRK: requested new_brk = {:#x}", new_brk);
+            scheduler::with_current_process(|proc| {
+                if new_brk == 0 {
+                    // Query current break
+                    let current = proc.brk().as_u64() as isize;
+                    debug!("BRK: query, returning {:#x}", current);
+                    current
+                } else {
+                    // Set new break
+                    let result = proc.set_brk(VirtAddr::new(new_brk as u64));
+                    debug!("BRK: set, returning {:#x}", result.as_u64());
+                    result.as_u64() as isize
+                }
+            })
         }
 
         // Environment operations

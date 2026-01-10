@@ -170,8 +170,19 @@ extern "x86-interrupt" fn default_page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    use x86_64::VirtAddr;
+
     let fault_address =
         Cr2::read().expect("CR2 contained non-canonical address while handling page fault");
+
+    // Try demand paging for userspace heap access
+    if error_code.contains(PageFaultErrorCode::USER_MODE) {
+        let brk = crate::scheduler::with_current_process(|proc| proc.brk());
+
+        if crate::memory::try_handle_heap_page_fault(VirtAddr::new(fault_address.as_u64()), brk) {
+            return;
+        }
+    }
 
     panic!(
         "Page fault:\n  Fault address:   {fault_address:#020x}\n  Current address: {:#020x}\n  Stack pointer:   {:#020x}\n  Caused by {} while executing in {} mode ({error_code:?})",

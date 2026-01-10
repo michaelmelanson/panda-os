@@ -14,7 +14,7 @@ use x86_64::{VirtAddr, registers::rflags::RFlags};
 use crate::{
     context::Context,
     handle::HandleTable,
-    memory::{self, Mapping, MemoryMappingOptions},
+    memory::{self, Mapping, MappingBacking, MemoryMappingOptions},
     scheduler::RTC,
 };
 
@@ -142,6 +142,8 @@ pub struct Process {
     handles: HandleTable,
     /// Saved CPU state when process is preempted. Only valid when state is Runnable.
     saved_state: Option<SavedState>,
+    /// Heap mapping - demand-paged, resizable. Size represents current brk offset from HEAP_BASE.
+    heap: Mapping,
 }
 
 impl Process {
@@ -160,9 +162,9 @@ impl Process {
 
         let mut mappings = load_elf(&elf, data);
 
-        // Allocate stack
+        // Allocate stack (64KB should be plenty for userspace programs)
         let stack_base = VirtAddr::new(0xb0000000000);
-        let stack_size = 4096;
+        let stack_size = 64 * 1024;
         let stack_mapping = memory::allocate_and_map(
             stack_base,
             stack_size,
@@ -178,6 +180,13 @@ impl Process {
         // Switch back to the original page table
         unsafe { memory::switch_page_table(saved_page_table); }
 
+        // Create demand-paged heap mapping (initially zero size)
+        let heap = Mapping::new(
+            VirtAddr::new(panda_abi::HEAP_BASE as u64),
+            0,
+            MappingBacking::DemandPaged,
+        );
+
         Process {
             id: ProcessId::new(),
             state: ProcessState::Runnable,
@@ -188,6 +197,7 @@ impl Process {
             mappings,
             handles: HandleTable::new(),
             saved_state: None,
+            heap,
         }
     }
 
@@ -237,5 +247,46 @@ impl Process {
     /// Take and clear the saved state.
     pub fn take_saved_state(&mut self) -> Option<SavedState> {
         self.saved_state.take()
+    }
+
+    /// Get the current program break (end of heap).
+    pub fn brk(&self) -> VirtAddr {
+        VirtAddr::new(panda_abi::HEAP_BASE as u64 + self.heap.size() as u64)
+    }
+
+    /// Set the program break. Returns the new break on success, or the old break on failure.
+    /// The new break must be within the heap region [HEAP_BASE, HEAP_BASE + HEAP_MAX_SIZE).
+    /// When shrinking, pages above the new break are unmapped and freed via the Mapping.
+    pub fn set_brk(&mut self, new_brk: VirtAddr) -> VirtAddr {
+        let heap_base = panda_abi::HEAP_BASE as u64;
+        let heap_end = heap_base + panda_abi::HEAP_MAX_SIZE as u64;
+
+        // Validate the new break is within bounds
+        if new_brk.as_u64() < heap_base || new_brk.as_u64() > heap_end {
+            return self.brk();
+        }
+
+        let new_size = (new_brk.as_u64() - heap_base) as usize;
+        let old_size = self.heap.size();
+
+        // If shrinking, need to switch to process's page table for unmapping
+        if new_size < old_size {
+            let saved_pt = memory::current_page_table_phys();
+            unsafe { self.context.activate(); }
+
+            self.heap.resize(new_size);
+
+            unsafe { memory::switch_page_table(saved_pt); }
+        } else {
+            // Growing just updates the size - pages allocated on demand
+            self.heap.resize(new_size);
+        }
+
+        self.brk()
+    }
+
+    /// Get the page table physical address for this process.
+    pub fn page_table_phys(&self) -> x86_64::PhysAddr {
+        self.context.page_table_phys()
     }
 }

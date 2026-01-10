@@ -360,7 +360,7 @@ pub fn unmap_region(base_virt: VirtAddr, size_bytes: usize) {
 }
 
 /// Unmap a single page and free empty intermediate page tables.
-fn unmap_page(virt_addr: VirtAddr) {
+pub fn unmap_page(virt_addr: VirtAddr) {
     let page_table = current_page_table();
 
     // Walk down to find all tables in the path
@@ -452,4 +452,149 @@ fn unmap_page(virt_addr: VirtAddr) {
             break;
         }
     }
+}
+
+/// Free a region by walking page tables, deallocating mapped frames, and clearing PTEs.
+/// Unlike unmap_region, this also deallocates the physical frames.
+/// Used for demand-paged regions where frames aren't tracked separately.
+pub fn free_region(base_virt: VirtAddr, size_bytes: usize) {
+    for offset in (0..size_bytes).step_by(4096) {
+        let virt_addr = base_virt + offset as u64;
+        free_page(virt_addr);
+    }
+}
+
+/// Free a single page: deallocate its frame (if mapped) and clear the PTE.
+/// Unlike unmap_page, this also deallocates the physical frame.
+fn free_page(virt_addr: VirtAddr) {
+    let page_table = current_page_table();
+
+    // Walk down to find the L1 entry
+    let mut tables: [Option<(*mut PageTable, usize)>; 4] = [None; 4];
+    let mut table = page_table;
+
+    for (i, level) in [
+        PageTableLevel::Four,
+        PageTableLevel::Three,
+        PageTableLevel::Two,
+        PageTableLevel::One,
+    ]
+    .iter()
+    .enumerate()
+    {
+        let index = virt_addr.page_table_index(*level);
+        let entry = unsafe { &(&*table)[index] };
+
+        if !entry.flags().contains(PageTableFlags::PRESENT) {
+            return; // Not mapped, nothing to free
+        }
+
+        tables[i] = Some((table, index.into()));
+
+        if *level == PageTableLevel::One {
+            // Found L1 entry - get the frame address before clearing
+            let frame_addr = entry.addr();
+            let frame = PhysFrame::from_start_address(frame_addr).unwrap();
+
+            // Clear the entry
+            without_write_protection(|| {
+                unsafe { &mut (&mut *table)[index] }.set_unused();
+            });
+            tlb::flush(virt_addr);
+
+            // Deallocate the frame
+            unsafe {
+                deallocate_frame_raw(frame);
+            }
+            break;
+        }
+
+        // Handle huge pages at level 2 (not expected for heap, but handle anyway)
+        if *level == PageTableLevel::Two && entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            without_write_protection(|| {
+                unsafe { &mut (&mut *table)[index] }.set_unused();
+            });
+            tlb::flush(virt_addr);
+            // Note: huge page frame deallocation not implemented
+            return;
+        }
+
+        table = entry.addr().as_u64() as *mut PageTable;
+    }
+
+    // Walk back up and free empty intermediate tables (same as unmap_page)
+    for level_idx in (0..3).rev() {
+        let Some((child_table, _)) = tables[level_idx + 1] else {
+            break;
+        };
+        let Some((parent_table, parent_index)) = tables[level_idx] else {
+            break;
+        };
+
+        let is_empty = unsafe {
+            (*child_table)
+                .iter()
+                .all(|entry| !entry.flags().contains(PageTableFlags::PRESENT))
+        };
+
+        if is_empty {
+            let child_frame_addr = unsafe { (&*parent_table)[parent_index].addr() };
+            let child_frame = PhysFrame::from_start_address(child_frame_addr).unwrap();
+
+            without_write_protection(|| {
+                unsafe { &mut (&mut *parent_table)[parent_index] }.set_unused();
+            });
+
+            unsafe {
+                deallocate_frame_raw(child_frame);
+            }
+        } else {
+            break;
+        }
+    }
+}
+
+/// Try to handle a page fault for userspace heap demand paging.
+/// Returns true if handled, false if fault should be treated as error.
+/// The allocated frame is intentionally leaked (not tracked by RAII) because
+/// heap frames are managed by the page tables themselves and freed via free_region().
+pub fn try_handle_heap_page_fault(fault_addr: VirtAddr, brk: VirtAddr) -> bool {
+    let heap_base = panda_abi::HEAP_BASE as u64;
+
+    // Check if fault address is within the valid heap region [HEAP_BASE, brk)
+    if fault_addr.as_u64() < heap_base || fault_addr.as_u64() >= brk.as_u64() {
+        return false;
+    }
+
+    // Page-align the fault address
+    let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
+
+    log::debug!("Demand paging heap page at {:#x}", page_addr.as_u64());
+
+    // Allocate a physical frame
+    let frame = allocate_frame();
+    let phys_addr = PhysAddr::new(frame.phys_frame().start_address().as_u64());
+
+    // Map it to the faulting address (user, writable, no-execute)
+    map(
+        phys_addr,
+        page_addr,
+        4096,
+        MemoryMappingOptions {
+            user: true,
+            writable: true,
+            executable: false,
+        },
+    );
+
+    // Zero the page for security
+    unsafe {
+        core::ptr::write_bytes(page_addr.as_u64() as *mut u8, 0, 4096);
+    }
+
+    // Intentionally leak the frame - it's now owned by the page tables
+    // and will be freed when the heap shrinks or process exits via free_region()
+    core::mem::forget(frame);
+
+    true
 }

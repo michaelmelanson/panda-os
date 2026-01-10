@@ -1,9 +1,22 @@
 #![no_std]
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 pub mod environment;
 pub mod file;
+pub mod heap;
 pub mod process;
 pub mod syscall;
+
+// Re-export alloc types for convenience
+pub use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
+
+#[alloc_error_handler]
+fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
+    syscall::syscall_log("ALLOC ERROR: out of memory");
+    syscall::syscall_exit(102);
+}
 
 /// Entry point macro for userspace programs.
 ///

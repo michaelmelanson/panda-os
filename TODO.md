@@ -7,6 +7,7 @@
 - Identity mapping limits address space usage
 - Global mutable state with potential deadlock risk
 - ACPI handler completely unimplemented (27 todo!() macros)
+- **proc-macro2 >= 1.0.104 causes test failures**: The `log!` macros generate incorrect code when used in x86-interrupt handlers with proc-macro2 1.0.104+. This causes register corruption during timer interrupts, leading to userspace computation errors. Cargo.lock pins proc-macro2 to 1.0.103 as a workaround. See upstream issue investigation needed.
 
 ## Immediate Priorities
 

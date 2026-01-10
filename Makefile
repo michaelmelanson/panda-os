@@ -2,7 +2,7 @@ SHELL := /bin/bash
 .PHONY: build panda-kernel init run test kernel-test userspace-test
 
 KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic
-USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test
+USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test
 
 # Extra binaries needed for specific tests (space-separated)
 spawn_test_EXTRAS := spawn_child
@@ -22,7 +22,7 @@ panda-kernel:
 	cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json
 
 init:
-	cargo +nightly build -Z build-std=core --package init --target ./x86_64-panda-userspace.json
+	cargo +nightly build -Z build-std=core,alloc --package init --target ./x86_64-panda-userspace.json
 
 run: build
 	$(QEMU_COMMON) \

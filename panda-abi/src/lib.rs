@@ -60,6 +60,18 @@ pub const OP_PROCESS_GET_PID: u32 = 0x2_0002;
 pub const OP_PROCESS_WAIT: u32 = 0x2_0003;
 /// Signal process: (signal) -> 0 or error
 pub const OP_PROCESS_SIGNAL: u32 = 0x2_0004;
+/// Set program break: (new_brk) -> current_brk or error
+/// If new_brk is 0, returns current break without changing it.
+/// Pages are allocated on demand via page faults.
+pub const OP_PROCESS_BRK: u32 = 0x2_0005;
+
+// Userspace heap region constants
+/// Base address of the userspace heap region (16MB after stack at 0xb0000000000)
+/// Must be a canonical x86_64 address (bit 47 = 0, so < 0x800000000000).
+pub const HEAP_BASE: usize = 0xb000_1000_000;
+/// Maximum size of the userspace heap (1 TB virtual address space)
+/// Actual physical memory is allocated on demand via page faults.
+pub const HEAP_MAX_SIZE: usize = 0x100_0000_0000;
 
 // Environment operations (0x3_0000 - 0x3_FFFF)
 /// Open file: (path_ptr, path_len, flags) -> handle

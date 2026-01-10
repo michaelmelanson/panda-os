@@ -81,6 +81,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "heap_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "init"
 version = "0.1.0"
 dependencies = [
