@@ -26,6 +26,7 @@ pub mod memory;
 pub mod pci;
 pub mod process;
 pub mod qemu;
+pub mod resource;
 pub mod scheduler;
 pub mod syscall;
 pub mod uefi;

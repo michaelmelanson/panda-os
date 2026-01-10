@@ -5,7 +5,7 @@ extern crate alloc;
 
 use ::uefi::{Status, entry};
 use log::info;
-use panda_kernel::{context::Context, initrd, process::Process, scheduler, uefi, vfs};
+use panda_kernel::{context::Context, initrd, process::Process, resource, scheduler, uefi, vfs};
 
 #[entry]
 fn main() -> Status {
@@ -18,6 +18,9 @@ fn main() -> Status {
     // Mount initrd as /initrd
     let tarfs = vfs::TarFs::from_tar_data(initrd_data);
     vfs::mount("/initrd", alloc::boxed::Box::new(tarfs));
+
+    // Initialize resource scheme system
+    resource::init();
 
     info!("Panda");
 

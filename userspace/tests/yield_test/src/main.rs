@@ -6,7 +6,7 @@ use libpanda::process;
 
 libpanda::main! {
     environment::log("Parent: spawning child");
-    if environment::spawn("/initrd/yield_child") < 0 {
+    if environment::spawn("file:/initrd/yield_child") < 0 {
         environment::log("Parent: FAIL - spawn failed");
         return 1;
     }

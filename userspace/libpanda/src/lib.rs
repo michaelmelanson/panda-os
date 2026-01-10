@@ -15,8 +15,8 @@ pub use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 
 #[alloc_error_handler]
 fn alloc_error_handler(_layout: core::alloc::Layout) -> ! {
-    syscall::syscall_log("ALLOC ERROR: out of memory");
-    syscall::syscall_exit(102);
+    environment::log("ALLOC ERROR: out of memory");
+    process::exit(102_i32);
 }
 
 /// Entry point macro for userspace programs.
@@ -37,7 +37,7 @@ macro_rules! main {
         #[unsafe(no_mangle)]
         extern "C" fn _start() -> ! {
             let exit_code = (|| -> i32 { $($body)* })();
-            $crate::syscall::syscall_exit(exit_code as usize);
+            $crate::process::exit(exit_code);
         }
 
         #[panic_handler]
@@ -45,12 +45,12 @@ macro_rules! main {
             // Try to print panic location if available
             if let Some(location) = info.location() {
                 // Format a simple message - we can't use format! in no_std
-                $crate::syscall::syscall_log("PANIC at ");
-                $crate::syscall::syscall_log(location.file());
+                $crate::environment::log("PANIC at ");
+                $crate::environment::log(location.file());
             } else {
-                $crate::syscall::syscall_log("PANIC");
+                $crate::environment::log("PANIC");
             }
-            $crate::syscall::syscall_exit(101);
+            $crate::process::exit(101_i32);
         }
     };
 }

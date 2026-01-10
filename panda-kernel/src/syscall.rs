@@ -4,7 +4,7 @@ use core::{arch::naked_asm, slice, str};
 use log::{debug, error, info};
 use spinning_top::Spinlock;
 
-use crate::{context::Context, handle::{HandleId, ResourceType}, process::Process, scheduler, vfs};
+use crate::{context::Context, handle::ResourceType, process::Process, resource, scheduler, vfs};
 use x86_64::{
     VirtAddr,
     instructions::tables::load_tss,
@@ -147,187 +147,6 @@ extern "sysv64" fn syscall_handler(
     );
 
     match code {
-        panda_abi::SYSCALL_LOG => {
-            let data = unsafe { slice::from_raw_parts(arg0 as *const u8, arg1) };
-            let message = match str::from_utf8(data) {
-                Ok(message) => message,
-                Err(e) => {
-                    error!("Invalid log message: {e:?}");
-                    return -1;
-                }
-            };
-
-            info!("LOG: {message}");
-            0
-        }
-        panda_abi::SYSCALL_EXIT => {
-            let exit_code = arg0;
-            info!("Process exiting with code {exit_code}");
-
-            // If the process exits with non-zero code, fail the test immediately
-            if exit_code != 0 {
-                crate::qemu::exit_qemu(crate::qemu::QemuExitCode::Failed);
-            }
-
-            // Get current process ID and remove it from scheduler
-            let current_pid = scheduler::current_process_id();
-            info!("Removing process {:?}", current_pid);
-            scheduler::remove_process(current_pid);
-            info!("Process removed, scheduling next");
-
-            // Schedule next process (does not return)
-            unsafe { scheduler::exec_next_runnable(); }
-        }
-        panda_abi::SYSCALL_OPEN => {
-            // arg0 = path pointer, arg1 = path length
-            let path = unsafe { slice::from_raw_parts(arg0 as *const u8, arg1) };
-            let path = match str::from_utf8(path) {
-                Ok(p) => p,
-                Err(_) => return -1,
-            };
-
-            match vfs::open(path) {
-                Some(file) => {
-                    let handle = scheduler::with_current_process(|proc| {
-                        proc.handles_mut().insert_file(file)
-                    });
-                    handle as isize
-                }
-                None => -1,
-            }
-        }
-        panda_abi::SYSCALL_CLOSE => {
-            let handle = arg0 as HandleId;
-            scheduler::with_current_process(|proc| {
-                if proc.handles_mut().remove_typed(handle, ResourceType::File).is_some() {
-                    0
-                } else {
-                    -1
-                }
-            })
-        }
-        panda_abi::SYSCALL_READ => {
-            let handle = arg0 as HandleId;
-            let buf_ptr = arg1 as *mut u8;
-            let buf_len = arg2;
-            debug!("READ: handle={}, buf_ptr={:#x}, buf_len={}", handle, buf_ptr as usize, buf_len);
-
-            scheduler::with_current_process(|proc| {
-                if let Some(file) = proc.handles_mut().get_file_mut(handle) {
-                    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
-                    match file.read(buf) {
-                        Ok(n) => n as isize,
-                        Err(_) => -1,
-                    }
-                } else {
-                    -1
-                }
-            })
-        }
-        panda_abi::SYSCALL_SEEK => {
-            let handle = arg0 as HandleId;
-            let offset = arg1 as i64;
-            let whence = arg2;
-
-            let seek_from = match whence {
-                panda_abi::SEEK_SET => vfs::SeekFrom::Start(offset as u64),
-                panda_abi::SEEK_CUR => vfs::SeekFrom::Current(offset),
-                panda_abi::SEEK_END => vfs::SeekFrom::End(offset),
-                _ => return -1,
-            };
-
-            scheduler::with_current_process(|proc| {
-                if let Some(file) = proc.handles_mut().get_file_mut(handle) {
-                    match file.seek(seek_from) {
-                        Ok(pos) => pos as isize,
-                        Err(_) => -1,
-                    }
-                } else {
-                    -1
-                }
-            })
-        }
-        panda_abi::SYSCALL_FSTAT => {
-            let handle = arg0 as HandleId;
-            let stat_ptr = arg1 as *mut panda_abi::FileStat;
-
-            scheduler::with_current_process(|proc| {
-                if let Some(file) = proc.handles_mut().get_file_mut(handle) {
-                    let stat = file.stat();
-                    unsafe {
-                        (*stat_ptr).size = stat.size;
-                        (*stat_ptr).is_dir = stat.is_dir;
-                    }
-                    0
-                } else {
-                    -1
-                }
-            })
-        }
-        panda_abi::SYSCALL_SPAWN => {
-            // arg0 = path pointer, arg1 = path length
-            let path = unsafe { slice::from_raw_parts(arg0 as *const u8, arg1) };
-            let path = match str::from_utf8(path) {
-                Ok(p) => p,
-                Err(_) => return -1,
-            };
-
-            debug!("SPAWN: path={}", path);
-
-            // Open the executable file
-            let Some(mut resource) = vfs::open(path) else {
-                error!("SPAWN: failed to open {}", path);
-                return -1;
-            };
-
-            // Get file size and read contents
-            let Some(file) = resource.as_file() else {
-                error!("SPAWN: {} is not a file", path);
-                return -1;
-            };
-
-            let stat = file.stat();
-            let mut elf_data: Vec<u8> = Vec::new();
-            elf_data.resize(stat.size as usize, 0);
-
-            match file.read(&mut elf_data) {
-                Ok(n) if n == stat.size as usize => {}
-                Ok(n) => {
-                    error!("SPAWN: incomplete read: {} of {} bytes", n, stat.size);
-                    return -1;
-                }
-                Err(e) => {
-                    error!("SPAWN: failed to read {}: {:?}", path, e);
-                    return -1;
-                }
-            }
-
-            // Create new process from ELF data
-            // We leak the Vec to get a stable pointer that outlives this function
-            let elf_data = elf_data.into_boxed_slice();
-            let elf_ptr: *const [u8] = Box::leak(elf_data);
-
-            let process = Process::from_elf_data(Context::new_user_context(), elf_ptr);
-            let pid = process.id();
-            debug!("SPAWN: created process {:?}", pid);
-
-            // Add to scheduler
-            scheduler::add_process(process);
-            // Return the process ID (as a simple integer for now)
-            // ProcessId is opaque, but we can return a success indicator
-            0
-        }
-        panda_abi::SYSCALL_YIELD => {
-            debug!("YIELD: return_rip={:#x}, user_rsp={:#x}", return_rip, user_rsp);
-
-            // Yield to next process (does not return)
-            unsafe {
-                scheduler::yield_current(
-                    VirtAddr::new(return_rip as u64),
-                    VirtAddr::new(user_rsp as u64),
-                );
-            }
-        }
         panda_abi::SYSCALL_SEND => {
             // arg0 = handle, arg1 = operation, arg2-arg5 = operation args
             let handle = arg0 as u32;
@@ -367,8 +186,19 @@ fn handle_send(
             })
         }
         OP_FILE_WRITE => {
-            // TODO: File::write not yet implemented in VFS
-            -1
+            let buf_ptr = arg0 as *const u8;
+            let buf_len = arg1;
+            scheduler::with_current_process(|proc| {
+                if let Some(file) = proc.handles_mut().get_file_mut(handle) {
+                    let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len) };
+                    match file.write(buf) {
+                        Ok(n) => n as isize,
+                        Err(_) => -1,
+                    }
+                } else {
+                    -1
+                }
+            })
         }
         OP_FILE_SEEK => {
             let offset = ((arg1 as u64) << 32 | arg0 as u64) as i64;
@@ -466,18 +296,18 @@ fn handle_send(
 
         // Environment operations
         OP_ENVIRONMENT_OPEN => {
-            let path_ptr = arg0 as *const u8;
-            let path_len = arg1;
-            let path = unsafe { slice::from_raw_parts(path_ptr, path_len) };
-            let path = match str::from_utf8(path) {
-                Ok(p) => p,
+            let uri_ptr = arg0 as *const u8;
+            let uri_len = arg1;
+            let uri = unsafe { slice::from_raw_parts(uri_ptr, uri_len) };
+            let uri = match str::from_utf8(uri) {
+                Ok(u) => u,
                 Err(_) => return -1,
             };
 
-            match vfs::open(path) {
-                Some(file) => {
+            match resource::open(uri) {
+                Some(res) => {
                     let handle = scheduler::with_current_process(|proc| {
-                        proc.handles_mut().insert_file(file)
+                        proc.handles_mut().insert_file(res)
                     });
                     handle as isize
                 }
@@ -485,23 +315,23 @@ fn handle_send(
             }
         }
         OP_ENVIRONMENT_SPAWN => {
-            let path_ptr = arg0 as *const u8;
-            let path_len = arg1;
-            let path = unsafe { slice::from_raw_parts(path_ptr, path_len) };
-            let path = match str::from_utf8(path) {
-                Ok(p) => p,
+            let uri_ptr = arg0 as *const u8;
+            let uri_len = arg1;
+            let uri = unsafe { slice::from_raw_parts(uri_ptr, uri_len) };
+            let uri = match str::from_utf8(uri) {
+                Ok(u) => u,
                 Err(_) => return -1,
             };
 
-            debug!("SPAWN: path={}", path);
+            debug!("SPAWN: uri={}", uri);
 
-            let Some(mut resource) = vfs::open(path) else {
-                error!("SPAWN: failed to open {}", path);
+            let Some(mut resource) = resource::open(uri) else {
+                error!("SPAWN: failed to open {}", uri);
                 return -1;
             };
 
             let Some(file) = resource.as_file() else {
-                error!("SPAWN: {} is not a file", path);
+                error!("SPAWN: {} is not a file", uri);
                 return -1;
             };
 
@@ -516,7 +346,7 @@ fn handle_send(
                     return -1;
                 }
                 Err(e) => {
-                    error!("SPAWN: failed to read {}: {:?}", path, e);
+                    error!("SPAWN: failed to read {}: {:?}", uri, e);
                     return -1;
                 }
             }

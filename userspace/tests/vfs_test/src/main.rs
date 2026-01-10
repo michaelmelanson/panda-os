@@ -7,10 +7,10 @@ use libpanda::file;
 libpanda::main! {
     environment::log("VFS test starting");
 
-    // Test: Open a file from initrd
-    let handle = environment::open("/initrd/hello.txt", 0);
+    // Test: Open a file from initrd using file: scheme
+    let handle = environment::open("file:/initrd/hello.txt", 0);
     if handle < 0 {
-        environment::log("FAIL: Could not open /initrd/hello.txt");
+        environment::log("FAIL: Could not open file:/initrd/hello.txt");
         return 1;
     }
     let handle = handle as u32;

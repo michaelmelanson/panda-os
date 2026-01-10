@@ -224,6 +224,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "resource_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
 name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"

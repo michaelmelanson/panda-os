@@ -40,6 +40,10 @@ pub enum FsError {
     InvalidOffset,
     /// Resource is not readable
     NotReadable,
+    /// Resource is not writable
+    NotWritable,
+    /// Resource is not seekable
+    NotSeekable,
 }
 
 /// File metadata
@@ -76,6 +80,11 @@ pub trait Filesystem: Send + Sync {
 pub trait File: Resource {
     /// Read bytes into the buffer, returning bytes read
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError>;
+
+    /// Write bytes from the buffer, returning bytes written
+    fn write(&mut self, _buf: &[u8]) -> Result<usize, FsError> {
+        Err(FsError::NotWritable)
+    }
 
     /// Seek to a position in the file
     fn seek(&mut self, pos: SeekFrom) -> Result<u64, FsError>;

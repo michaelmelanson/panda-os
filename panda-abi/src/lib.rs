@@ -12,17 +12,6 @@
 /// The unified send syscall - all operations go through this
 pub const SYSCALL_SEND: usize = 0x30;
 
-// Legacy syscalls (deprecated, will be removed)
-pub const SYSCALL_LOG: usize = 0x10;
-pub const SYSCALL_EXIT: usize = 0x11;
-pub const SYSCALL_SPAWN: usize = 0x12;
-pub const SYSCALL_YIELD: usize = 0x13;
-pub const SYSCALL_OPEN: usize = 0x20;
-pub const SYSCALL_CLOSE: usize = 0x21;
-pub const SYSCALL_READ: usize = 0x22;
-pub const SYSCALL_SEEK: usize = 0x23;
-pub const SYSCALL_FSTAT: usize = 0x24;
-
 // =============================================================================
 // Well-known handles
 // =============================================================================

@@ -1,0 +1,11 @@
+# Resource scheme system test
+Resource test starting
+Test 1: file: scheme
+Test 1 passed
+Test 2: console: scheme
+Test 2 passed
+Test 3: invalid scheme
+Test 3 passed
+Test 4: invalid path
+Test 4 passed
+Resource test passed
