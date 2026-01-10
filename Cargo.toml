@@ -12,3 +12,11 @@ virtio-drivers = "0.12"
 x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
 goblin = { version = "0.10", default-features = false, features = ["alloc", "elf32", "elf64", "endian_fd"] }
 tar-no-std = { version = "0.4", default-features = false }
+
+# Required for no_std with -Zbuild-std: ensures core/alloc are built with
+# abort-on-panic since we have no unwinding runtime support.
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

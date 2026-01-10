@@ -6,42 +6,10 @@
 use core::arch::naked_asm;
 
 use crate::apic;
-use crate::process::{ProcessState, SavedState};
+use crate::process::{InterruptFrame, ProcessState, SavedGprs, SavedState};
 use crate::syscall::user_code_selector;
 
 use super::{SCHEDULER, exec_next_runnable, start_timer};
-
-/// Saved general-purpose registers on the stack (pushed by timer_interrupt_entry).
-/// Order matches the push order in the naked function.
-#[repr(C)]
-struct SavedRegsOnStack {
-    r15: u64,
-    r14: u64,
-    r13: u64,
-    r12: u64,
-    r11: u64,
-    r10: u64,
-    r9: u64,
-    r8: u64,
-    rbp: u64,
-    rdi: u64,
-    rsi: u64,
-    rdx: u64,
-    rcx: u64,
-    rbx: u64,
-    rax: u64,
-}
-
-/// Interrupt stack frame pushed by the CPU on interrupt.
-/// Located after the saved GPRs on the stack.
-#[repr(C)]
-struct InterruptFrame {
-    rip: u64,
-    cs: u64,
-    rflags: u64,
-    rsp: u64,
-    ss: u64,
-}
 
 /// Naked assembly entry point for the timer interrupt.
 ///
@@ -106,7 +74,7 @@ pub extern "C" fn timer_interrupt_entry() {
 /// Decides whether to preempt the current process and switch to another.
 /// If switching, this function does not return - it jumps to exec_next_runnable.
 extern "sysv64" fn timer_interrupt_handler(
-    saved_regs: *const SavedRegsOnStack,
+    saved_gprs: *const SavedGprs,
     interrupt_frame: *const InterruptFrame,
 ) {
     // Send EOI first to allow other interrupts
@@ -129,29 +97,8 @@ extern "sysv64" fn timer_interrupt_handler(
     };
 
     if should_switch {
-        // Build SavedState from the stack
-        let regs = unsafe { &*saved_regs };
-
-        let state = SavedState {
-            rax: regs.rax,
-            rbx: regs.rbx,
-            rcx: regs.rcx,
-            rdx: regs.rdx,
-            rsi: regs.rsi,
-            rdi: regs.rdi,
-            rbp: regs.rbp,
-            r8: regs.r8,
-            r9: regs.r9,
-            r10: regs.r10,
-            r11: regs.r11,
-            r12: regs.r12,
-            r13: regs.r13,
-            r14: regs.r14,
-            r15: regs.r15,
-            rip: frame.rip,
-            rsp: frame.rsp,
-            rflags: frame.rflags,
-        };
+        let gprs = unsafe { &*saved_gprs };
+        let state = SavedState::from_interrupt(gprs, frame);
 
         // Save state and switch to next process (doesn't return)
         unsafe {

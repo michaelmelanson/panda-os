@@ -12,6 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spinning_top::RwSpinlock;
 
+use crate::process_handle::ProcessHandle;
 use crate::waker::Waker;
 
 /// A kernel resource that can be accessed via a handle
@@ -20,9 +21,12 @@ pub trait Resource: Send + Sync {
     fn as_file(&mut self) -> Option<&mut dyn File> {
         None
     }
-    // Future: as_socket(), as_pipe(), etc.
-}
 
+    /// Try to get this resource as a process handle
+    fn as_process_handle(&self) -> Option<&ProcessHandle> {
+        None
+    }
+}
 
 /// How to reposition within a file
 pub enum SeekFrom {

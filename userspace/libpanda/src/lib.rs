@@ -42,14 +42,62 @@ macro_rules! main {
 
         #[panic_handler]
         fn panic(info: &core::panic::PanicInfo) -> ! {
-            // Try to print panic location if available
-            if let Some(location) = info.location() {
-                // Format a simple message - we can't use format! in no_std
-                $crate::environment::log("PANIC at ");
-                $crate::environment::log(location.file());
-            } else {
-                $crate::environment::log("PANIC");
+            use core::fmt::Write;
+
+            // Buffer for formatting panic info with internal storage
+            struct LogBuffer {
+                buf: [u8; 256],
+                pos: usize,
             }
+
+            impl LogBuffer {
+                fn new() -> Self {
+                    Self { buf: [0; 256], pos: 0 }
+                }
+
+                fn flush(&mut self) {
+                    if self.pos > 0 {
+                        if let Ok(s) = core::str::from_utf8(&self.buf[..self.pos]) {
+                            $crate::environment::log(s);
+                        }
+                        self.pos = 0;
+                    }
+                }
+            }
+
+            impl Write for LogBuffer {
+                fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                    for b in s.bytes() {
+                        if self.pos >= self.buf.len() {
+                            self.flush();
+                        }
+                        self.buf[self.pos] = b;
+                        self.pos += 1;
+                    }
+                    Ok(())
+                }
+            }
+
+            impl Drop for LogBuffer {
+                fn drop(&mut self) {
+                    self.flush();
+                }
+            }
+
+            let mut w = LogBuffer::new();
+
+            // Print location first (most useful info)
+            if let Some(location) = info.location() {
+                let _ = write!(w, "PANIC at {}:{}: ", location.file(), location.line());
+            } else {
+                let _ = write!(w, "PANIC: ");
+            }
+
+            // Print the panic message
+            let _ = write!(w, "{}", info.message());
+
+            drop(w);
+
             $crate::process::exit(101_i32);
         }
     };

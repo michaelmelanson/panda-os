@@ -235,6 +235,15 @@ struct SyscallArgs {
     arg5: usize,
 }
 
+impl SyscallArgs {
+    /// Get all 6 arguments as an array (for SavedState construction).
+    fn args(&self) -> [usize; 6] {
+        [
+            self.arg0, self.arg1, self.arg2, self.arg3, self.arg4, self.arg5,
+        ]
+    }
+}
+
 /// Handle the unified send syscall
 fn handle_send(
     handle: u32,
@@ -268,31 +277,18 @@ fn handle_send(
                     // Block the process on this waker.
                     // Save RIP-2 to re-execute the syscall instruction when resumed.
                     // The syscall instruction is 2 bytes (0F 05).
-                    // Save all registers needed to re-execute the syscall, including
-                    // callee-saved registers which must be preserved across the blocking.
-                    let syscall_ip = return_rip - 2;
-                    let saved_state = SavedState {
-                        // Syscall argument registers
-                        rax: syscall_args.code as u64,
-                        rdi: syscall_args.arg0 as u64,
-                        rsi: syscall_args.arg1 as u64,
-                        rdx: syscall_args.arg2 as u64,
-                        r10: syscall_args.arg3 as u64,
-                        r8: syscall_args.arg4 as u64,
-                        r9: syscall_args.arg5 as u64,
-                        // Callee-saved registers
-                        rbx: callee_saved.rbx,
-                        rbp: callee_saved.rbp,
-                        r12: callee_saved.r12,
-                        r13: callee_saved.r13,
-                        r14: callee_saved.r14,
-                        r15: callee_saved.r15,
-                        ..Default::default()
-                    };
+                    let syscall_ip = (return_rip - 2) as u64;
+                    let saved_state = SavedState::for_syscall_restart(
+                        syscall_ip,
+                        user_rsp as u64,
+                        syscall_args.code,
+                        &syscall_args.args(),
+                        callee_saved,
+                    );
                     unsafe {
                         scheduler::block_current_on(
                             waker,
-                            VirtAddr::new(syscall_ip as u64),
+                            VirtAddr::new(syscall_ip),
                             VirtAddr::new(user_rsp as u64),
                             saved_state,
                         );
@@ -372,14 +368,19 @@ fn handle_send(
         },
         OP_PROCESS_EXIT => {
             let exit_code = arg0 as i32;
-            info!("Process exiting with code {exit_code}");
-            if exit_code != 0 {
-                crate::qemu::exit_qemu(crate::qemu::QemuExitCode::Failed);
-            }
-            // Set exit code in process info (visible to parent via handle)
-            scheduler::with_current_process(|proc| proc.set_exit_code(exit_code));
             let current_pid = scheduler::current_process_id();
+            info!("Process {:?} exiting with code {exit_code}", current_pid);
+
+            // Get the process info before removing the process.
+            // We'll set the exit code after releasing the scheduler lock
+            // to avoid deadlock (set_exit_code -> wake -> wake_process needs the lock).
+            let process_info = scheduler::with_current_process(|proc| proc.info().clone());
+
             scheduler::remove_process(current_pid);
+
+            // Set exit code after removing from scheduler (wakes any waiters)
+            process_info.set_exit_code(exit_code);
+
             unsafe {
                 scheduler::exec_next_runnable();
             }
@@ -389,8 +390,43 @@ fn handle_send(
             0
         }
         OP_PROCESS_WAIT => {
-            // TODO: Implement wait for child process
-            -1
+            // Wait for a child process to exit
+            // handle = handle ID of the process to wait on
+            let result = scheduler::with_current_process(|proc| {
+                proc.handles()
+                    .get_process_handle(handle)
+                    .map(|ph| (ph.exit_code(), ph.waker().clone()))
+            });
+
+            match result {
+                Some((Some(exit_code), _)) => {
+                    // Process already exited, return exit code immediately
+                    exit_code as isize
+                }
+                Some((None, waker)) => {
+                    // Process still running, block until it exits
+                    let syscall_ip = (return_rip - 2) as u64;
+                    let saved_state = SavedState::for_syscall_restart(
+                        syscall_ip,
+                        user_rsp as u64,
+                        syscall_args.code,
+                        &syscall_args.args(),
+                        callee_saved,
+                    );
+                    unsafe {
+                        scheduler::block_current_on(
+                            waker,
+                            VirtAddr::new(syscall_ip),
+                            VirtAddr::new(user_rsp as u64),
+                            saved_state,
+                        );
+                    }
+                }
+                None => {
+                    // Invalid handle
+                    -1
+                }
+            }
         }
         OP_PROCESS_SIGNAL => {
             // TODO: Implement signals

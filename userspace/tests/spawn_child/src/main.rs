@@ -5,6 +5,6 @@ use libpanda::environment;
 
 libpanda::main! {
     environment::log("Child process running!");
-    environment::log("Child process exiting with code 0");
-    0
+    environment::log("Child process exiting with code 42");
+    42
 }

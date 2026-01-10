@@ -1,6 +1,8 @@
 # Spawn test expected log output
-# Parent starts and spawns child. After spawn, order may vary due to preemption.
+# Parent spawns child, waits for it to exit, and verifies exit code.
 Spawn test: starting
-Spawn test: child spawned successfully
+Spawn test: child spawned, waiting for exit...
 Child process running!
-Child process exiting with code 0
+Child process exiting with code 42
+Spawn test: child exited with expected code 42
+PASS

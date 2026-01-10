@@ -46,6 +46,99 @@ pub struct SavedState {
     pub rflags: u64,
 }
 
+/// GPRs saved on stack by interrupt entry (matches push order).
+#[repr(C)]
+pub struct SavedGprs {
+    pub r15: u64,
+    pub r14: u64,
+    pub r13: u64,
+    pub r12: u64,
+    pub r11: u64,
+    pub r10: u64,
+    pub r9: u64,
+    pub r8: u64,
+    pub rbp: u64,
+    pub rdi: u64,
+    pub rsi: u64,
+    pub rdx: u64,
+    pub rcx: u64,
+    pub rbx: u64,
+    pub rax: u64,
+}
+
+/// Interrupt stack frame pushed by CPU.
+#[repr(C)]
+pub struct InterruptFrame {
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
+}
+
+impl SavedState {
+    /// Create a SavedState for re-executing a syscall after blocking.
+    ///
+    /// The RIP is set to `syscall_ip` (typically the syscall instruction address),
+    /// and all syscall argument registers are restored so the syscall re-executes.
+    pub fn for_syscall_restart(
+        syscall_ip: u64,
+        user_rsp: u64,
+        syscall_code: usize,
+        args: &[usize; 6],
+        callee_saved: &crate::syscall::CalleeSavedRegs,
+    ) -> Self {
+        use x86_64::registers::rflags::RFlags;
+
+        Self {
+            rax: syscall_code as u64,
+            rdi: args[0] as u64,
+            rsi: args[1] as u64,
+            rdx: args[2] as u64,
+            r10: args[3] as u64,
+            r8: args[4] as u64,
+            r9: args[5] as u64,
+            rbx: callee_saved.rbx,
+            rbp: callee_saved.rbp,
+            r12: callee_saved.r12,
+            r13: callee_saved.r13,
+            r14: callee_saved.r14,
+            r15: callee_saved.r15,
+            rip: syscall_ip,
+            rsp: user_rsp,
+            rflags: RFlags::INTERRUPT_FLAG.bits(),
+            ..Default::default()
+        }
+    }
+
+    /// Create a SavedState from an interrupt context (for preemption).
+    ///
+    /// Captures full register state from the interrupt entry's saved GPRs
+    /// and the CPU-pushed interrupt frame.
+    pub fn from_interrupt(gprs: &SavedGprs, frame: &InterruptFrame) -> Self {
+        Self {
+            rax: gprs.rax,
+            rbx: gprs.rbx,
+            rcx: gprs.rcx,
+            rdx: gprs.rdx,
+            rsi: gprs.rsi,
+            rdi: gprs.rdi,
+            rbp: gprs.rbp,
+            r8: gprs.r8,
+            r9: gprs.r9,
+            r10: gprs.r10,
+            r11: gprs.r11,
+            r12: gprs.r12,
+            r13: gprs.r13,
+            r14: gprs.r14,
+            r15: gprs.r15,
+            rip: frame.rip,
+            rsp: frame.rsp,
+            rflags: frame.rflags,
+        }
+    }
+}
+
 /// Jump to userspace at the given IP and SP. This function never returns.
 /// Must be called with no locks held, as it will not return to release them.
 ///
@@ -55,14 +148,10 @@ pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr, saved_state: Option<Sav
     let rflags = RFlags::INTERRUPT_FLAG.bits();
 
     if let Some(state) = saved_state {
-        debug!(
-            "Resuming syscall at IP={:#x}, SP={:#x}",
-            ip.as_u64(),
-            sp.as_u64()
-        );
-        // Use naked helper to restore all registers including rbx/rbp
+        debug!("Resuming at IP={:#x}, SP={:#x}", state.rip, state.rsp);
+        // Use naked helper to restore all registers
         unsafe {
-            exec_userspace_with_state(ip.as_u64(), sp.as_u64(), rflags, &state);
+            exec_userspace_with_state(&state);
         }
     } else {
         debug!(
@@ -87,17 +176,12 @@ pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr, saved_state: Option<Sav
 
 /// Naked helper to restore all registers from SavedState and jump to userspace.
 /// Arguments (sysv64 ABI):
-///   rdi = ip (return address for sysretq -> rcx)
-///   rsi = sp (user stack pointer)
-///   rdx = rflags (-> r11)
-///   rcx = pointer to SavedState
+///   rdi = pointer to SavedState
+///
+/// Restores ALL registers from SavedState including rcx, r11, rip, rsp, and rflags.
+/// Used for both syscall restart and preemption resume.
 #[unsafe(naked)]
-unsafe extern "sysv64" fn exec_userspace_with_state(
-    _ip: u64,
-    _sp: u64,
-    _rflags: u64,
-    _state: *const SavedState,
-) -> ! {
+unsafe extern "sysv64" fn exec_userspace_with_state(_state: *const SavedState) -> ! {
     // SavedState layout (offsets in bytes):
     //   0x00: rax, 0x08: rbx, 0x10: rcx, 0x18: rdx
     //   0x20: rsi, 0x28: rdi, 0x30: rbp, 0x38: r8
@@ -105,31 +189,34 @@ unsafe extern "sysv64" fn exec_userspace_with_state(
     //   0x60: r13, 0x68: r14, 0x70: r15, 0x78: rip
     //   0x80: rsp, 0x88: rflags
     naked_asm!(
-        // Save arguments we need later
-        "mov r11, rdx", // r11 = rflags for sysretq
-        "mov r10, rcx", // r10 = state pointer (temp)
-        // Restore callee-saved registers from state
-        "mov rbx, [r10 + 0x08]",
-        "mov rbp, [r10 + 0x30]",
-        "mov r12, [r10 + 0x58]",
-        "mov r13, [r10 + 0x60]",
-        "mov r14, [r10 + 0x68]",
-        "mov r15, [r10 + 0x70]",
-        // Restore syscall argument registers
-        "mov r8,  [r10 + 0x38]",
-        "mov r9,  [r10 + 0x40]",
-        "mov rax, [r10 + 0x00]", // syscall number
-        // Save ip (rdi) and sp (rsi) before we overwrite them
-        "mov rcx, rdi", // rcx = return ip for sysretq
-        // Restore remaining syscall args (rdi, rsi, rdx, r10)
-        "mov rdi, [r10 + 0x28]",
-        // rsi still holds sp, save it
-        "push rsi",
-        "mov rsi, [r10 + 0x20]",
-        "mov rdx, [r10 + 0x18]",
-        "mov r10, [r10 + 0x48]",
+        // rdi = state pointer, save it to a callee-saved reg temporarily
+        "mov r15, rdi",
+        // Restore most registers from state
+        "mov rax, [r15 + 0x00]",
+        "mov rbx, [r15 + 0x08]",
+        // rcx restored later (needed for sysretq)
+        "mov rdx, [r15 + 0x18]",
+        "mov rsi, [r15 + 0x20]",
+        // rdi restored later
+        "mov rbp, [r15 + 0x30]",
+        "mov r8,  [r15 + 0x38]",
+        "mov r9,  [r15 + 0x40]",
+        "mov r10, [r15 + 0x48]",
+        // r11 restored later (needed for sysretq)
+        "mov r12, [r15 + 0x58]",
+        "mov r13, [r15 + 0x60]",
+        "mov r14, [r15 + 0x68]",
+        // Set up sysretq: rcx = rip, r11 = rflags
+        "mov rcx, [r15 + 0x78]", // rcx = saved rip (return address)
+        "mov r11, [r15 + 0x88]", // r11 = saved rflags
+        // Push user rsp so we can restore it last
+        "push [r15 + 0x80]",
+        // Restore rdi (was our temp pointer)
+        "mov rdi, [r15 + 0x28]",
+        // Restore r15 (we were using it as temp)
+        "mov r15, [r15 + 0x70]",
         // Set user stack pointer and return
-        "pop rsp", // rsp = user sp
+        "pop rsp",
         "swapgs",
         "sysretq",
     )

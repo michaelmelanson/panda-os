@@ -6,6 +6,7 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 
+use crate::process_handle::ProcessHandle;
 use crate::vfs::{File, Resource};
 
 /// Handle identifier (similar to file descriptor but for any resource)
@@ -45,10 +46,13 @@ impl HandleTable {
     pub fn insert_file(&mut self, resource: Box<dyn Resource>) -> HandleId {
         let id = self.next_id;
         self.next_id += 1;
-        self.handles.insert(id, HandleEntry {
-            resource,
-            resource_type: ResourceType::File,
-        });
+        self.handles.insert(
+            id,
+            HandleEntry {
+                resource,
+                resource_type: ResourceType::File,
+            },
+        );
         id
     }
 
@@ -56,10 +60,13 @@ impl HandleTable {
     pub fn insert_process(&mut self, resource: Box<dyn Resource>) -> HandleId {
         let id = self.next_id;
         self.next_id += 1;
-        self.handles.insert(id, HandleEntry {
-            resource,
-            resource_type: ResourceType::Process,
-        });
+        self.handles.insert(
+            id,
+            HandleEntry {
+                resource,
+                resource_type: ResourceType::Process,
+            },
+        );
         id
     }
 
@@ -78,8 +85,22 @@ impl HandleTable {
         entry.resource.as_file()
     }
 
+    /// Get a reference to a process handle, returning None if handle
+    /// doesn't exist or is not a process
+    pub fn get_process_handle(&self, id: HandleId) -> Option<&ProcessHandle> {
+        let entry = self.handles.get(&id)?;
+        if entry.resource_type != ResourceType::Process {
+            return None;
+        }
+        entry.resource.as_process_handle()
+    }
+
     /// Remove and return a resource by handle ID, only if it matches the expected type
-    pub fn remove_typed(&mut self, id: HandleId, expected_type: ResourceType) -> Option<Box<dyn Resource>> {
+    pub fn remove_typed(
+        &mut self,
+        id: HandleId,
+        expected_type: ResourceType,
+    ) -> Option<Box<dyn Resource>> {
         let entry = self.handles.get(&id)?;
         if entry.resource_type != expected_type {
             return None;

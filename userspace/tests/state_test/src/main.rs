@@ -12,18 +12,30 @@
 
 use core::arch::asm;
 use libpanda::environment;
-use libpanda::process;
 use libpanda::file;
+use libpanda::process;
 
 /// Test that callee-saved registers are preserved across a simple (non-blocking) syscall.
 fn test_registers_preserved_simple_syscall() {
     environment::log("TEST: registers_preserved_simple_syscall");
 
     // Set known values in callee-saved registers, do a syscall, verify they're unchanged
-    let (rbx_before, rbp_before, r12_before, r13_before, r14_before, r15_before):
-        (u64, u64, u64, u64, u64, u64);
-    let (rbx_after, rbp_after, r12_after, r13_after, r14_after, r15_after):
-        (u64, u64, u64, u64, u64, u64);
+    let (rbx_before, rbp_before, r12_before, r13_before, r14_before, r15_before): (
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+    );
+    let (rbx_after, rbp_after, r12_after, r13_after, r14_after, r15_after): (
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+        u64,
+    );
 
     unsafe {
         asm!(
@@ -268,7 +280,8 @@ fn test_nested_calls_with_syscalls() {
     }
 
     let result = level1(100);
-    if result != 106 {  // 100 + 1 + 2 + 3
+    if result != 106 {
+        // 100 + 1 + 2 + 3
         environment::log("FAIL: nested result wrong");
         process::exit(1);
     }
@@ -284,7 +297,10 @@ fn test_syscall_return_values() {
     let ret = libpanda::syscall::send(
         panda_abi::HANDLE_SELF,
         panda_abi::OP_PROCESS_YIELD,
-        0, 0, 0, 0
+        0,
+        0,
+        0,
+        0,
     );
     if ret != 0 {
         environment::log("FAIL: yield should return 0");
@@ -399,9 +415,9 @@ fn test_syscall_arg_registers_clean() {
 fn test_heap_preserved_across_syscalls() {
     environment::log("TEST: heap_preserved_across_syscalls");
 
-    use libpanda::vec;
-    use libpanda::Vec;
     use libpanda::Box;
+    use libpanda::Vec;
+    use libpanda::vec;
 
     // Allocate some heap memory
     let boxed: Box<u64> = Box::new(0x123456789ABCDEF0);
@@ -442,6 +458,203 @@ fn test_heap_preserved_across_syscalls() {
     environment::log("PASS: heap_preserved_across_syscalls");
 }
 
+/// Test that ALL registers are preserved across preemption (timer interrupts).
+/// This catches bugs where caller-saved registers like rcx, r11 get corrupted
+/// during context switches.
+fn test_registers_preserved_across_preemption() {
+    environment::log("TEST: registers_preserved_across_preemption");
+
+    // We need to do CPU-bound work to trigger preemption.
+    // We'll set registers to known values and verify them in a loop.
+    // If preemption corrupts any register, the check will fail.
+    //
+    // We test in batches since we can't use all 16 GPRs simultaneously
+    // (rbx is LLVM reserved, rbp is frame pointer, and we need scratch regs).
+
+    let iterations: u64 = 500_000;
+
+    // Test batch 1: rcx, rdx, rsi, rdi, r8, r9 (caller-saved, most likely to be corrupted)
+    let failed1: u64;
+    unsafe {
+        asm!(
+            // Set registers to known values
+            "mov rcx, 0xCCCCCCCCCCCCCCCC",
+            "mov rdx, 0xDDDDDDDDDDDDDDDD",
+            "mov rsi, 0x5151515151515151",
+            "mov rdi, 0xD1D1D1D1D1D1D1D1",
+            "mov r8,  0x8888888888888888",
+            "mov r9,  0x9999999999999999",
+            // Use rax as loop counter
+            "mov rax, {iterations}",
+            "2:",
+            // Check each register against immediate (split into two parts)
+            "mov r10, 0xCCCCCCCCCCCCCCCC",
+            "cmp rcx, r10",
+            "jne 3f",
+            "mov r10, 0xDDDDDDDDDDDDDDDD",
+            "cmp rdx, r10",
+            "jne 3f",
+            "mov r10, 0x5151515151515151",
+            "cmp rsi, r10",
+            "jne 3f",
+            "mov r10, 0xD1D1D1D1D1D1D1D1",
+            "cmp rdi, r10",
+            "jne 3f",
+            "mov r10, 0x8888888888888888",
+            "cmp r8, r10",
+            "jne 3f",
+            "mov r10, 0x9999999999999999",
+            "cmp r9, r10",
+            "jne 3f",
+            "dec rax",
+            "jnz 2b",
+            "xor {failed}, {failed}",
+            "jmp 4f",
+            "3:",
+            "mov {failed}, 1",
+            "4:",
+            iterations = in(reg) iterations,
+            failed = out(reg) failed1,
+            out("rax") _,
+            out("rcx") _,
+            out("rdx") _,
+            out("rsi") _,
+            out("rdi") _,
+            out("r8") _,
+            out("r9") _,
+            out("r10") _,
+        );
+    }
+
+    if failed1 != 0 {
+        environment::log("FAIL: caller-saved register corrupted during preemption");
+        process::exit(1);
+    }
+
+    // Test batch 2: r10, r11, r12, r13, r14 (includes r11 which is used by sysret)
+    let failed2: u64;
+    unsafe {
+        asm!(
+            "mov r10, 0x1010101010101010",
+            "mov r11, 0x1111111111111111",
+            "mov r12, 0x1212121212121212",
+            "mov r13, 0x1313131313131313",
+            "mov r14, 0x1414141414141414",
+            "mov rax, {iterations}",
+            "2:",
+            "mov rcx, 0x1010101010101010",
+            "cmp r10, rcx",
+            "jne 3f",
+            "mov rcx, 0x1111111111111111",
+            "cmp r11, rcx",
+            "jne 3f",
+            "mov rcx, 0x1212121212121212",
+            "cmp r12, rcx",
+            "jne 3f",
+            "mov rcx, 0x1313131313131313",
+            "cmp r13, rcx",
+            "jne 3f",
+            "mov rcx, 0x1414141414141414",
+            "cmp r14, rcx",
+            "jne 3f",
+            "dec rax",
+            "jnz 2b",
+            "xor {failed}, {failed}",
+            "jmp 4f",
+            "3:",
+            "mov {failed}, 1",
+            "4:",
+            iterations = in(reg) iterations,
+            failed = out(reg) failed2,
+            out("rax") _,
+            out("rcx") _,
+            out("r10") _,
+            out("r11") _,
+            out("r12") _,
+            out("r13") _,
+            out("r14") _,
+        );
+    }
+
+    if failed2 != 0 {
+        environment::log("FAIL: r10-r14 register corrupted during preemption");
+        process::exit(1);
+    }
+
+    environment::log("PASS: registers_preserved_across_preemption");
+}
+
+/// Test that a computation-heavy loop produces correct results despite preemption.
+/// This is similar to preempt_test but runs within state_test for convenience.
+fn test_computation_correct_across_preemption() {
+    environment::log("TEST: computation_correct_across_preemption");
+
+    // Do a computation that uses many registers and would break if
+    // any register is corrupted during preemption.
+    let iterations: u64 = 5_000_000;
+    let mut sum: u64 = 0;
+    let mut xor_acc: u64 = 0;
+
+    for i in 0..iterations {
+        sum = sum.wrapping_add(i);
+        xor_acc ^= i;
+        // Prevent optimization
+        core::hint::black_box(&sum);
+        core::hint::black_box(&xor_acc);
+    }
+
+    // Verify results
+    // sum of 0..n = n*(n-1)/2
+    let expected_sum = (iterations - 1) * iterations / 2;
+    if sum != expected_sum {
+        environment::log("FAIL: sum computation incorrect");
+        process::exit(1);
+    }
+
+    // xor of 0..(n-1) follows a pattern based on (n-1) % 4
+    let n = iterations - 1;
+    let expected_xor = match n % 4 {
+        0 => n,
+        1 => 1,
+        2 => n + 1,
+        3 => 0,
+        _ => unreachable!(),
+    };
+
+    if xor_acc != expected_xor {
+        environment::log("FAIL: xor computation incorrect");
+        process::exit(1);
+    }
+
+    environment::log("PASS: computation_correct_across_preemption");
+}
+
+/// Test that rflags (specifically the direction flag) is preserved.
+fn test_rflags_preserved_across_preemption() {
+    environment::log("TEST: rflags_preserved_across_preemption");
+
+    // The direction flag (DF) affects string operations.
+    // Ensure it stays cleared (the normal state) across preemption.
+
+    for _ in 0..100_000u64 {
+        let flags: u64;
+        unsafe {
+            asm!(
+                "pushfq",
+                "pop {flags}",
+                flags = out(reg) flags,
+            );
+        }
+        // Check if DF (bit 10) is unexpectedly set
+        if (flags & 0x400) != 0 {
+            environment::log("FAIL: direction flag unexpectedly set");
+            process::exit(1);
+        }
+    }
+
+    environment::log("PASS: rflags_preserved_across_preemption");
+}
+
 libpanda::main! {
     environment::log("=== State Preservation Tests ===");
 
@@ -453,6 +666,11 @@ libpanda::main! {
     test_syscall_return_values();
     test_syscall_arg_registers_clean();
     test_heap_preserved_across_syscalls();
+
+    // Preemption-specific tests
+    test_registers_preserved_across_preemption();
+    test_computation_correct_across_preemption();
+    test_rflags_preserved_across_preemption();
 
     environment::log("=== All State Preservation Tests Passed ===");
     0

@@ -15,4 +15,10 @@ TEST: syscall_arg_registers_clean
 PASS: syscall_arg_registers_clean
 TEST: heap_preserved_across_syscalls
 PASS: heap_preserved_across_syscalls
+TEST: registers_preserved_across_preemption
+PASS: registers_preserved_across_preemption
+TEST: computation_correct_across_preemption
+PASS: computation_correct_across_preemption
+TEST: rflags_preserved_across_preemption
+PASS: rflags_preserved_across_preemption
 === All State Preservation Tests Passed ===

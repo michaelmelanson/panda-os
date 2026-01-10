@@ -47,5 +47,7 @@ impl ProcessHandle {
 }
 
 impl Resource for ProcessHandle {
-    // ProcessHandle doesn't implement File - it's accessed via process-specific syscalls
+    fn as_process_handle(&self) -> Option<&ProcessHandle> {
+        Some(self)
+    }
 }
