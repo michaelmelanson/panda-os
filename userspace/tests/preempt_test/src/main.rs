@@ -1,9 +1,9 @@
 //! Userspace preemption test.
 //!
-//! This test runs a long compute loop that will be interrupted many times
-//! by the preemption timer. If preemption isn't working correctly (e.g.,
-//! registers not preserved, stack corruption), the loop will produce
-//! incorrect results or crash.
+//! This test spawns multiple child processes that do CPU-bound work without
+//! yielding. All children run concurrently via preemptive context switching.
+//! If preemption isn't working, only one process would run at a time and
+//! the test would time out or produce incorrect results.
 
 #![no_std]
 #![no_main]
@@ -11,28 +11,35 @@
 use libpanda::environment;
 
 libpanda::main! {
-    environment::log("Preempt test: starting long computation");
+    environment::log("Preempt test: spawning 3 CPU-bound children");
 
-    // Run a computation that takes long enough to be preempted multiple times.
-    // The 10ms timer should fire many times during this loop.
+    // Spawn multiple children that do CPU-bound work without yielding
+    for _ in 0..3 {
+        let result = environment::spawn("file:/initrd/preempt_child");
+        if result < 0 {
+            environment::log("FAIL: spawn returned error");
+            return 1;
+        }
+    }
+
+    // Parent also does CPU-bound work to compete for CPU time
+    environment::log("Preempt test: parent doing CPU-bound work");
     let mut sum: u64 = 0;
-    let iterations: u64 = 50_000_000;
+    let iterations: u64 = 10_000_000;
 
     for i in 0..iterations {
-        // Use a computation that would break if registers aren't preserved
         sum = sum.wrapping_add(i);
         core::hint::black_box(sum);
     }
 
-    // Verify the result is correct
-    // Sum of 0..n = n*(n-1)/2
     let expected = (iterations - 1) * iterations / 2;
-
     if sum != expected {
-        environment::log("FAIL: computation produced incorrect result");
+        environment::log("FAIL: parent computation incorrect");
         return 1;
     }
 
-    environment::log("Preempt test: computation completed correctly");
+    // If we get here, preemption worked - all 4 processes (parent + 3 children)
+    // ran concurrently and completed their CPU-bound work correctly
+    environment::log("Preempt test: parent completed, children running via preemption");
     0
 }

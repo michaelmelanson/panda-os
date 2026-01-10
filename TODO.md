@@ -4,7 +4,7 @@
 
 Working:
 - UEFI boot, memory management, page tables
-- Preemptive scheduler with blocking I/O support
+- Preemptive multitasking with full context switching
 - Syscall ABI with callee-saved register preservation
 - VFS with tarfs (initrd), resource scheme system
 - Virtio GPU (basic), virtio keyboard with blocking reads
@@ -13,34 +13,31 @@ Working:
 Not yet implemented:
 - `OP_PROCESS_WAIT`, `OP_PROCESS_SIGNAL`, `OP_ENVIRONMENT_TIME`
 - Spawn returns 0 instead of process handle
-- Preemptive context switch (timer handler just restarts timer)
 - ACPI handler read/write methods (27 todo!() macros)
 
 ## Next steps
 
-1. **Implement preemptive context switching**: The timer interrupt handler currently just restarts the timer. Save process state in the interrupt handler and switch to the next runnable process.
+1. **Return process handle from spawn**: `OP_ENVIRONMENT_SPAWN` returns 0 instead of a handle. Return a proper handle so parent can wait on child.
 
-2. **Return process handle from spawn**: `OP_ENVIRONMENT_SPAWN` returns 0 instead of a handle. Return a proper handle so parent can wait on child.
+2. **Implement OP_PROCESS_WAIT**: Allow parent to wait for child process to exit. Requires tracking parent-child relationships and storing exit codes.
 
-3. **Implement OP_PROCESS_WAIT**: Allow parent to wait for child process to exit. Requires tracking parent-child relationships and storing exit codes.
+3. **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
 
-4. **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
+4. **Make shell execute commands**: Currently shell just echoes input. Parse command line, spawn programs from initrd (e.g., `spawn file:/initrd/program`).
 
-5. **Make shell execute commands**: Currently shell just echoes input. Parse command line, spawn programs from initrd (e.g., `spawn file:/initrd/program`).
+5. **Add directory listing to VFS**: Implement `OP_FILE_READDIR` or similar. Shell needs this for `ls` command.
 
-6. **Add directory listing to VFS**: Implement `OP_FILE_READDIR` or similar. Shell needs this for `ls` command.
+6. **Implement virtio-blk driver**: Block device support for persistent storage. Reuse virtio HAL from keyboard/GPU.
 
-7. **Implement virtio-blk driver**: Block device support for persistent storage. Reuse virtio HAL from keyboard/GPU.
+7. **Add simple filesystem (FAT or ext2-readonly)**: Mount a disk image. Start with read-only access.
 
-8. **Add simple filesystem (FAT or ext2-readonly)**: Mount a disk image. Start with read-only access.
+8. **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes.
 
-9. **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes.
-
-10. **GPU blitting/composition API**: The virtio-gpu driver just provides a framebuffer and flush. The kernel needs to manage this framebuffer and expose blitting/composition operations to userspace (e.g., create surface, blit surface to screen, flush region). A windowing system would allocate surfaces and the kernel composites them.
+9. **GPU blitting/composition API**: The virtio-gpu driver just provides a framebuffer and flush. The kernel needs to manage this framebuffer and expose blitting/composition operations to userspace (e.g., create surface, blit surface to screen, flush region). A windowing system would allocate surfaces and the kernel composites them.
 
 ## Technical debt
 
-- **Reorganise kernel modules**: scheduler.rs is getting large. Split into submodules (e.g., `scheduler/mod.rs`, `scheduler/context_switch.rs`, `scheduler/process.rs`). Similarly for other growing modules.
+- **Reorganise kernel modules**: Some modules are getting large (e.g., syscall.rs, memory/mod.rs). Consider splitting into submodules as was done for scheduler/.
 
 ## Known issues
 

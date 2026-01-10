@@ -1,3 +1,9 @@
 # Preemption test expected log output
-Preempt test: starting long computation
-Preempt test: computation completed correctly
+# Parent spawns 3 children, all do CPU-bound work concurrently via preemption
+Preempt test: spawning 3 CPU-bound children
+Preempt test: parent doing CPU-bound work
+Preempt test: parent completed, children running via preemption
+# Children complete after parent (order may vary due to preemption scheduling)
+preempt_child: completed
+preempt_child: completed
+preempt_child: completed
