@@ -8,8 +8,8 @@ use panda_kernel::apic;
 use panda_kernel::interrupts;
 use x86_64::structures::idt::InterruptStackFrame;
 
-/// Timer interrupt vector
-const TIMER_VECTOR: u8 = 0x20;
+/// Timer IRQ line (IRQ 0 = vector 0x20)
+const TIMER_IRQ: u8 = 0;
 
 panda_kernel::test_harness!(
     calibration_produces_nonzero_ticks,
@@ -44,7 +44,7 @@ extern "x86-interrupt" fn test_timer_handler(_stack_frame: InterruptStackFrame) 
 /// Setting a one-shot timer should cause an interrupt to fire.
 fn timer_oneshot_fires_interrupt() {
     // Install our test handler
-    interrupts::set_irq_handler(TIMER_VECTOR, Some(test_timer_handler));
+    interrupts::set_irq_handler(TIMER_IRQ, Some(test_timer_handler));
 
     // Reset counter
     TIMER_FIRED.store(0, Ordering::SeqCst);
@@ -68,7 +68,7 @@ fn timer_oneshot_fires_interrupt() {
     );
 
     // Restore default handler
-    interrupts::set_irq_handler(TIMER_VECTOR, None);
+    interrupts::set_irq_handler(TIMER_IRQ, None);
 }
 
 /// Timer can fire multiple times when restarted in the handler.
@@ -83,7 +83,7 @@ fn timer_fires_multiple_times() {
     }
 
     // Install handler that restarts timer
-    interrupts::set_irq_handler(TIMER_VECTOR, Some(multi_timer_handler));
+    interrupts::set_irq_handler(TIMER_IRQ, Some(multi_timer_handler));
     MULTI_TIMER_COUNT.store(0, Ordering::SeqCst);
 
     // Start first timer
@@ -109,7 +109,7 @@ fn timer_fires_multiple_times() {
     assert!(count >= 5, "Expected at least 5 timer interrupts, got {}", count);
 
     // Restore default handler
-    interrupts::set_irq_handler(TIMER_VECTOR, None);
+    interrupts::set_irq_handler(TIMER_IRQ, None);
 }
 
 /// Execution resumes correctly after timer interrupt.
@@ -123,7 +123,7 @@ fn timer_resumes_execution_after_interrupt() {
     }
 
     // Install handler
-    interrupts::set_irq_handler(TIMER_VECTOR, Some(resume_timer_handler));
+    interrupts::set_irq_handler(TIMER_IRQ, Some(resume_timer_handler));
     RESUME_COUNT.store(0, Ordering::SeqCst);
     LOOP_PROGRESS.store(0, Ordering::SeqCst);
 
@@ -153,13 +153,13 @@ fn timer_resumes_execution_after_interrupt() {
     );
 
     // Restore default handler
-    interrupts::set_irq_handler(TIMER_VECTOR, None);
+    interrupts::set_irq_handler(TIMER_IRQ, None);
 }
 
 /// Stopping the timer should prevent interrupts from firing.
 fn timer_stop_prevents_interrupt() {
     // Install our test handler
-    interrupts::set_irq_handler(TIMER_VECTOR, Some(test_timer_handler));
+    interrupts::set_irq_handler(TIMER_IRQ, Some(test_timer_handler));
 
     // Reset counter
     TIMER_FIRED.store(0, Ordering::SeqCst);
@@ -182,5 +182,5 @@ fn timer_stop_prevents_interrupt() {
     );
 
     // Restore default handler
-    interrupts::set_irq_handler(TIMER_VECTOR, None);
+    interrupts::set_irq_handler(TIMER_IRQ, None);
 }

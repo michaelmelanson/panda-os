@@ -2,12 +2,6 @@
 resolver = "3"
 members = ["panda-abi", "panda-kernel", "userspace/init", "userspace/shell", "userspace/libpanda", "userspace/tests/vfs_test", "userspace/tests/preempt_test", "userspace/tests/spawn_test", "userspace/tests/spawn_child", "userspace/tests/yield_test", "userspace/tests/yield_child", "userspace/tests/heap_test", "userspace/tests/print_test", "userspace/tests/resource_test", "userspace/tests/keyboard_test"]
 
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
-
 [workspace.dependencies]
 acpi = "6.0"
 linked_list_allocator = { version = "0.10", features = ["use_spin"] }
