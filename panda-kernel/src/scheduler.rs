@@ -9,14 +9,17 @@ use log::{debug, info};
 use spinning_top::RwSpinlock;
 use x86_64::structures::idt::InterruptStackFrame;
 
+use alloc::sync::Arc;
+
 use crate::apic;
 use crate::interrupts::{self, IrqHandlerFunc};
-use crate::process::{exec_userspace, Process, ProcessId, ProcessState};
+use crate::process::{exec_userspace, Process, ProcessId, ProcessState, SavedState};
+use crate::waker::Waker;
 
 static SCHEDULER: RwSpinlock<Option<Scheduler>> = RwSpinlock::new(None);
 
-/// Timer interrupt vector
-const TIMER_VECTOR: u8 = 0x20;
+/// Timer IRQ line (maps to vector 0x20)
+const TIMER_IRQ: u8 = 0;
 
 /// Time slice in milliseconds
 const TIME_SLICE_MS: u32 = 10;
@@ -56,7 +59,7 @@ impl Scheduler {
             panic!("No process with PID {pid:?}");
         };
 
-        for state in [ProcessState::Runnable, ProcessState::Running] {
+        for state in [ProcessState::Runnable, ProcessState::Running, ProcessState::Blocked] {
             let state_map = self.states.entry(state).or_default();
 
             if process.state() == state {
@@ -69,8 +72,9 @@ impl Scheduler {
     }
 
     /// Find the next runnable process and prepare it for execution.
-    /// Returns the IP, SP, and page table address for exec, or None if no runnable processes.
-    pub fn prepare_next_runnable(&mut self) -> Option<(x86_64::VirtAddr, x86_64::VirtAddr, x86_64::PhysAddr)> {
+    /// Returns the IP, SP, page table address, and optional saved state for exec.
+    /// The saved state is used when resuming from a blocked syscall to re-execute it.
+    pub fn prepare_next_runnable(&mut self) -> Option<(x86_64::VirtAddr, x86_64::VirtAddr, x86_64::PhysAddr, Option<SavedState>)> {
         // ensure no processes are currently running
         assert!(
             self.states
@@ -79,10 +83,8 @@ impl Scheduler {
                 .is_empty()
         );
 
-        info!("prepare_next_runnable: looking for runnable process");
         let (_, next_pid) = self.states.entry(ProcessState::Runnable).or_default().pop()?;
 
-        info!("prepare_next_runnable: found process {:?}", next_pid);
         self.change_state(next_pid, ProcessState::Running);
         self.current_pid = next_pid;
 
@@ -90,15 +92,17 @@ impl Scheduler {
             panic!("No process exists with PID {next_pid:?}");
         };
 
-        info!("prepare_next_runnable: prepared for exec");
         next_process.reset_last_scheduled();
-        Some(next_process.exec_params())
+        let (ip, sp, page_table, saved_state) = next_process.exec_params();
+        // Clone the saved state if present
+        let saved = saved_state.cloned();
+        Some((ip, sp, page_table, saved))
     }
 
     /// Remove a process from the scheduler and drop it (releasing resources).
     pub fn remove_process(&mut self, pid: ProcessId) {
         // Remove from state maps
-        for state in [ProcessState::Runnable, ProcessState::Running] {
+        for state in [ProcessState::Runnable, ProcessState::Running, ProcessState::Blocked] {
             self.states
                 .entry(state)
                 .or_default()
@@ -154,7 +158,7 @@ impl Scheduler {
 
 pub fn init(init_process: Process) {
     // Install timer interrupt handler for preemption
-    interrupts::set_irq_handler(TIMER_VECTOR, Some(timer_interrupt_handler as IrqHandlerFunc));
+    interrupts::set_irq_handler(TIMER_IRQ, Some(timer_interrupt_handler as IrqHandlerFunc));
     debug!("Preemption initialized with {}ms time slice", TIME_SLICE_MS);
 
     let mut scheduler = SCHEDULER.write();
@@ -193,28 +197,42 @@ pub fn add_process(process: Process) {
 }
 
 pub unsafe fn exec_next_runnable() -> ! {
-    let exec_params = {
-        let mut scheduler = SCHEDULER.write();
-        let scheduler = scheduler
-            .as_mut()
-            .expect("Scheduler has not been initialized");
-        scheduler.prepare_next_runnable()
-    };
-    // Lock is now dropped
+    loop {
+        let (exec_params, has_blocked) = {
+            let mut scheduler = SCHEDULER.write();
+            let scheduler = scheduler
+                .as_mut()
+                .expect("Scheduler has not been initialized");
+            let params = scheduler.prepare_next_runnable();
+            let blocked_count = scheduler
+                .states
+                .get(&ProcessState::Blocked)
+                .map(|h| h.len())
+                .unwrap_or(0);
+            (params, blocked_count > 0)
+        };
+        // Lock is now dropped
 
-    match exec_params {
-        Some((ip, sp, page_table)) => {
-            info!("exec_next_runnable: jumping to userspace");
-            // Switch to the process's page table
-            unsafe { crate::memory::switch_page_table(page_table); }
-            // Start preemption timer before jumping to userspace
-            start_timer();
-            unsafe { exec_userspace(ip, sp) }
-        }
-        None => {
-            info!("No runnable processes, halting");
-            // Exit QEMU if isa-debug-exit device is present (used by tests)
-            crate::qemu::exit_qemu(crate::qemu::QemuExitCode::Success);
+        match exec_params {
+            Some((ip, sp, page_table, saved_state)) => {
+                debug!("exec_next_runnable: jumping to userspace");
+                // Switch to the process's page table
+                unsafe { crate::memory::switch_page_table(page_table); }
+                // Start preemption timer before jumping to userspace
+                start_timer();
+                unsafe { exec_userspace(ip, sp, saved_state) }
+            }
+            None if has_blocked => {
+                // No runnable processes but some are blocked - idle until interrupt
+                x86_64::instructions::interrupts::enable_and_hlt();
+                // An interrupt woke us - loop back to check for runnable processes
+                x86_64::instructions::interrupts::disable();
+            }
+            None => {
+                info!("No processes remaining, halting");
+                // Exit QEMU if isa-debug-exit device is present (used by tests)
+                crate::qemu::exit_qemu(crate::qemu::QemuExitCode::Success);
+            }
         }
     }
 }
@@ -260,8 +278,6 @@ where
 /// # Safety
 /// This function does not return to the caller. It switches to a different process.
 pub unsafe fn yield_current(return_ip: x86_64::VirtAddr, return_sp: x86_64::VirtAddr) -> ! {
-    use crate::process::SavedState;
-
     {
         let mut scheduler = SCHEDULER.write();
         let scheduler = scheduler
@@ -289,4 +305,65 @@ pub unsafe fn yield_current(return_ip: x86_64::VirtAddr, return_sp: x86_64::Virt
 
     // Switch to next process
     unsafe { exec_next_runnable(); }
+}
+
+/// Block the current process on a waker: save its state and switch to the next runnable.
+/// The process will be woken when the waker's `wake()` method is called.
+///
+/// The saved state includes all registers needed to re-execute the syscall when resumed.
+/// RIP should point to the syscall instruction, and all argument registers are preserved.
+///
+/// # Safety
+/// This function does not return to the caller. It switches to a different process.
+pub unsafe fn block_current_on(
+    waker: Arc<Waker>,
+    return_ip: x86_64::VirtAddr,
+    return_sp: x86_64::VirtAddr,
+    saved_state: SavedState,
+) -> ! {
+    {
+        let mut scheduler = SCHEDULER.write();
+        let scheduler = scheduler
+            .as_mut()
+            .expect("Scheduler has not been initialized");
+
+        let pid = scheduler.current_process_id();
+        let process = scheduler
+            .processes
+            .get_mut(&pid)
+            .expect("Current process not found");
+
+        // Save where to resume - full state for syscall re-execution
+        let mut state = saved_state;
+        state.rip = return_ip.as_u64();
+        state.rsp = return_sp.as_u64();
+        process.save_state(state);
+
+        // Register this process with the waker before blocking
+        waker.set_waiting(pid);
+
+        // Mark as blocked
+        scheduler.change_state(pid, ProcessState::Blocked);
+    }
+    // Lock dropped
+
+    // Switch to next process
+    unsafe { exec_next_runnable(); }
+}
+
+/// Wake a blocked process, making it runnable again.
+/// Called by wakers when data becomes available.
+pub fn wake_process(pid: ProcessId) {
+    let mut scheduler = SCHEDULER.write();
+    let scheduler = scheduler
+        .as_mut()
+        .expect("Scheduler has not been initialized");
+
+    // Only wake if the process exists and is blocked
+    if let Some(process) = scheduler.processes.get(&pid) {
+        if process.state() == ProcessState::Blocked {
+            scheduler.change_state(pid, ProcessState::Runnable);
+            debug!("Woke process {:?}", pid);
+        }
+    }
 }

@@ -136,8 +136,8 @@ extern "sysv64" fn syscall_handler(
     arg1: usize,
     arg2: usize,
     arg3: usize,
-    _arg4: usize,
-    _arg5: usize,
+    arg4: usize,
+    arg5: usize,
     code: usize,
     return_rip: usize,
     user_rsp: usize,
@@ -146,15 +146,38 @@ extern "sysv64" fn syscall_handler(
         "SYSCALL: code={code:X}, args: {arg0:X}, {arg1:X}, {arg2:X}, {arg3:X}"
     );
 
+    // Build syscall args for potential restart
+    let syscall_args = SyscallArgs {
+        code,
+        arg0,
+        arg1,
+        arg2,
+        arg3,
+        arg4,
+        arg5,
+    };
+
     match code {
         panda_abi::SYSCALL_SEND => {
             // arg0 = handle, arg1 = operation, arg2-arg5 = operation args
             let handle = arg0 as u32;
             let operation = arg1 as u32;
-            handle_send(handle, operation, arg2, arg3, return_rip, user_rsp)
+            handle_send(handle, operation, arg2, arg3, return_rip, user_rsp, &syscall_args)
         }
         _ => -1,
     }
+}
+
+/// Syscall arguments - used to save state for restart after blocking
+#[derive(Clone, Copy)]
+struct SyscallArgs {
+    code: usize,
+    arg0: usize,
+    arg1: usize,
+    arg2: usize,
+    arg3: usize,
+    arg4: usize,
+    arg5: usize,
 }
 
 /// Handle the unified send syscall
@@ -165,25 +188,53 @@ fn handle_send(
     arg1: usize,
     return_rip: usize,
     user_rsp: usize,
+    syscall_args: &SyscallArgs,
 ) -> isize {
     use panda_abi::*;
+    use crate::process::SavedState;
 
     match operation {
         // File operations
         OP_FILE_READ => {
             let buf_ptr = arg0 as *mut u8;
             let buf_len = arg1;
-            scheduler::with_current_process(|proc| {
+            let result = scheduler::with_current_process(|proc| {
                 if let Some(file) = proc.handles_mut().get_file_mut(handle) {
                     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
-                    match file.read(buf) {
-                        Ok(n) => n as isize,
-                        Err(_) => -1,
-                    }
+                    file.read(buf)
                 } else {
-                    -1
+                    Err(vfs::FsError::NotFound)
                 }
-            })
+            });
+            match result {
+                Ok(n) => n as isize,
+                Err(vfs::FsError::WouldBlock(waker)) => {
+                    // Block the process on this waker.
+                    // Save RIP-2 to re-execute the syscall instruction when resumed.
+                    // The syscall instruction is 2 bytes (0F 05).
+                    // Save all registers needed to re-execute the syscall.
+                    let syscall_ip = return_rip - 2;
+                    let saved_state = SavedState {
+                        rax: syscall_args.code as u64,
+                        rdi: syscall_args.arg0 as u64,
+                        rsi: syscall_args.arg1 as u64,
+                        rdx: syscall_args.arg2 as u64,
+                        r10: syscall_args.arg3 as u64,
+                        r8: syscall_args.arg4 as u64,
+                        r9: syscall_args.arg5 as u64,
+                        ..Default::default()
+                    };
+                    unsafe {
+                        scheduler::block_current_on(
+                            waker,
+                            VirtAddr::new(syscall_ip as u64),
+                            VirtAddr::new(user_rsp as u64),
+                            saved_state,
+                        );
+                    }
+                }
+                Err(_) => -1,
+            }
         }
         OP_FILE_WRITE => {
             let buf_ptr = arg0 as *const u8;

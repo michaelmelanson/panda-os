@@ -40,12 +40,15 @@ pub fn set_page_fault_handler(handler: Option<PageFaultHandlerFunc>) {
     drop(descriptor_table);
 }
 
-/// Set a handler for an IRQ vector (0x20-0xFF).
+/// IRQ base vector offset (IRQs 0-15 map to vectors 0x20-0x2F)
+const IRQ_BASE_VECTOR: u8 = 0x20;
+
+/// Set a handler for an IRQ line (0-255).
 ///
-/// Vector numbers 0x00-0x1F are reserved for CPU exceptions.
+/// IRQ lines are mapped to interrupt vectors starting at 0x20.
 /// Pass `None` to restore the default handler (which just sends EOI).
-pub fn set_irq_handler(vector: u8, handler: Option<IrqHandlerFunc>) {
-    assert!(vector >= 0x20, "Vectors 0x00-0x1F are reserved for CPU exceptions");
+pub fn set_irq_handler(irq: u8, handler: Option<IrqHandlerFunc>) {
+    let vector = IRQ_BASE_VECTOR.saturating_add(irq);
 
     let mut descriptor_table = DESCRIPTOR_TABLE.write();
     let handler = handler.unwrap_or(default_irq_handler);

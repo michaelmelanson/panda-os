@@ -183,25 +183,6 @@ fn map_inner(
         let phys_addr = base_phys_addr + i as u64;
         let virt_addr = base_virt_addr + i as u64;
 
-        debug!(
-            "Mapping {phys_addr:#0X} to virtual {virt_addr:#0X} ({user}, {writable}, {no_execute})",
-            user = if options.user {
-                "user accessible"
-            } else {
-                "kernel-only"
-            },
-            writable = if options.writable {
-                "writable"
-            } else {
-                "read-only"
-            },
-            no_execute = if options.executable {
-                "executable"
-            } else {
-                "non-executable"
-            }
-        );
-
         let mut flags = PageTableFlags::PRESENT;
         if options.user {
             flags |= PageTableFlags::USER_ACCESSIBLE;
@@ -213,12 +194,8 @@ fn map_inner(
             flags |= PageTableFlags::NO_EXECUTE;
         }
 
-        let (entry, level) = l1_page_table_entry(virt_addr, flags);
+        let (entry, _level) = l1_page_table_entry(virt_addr, flags);
         let entry = unsafe { &mut *entry };
-
-        info!(
-            "Updating level {level:?} entry {entry:?} with address {phys_addr:?} and flags {flags:?}"
-        );
         without_write_protection(|| entry.set_addr(phys_addr, flags));
         tlb::flush(virt_addr);
     }
@@ -319,15 +296,9 @@ fn l1_page_table_entry(
 
         if entry.addr() == PhysAddr::zero() {
             let frame = allocate_frame_raw();
-
-            info!(
-                "Updating level {level:?} entry {entry:?} with address {phys_addr:?} and flags {flags:?}",
-                phys_addr = frame.start_address()
-            );
             without_write_protection(|| entry.set_addr(frame.start_address(), entry_flags));
             tlb::flush(VirtAddr::new(entry as *const _ as u64));
         } else {
-            info!("Updating level {level:?} entry {entry:?} with flags {flags:?}");
             without_write_protection(|| entry.set_flags(entry_flags));
         }
     }

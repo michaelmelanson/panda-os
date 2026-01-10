@@ -1,4 +1,7 @@
 mod virtio_gpu;
+mod virtio_hal;
+pub mod virtio_keyboard;
+
 use log::debug;
 
 use crate::pci::{self, device::PciDevice};
@@ -15,9 +18,13 @@ pub fn init() {
             pci_device.subclass()
         );
 
-        match (pci_device.vendor_id(), pci_device.device_id()) {
+        match (pci_device.vendor_id(), pci_device.device_id(), pci_device.subclass()) {
             // Virtio GPU
-            (0x1AF4, 0x1050) => virtio_gpu::init_from_pci_device(pci_device),
+            (0x1AF4, 0x1050, _) => virtio_gpu::init_from_pci_device(pci_device),
+            // Virtio Input - keyboard (subclass 0x00)
+            (0x1AF4, 0x1052, 0x00) => virtio_keyboard::init_from_pci_device(pci_device),
+            // Virtio Input - mouse (subclass 0x02) - skip for now
+            (0x1AF4, 0x1052, 0x02) => {}
             _ => {}
         }
     });

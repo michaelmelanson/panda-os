@@ -1,20 +1,16 @@
 #![no_std]
 #![no_main]
 
-use libpanda::{environment, Box};
+use libpanda::environment;
 
 libpanda::main! {
-    environment::log("HELLO FROM USERSPACE");
-    environment::log("About to allocate Box");
-
-    // Test heap allocation with Box
-    let boxed = Box::new(42u64);
-    environment::log("Box allocated");
-
-    if *boxed == 42 {
-        environment::log("Box allocation works!");
+    // Spawn the shell
+    let shell_pid = environment::spawn("file:/initrd/shell");
+    if shell_pid < 0 {
+        environment::log("init: failed to spawn shell");
+        return 1;
     }
 
-    environment::log("All heap tests passed!");
+    // Init's job is done - shell will take over
     0
 }

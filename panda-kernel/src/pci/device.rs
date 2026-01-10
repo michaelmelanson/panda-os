@@ -103,4 +103,14 @@ impl PciDevice {
     pub fn is_multifunction(&self) -> bool {
         self.header_type() & 0x80 != 0
     }
+
+    /// Get the interrupt line (legacy PCI interrupt)
+    pub fn interrupt_line(&self) -> u8 {
+        self.read(0x3C)
+    }
+
+    /// Get the interrupt pin (INTA=1, INTB=2, INTC=3, INTD=4, 0=none)
+    pub fn interrupt_pin(&self) -> u8 {
+        self.read(0x3D)
+    }
 }

@@ -25,13 +25,15 @@ for test in "${TESTS[@]}"; do
         BUILD_DIR="$PROJECT_DIR/build/test-$test"
         LOG_FILE="$PROJECT_DIR/build/test-$test.log"
         EXPECTED_FILE=""
+        MONITOR_FILE=""
     else
         BUILD_DIR="$PROJECT_DIR/build/utest-$test"
         LOG_FILE="$PROJECT_DIR/build/utest-$test.log"
         EXPECTED_FILE="$PROJECT_DIR/userspace/tests/$test/expected.txt"
+        MONITOR_FILE="$PROJECT_DIR/userspace/tests/$test/monitor.txt"
     fi
 
-    "$SCRIPT_DIR/run-qemu-test.sh" "$test" "$BUILD_DIR" "$LOG_FILE" 60 "$EXPECTED_FILE" &
+    "$SCRIPT_DIR/run-qemu-test.sh" "$test" "$BUILD_DIR" "$LOG_FILE" 60 "$EXPECTED_FILE" "$MONITOR_FILE" &
     pids+=($!)
 done
 

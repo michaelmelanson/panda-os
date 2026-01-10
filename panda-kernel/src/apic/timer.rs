@@ -5,7 +5,7 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use log::info;
+use log::debug;
 use x86_64::instructions::port::Port;
 
 use super::{with_local_apic, TimerDivide, TimerMode};
@@ -89,7 +89,7 @@ pub fn calibrate_timer() {
         // Stop the timer
         apic.set_timer_count(0);
 
-        info!(
+        debug!(
             "APIC timer calibrated: {} ticks/ms ({} MHz bus)",
             ticks_per_ms,
             (ticks_per_ms as u64 * 16) / 1000 // Approximate bus frequency

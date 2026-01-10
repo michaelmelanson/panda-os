@@ -1,21 +1,17 @@
-use core::{alloc::Layout, ptr::NonNull};
-
 use log::trace;
 use spinning_top::RwSpinlock;
 use virtio_drivers::{
-    Hal,
     device::gpu::VirtIOGpu,
     transport::pci::{
         PciTransport,
         bus::{ConfigurationAccess, DeviceFunction, PciRoot},
     },
 };
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::VirtAddr;
 
-use crate::{
-    memory::{self, global_alloc},
-    pci::device::{PciDevice, PciDeviceAddress},
-};
+use crate::pci::device::{PciDevice, PciDeviceAddress};
+
+use super::virtio_hal::VirtioHal;
 
 impl PartialEq<DeviceFunction> for PciDeviceAddress {
     fn eq(&self, other: &DeviceFunction) -> bool {
@@ -61,59 +57,6 @@ impl Into<DeviceFunction> for PciDeviceAddress {
             device: self.slot,
             function: self.function,
         }
-    }
-}
-
-struct VirtioHal;
-
-unsafe impl Hal for VirtioHal {
-    fn dma_alloc(
-        pages: usize,
-        _direction: virtio_drivers::BufferDirection,
-    ) -> (virtio_drivers::PhysAddr, core::ptr::NonNull<u8>) {
-        let layout = Layout::from_size_align(pages * 4096, 4096).unwrap();
-        let virt_addr = global_alloc::allocate(layout);
-
-        // nothing special to do here since all memory is available for DMA use
-        (
-            virt_addr.as_u64(),
-            NonNull::new(virt_addr.as_u64() as *mut u8).unwrap(),
-        )
-    }
-
-    unsafe fn dma_dealloc(
-        _paddr: virtio_drivers::PhysAddr,
-        _vaddr: core::ptr::NonNull<u8>,
-        _pages: usize,
-    ) -> i32 {
-        // do nothing
-        0
-    }
-
-    unsafe fn mmio_phys_to_virt(
-        paddr: virtio_drivers::PhysAddr,
-        _size: usize,
-    ) -> core::ptr::NonNull<u8> {
-        let phys_addr = PhysAddr::new(paddr);
-        let virt_addr = memory::physical_address_to_virtual(phys_addr);
-        let ptr: *mut u8 = virt_addr.as_mut_ptr();
-        core::ptr::NonNull::new(ptr).expect("could not get MMIO virtual address")
-    }
-
-    unsafe fn share(
-        buffer: core::ptr::NonNull<[u8]>,
-        _direction: virtio_drivers::BufferDirection,
-    ) -> virtio_drivers::PhysAddr {
-        // nothing special to do here, since all data is shared and we identity map
-        buffer.as_ptr() as *const () as u64
-    }
-
-    unsafe fn unshare(
-        _paddr: virtio_drivers::PhysAddr,
-        _buffer: core::ptr::NonNull<[u8]>,
-        _direction: virtio_drivers::BufferDirection,
-    ) {
-        // do nothing
     }
 }
 

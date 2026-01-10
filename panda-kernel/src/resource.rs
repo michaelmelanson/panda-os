@@ -9,9 +9,12 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use spinning_top::RwSpinlock;
+use alloc::sync::Arc;
+use spinning_top::{RwSpinlock, Spinlock};
 use x86_64::instructions::port::Port;
 
+use crate::device_address::DeviceAddress;
+use crate::devices::virtio_keyboard::{self, InputEvent, VirtioKeyboard};
 use crate::vfs::{self, File, FileStat, FsError, Resource, SeekFrom};
 
 /// A handler for a resource scheme (e.g., "file", "console", "pci")
@@ -112,6 +115,76 @@ impl File for SerialConsole {
 }
 
 // =============================================================================
+// Keyboard Scheme - virtio keyboard access
+// =============================================================================
+
+/// Scheme handler for keyboard devices
+pub struct KeyboardScheme;
+
+impl SchemeHandler for KeyboardScheme {
+    fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
+        // Parse path like "/pci/00:03.0"
+        let address = DeviceAddress::from_path(path)?;
+        let keyboard = virtio_keyboard::get_keyboard(&address)?;
+        Some(Box::new(KeyboardHandle { keyboard }))
+    }
+}
+
+/// Handle to an open keyboard device
+struct KeyboardHandle {
+    keyboard: Arc<Spinlock<VirtioKeyboard>>,
+}
+
+impl Resource for KeyboardHandle {
+    fn as_file(&mut self) -> Option<&mut dyn File> {
+        Some(self)
+    }
+}
+
+impl File for KeyboardHandle {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {
+        let mut kb = self.keyboard.lock();
+
+        // Try to get an event
+        if let Some(event) = kb.pop_event() {
+            // Copy event to buffer
+            let event_size = core::mem::size_of::<InputEvent>();
+            if buf.len() >= event_size {
+                let event_bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        &event as *const InputEvent as *const u8,
+                        event_size,
+                    )
+                };
+                buf[..event_size].copy_from_slice(event_bytes);
+                Ok(event_size)
+            } else {
+                // Buffer too small
+                Ok(0)
+            }
+        } else {
+            // No events - return WouldBlock with the waker
+            Err(FsError::WouldBlock(kb.waker()))
+        }
+    }
+
+    fn write(&mut self, _buf: &[u8]) -> Result<usize, FsError> {
+        Err(FsError::NotWritable)
+    }
+
+    fn seek(&mut self, _pos: SeekFrom) -> Result<u64, FsError> {
+        Err(FsError::NotSeekable)
+    }
+
+    fn stat(&self) -> FileStat {
+        FileStat {
+            size: 0,
+            is_dir: false,
+        }
+    }
+}
+
+// =============================================================================
 // Initialization
 // =============================================================================
 
@@ -119,4 +192,5 @@ impl File for SerialConsole {
 pub fn init() {
     register_scheme("file", Box::new(FileScheme));
     register_scheme("console", Box::new(ConsoleScheme));
+    register_scheme("keyboard", Box::new(KeyboardScheme));
 }

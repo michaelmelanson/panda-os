@@ -1,0 +1,9 @@
+# QEMU monitor commands to inject keyboard events
+# Each line is a monitor command, executed with a small delay between
+# Format: <command> or sleep <seconds>
+sleep 2
+sendkey a
+sendkey b
+sendkey c
+sendkey d
+sendkey e

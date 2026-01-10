@@ -11,7 +11,7 @@ pub use timer::{calibrate_timer, ticks_per_ms, set_timer_oneshot, stop_timer};
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use log::info;
+use log::debug;
 use spinning_top::Spinlock;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -161,7 +161,7 @@ static APIC_BASE_VIRT: AtomicU64 = AtomicU64::new(0);
 pub fn init() {
     let apic = LocalApic::new();
 
-    info!(
+    debug!(
         "Local APIC: ID={}, version={}",
         apic.id(),
         apic.version()

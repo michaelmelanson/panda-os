@@ -96,6 +96,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyboard_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
 name = "libpanda"
 version = "0.1.0"
 dependencies = [
@@ -269,6 +276,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "shell"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
 ]
 
 [[package]]

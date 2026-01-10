@@ -22,16 +22,12 @@ fn main() -> Status {
     // Initialize resource scheme system
     resource::init();
 
-    info!("Panda");
+    info!("Panda OS");
 
     unsafe {
         let init_data = initrd::get_init();
-        info!("Creating init process from ELF data");
         let init_process = Process::from_elf_data(Context::from_current_page_table(), init_data);
-
-        info!("Initializing scheduler");
         scheduler::init(init_process);
-        info!("Calling exec_next_runnable");
         scheduler::exec_next_runnable();
     }
 }

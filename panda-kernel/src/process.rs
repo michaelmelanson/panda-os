@@ -8,7 +8,7 @@ use goblin::elf::{
     Elf,
     program_header::{PT_LOAD, pt_to_str},
 };
-use log::{info, trace};
+use log::{info, debug, trace};
 use x86_64::{VirtAddr, registers::rflags::RFlags};
 
 use crate::{
@@ -46,21 +46,46 @@ pub struct SavedState {
 
 /// Jump to userspace at the given IP and SP. This function never returns.
 /// Must be called with no locks held, as it will not return to release them.
-pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr) -> ! {
+///
+/// If `saved_state` is Some, all syscall registers will be restored before jumping.
+/// This is used when resuming a blocked syscall to re-execute it.
+pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr, saved_state: Option<SavedState>) -> ! {
     let rflags = RFlags::INTERRUPT_FLAG.bits();
 
-    info!("Jumping to userspace: IP={:#x}, SP={:#x}", ip.as_u64(), sp.as_u64());
-
-    unsafe {
-        asm!(
-            "mov rsp, {stack_pointer}",
-            "swapgs",  // Switch from kernel GS to user GS before returning to userspace
-            "sysretq",
-            in("rcx") ip.as_u64(),
-            in("r11") rflags,
-            stack_pointer = in(reg) sp.as_u64(),
-            options(noreturn)
-        );
+    if let Some(state) = saved_state {
+        debug!("Resuming syscall at IP={:#x}, SP={:#x}", ip.as_u64(), sp.as_u64());
+        // Restore all syscall argument registers for syscall re-execution
+        unsafe {
+            asm!(
+                "mov rsp, {stack_pointer}",
+                "swapgs",
+                "sysretq",
+                in("rcx") ip.as_u64(),
+                in("r11") rflags,
+                in("rax") state.rax,
+                in("rdi") state.rdi,
+                in("rsi") state.rsi,
+                in("rdx") state.rdx,
+                in("r10") state.r10,
+                in("r8") state.r8,
+                in("r9") state.r9,
+                stack_pointer = in(reg) sp.as_u64(),
+                options(noreturn)
+            );
+        }
+    } else {
+        debug!("Jumping to userspace: IP={:#x}, SP={:#x}", ip.as_u64(), sp.as_u64());
+        unsafe {
+            asm!(
+                "mov rsp, {stack_pointer}",
+                "swapgs",
+                "sysretq",
+                in("rcx") ip.as_u64(),
+                in("r11") rflags,
+                stack_pointer = in(reg) sp.as_u64(),
+                options(noreturn)
+            );
+        }
     }
 }
 
@@ -71,10 +96,6 @@ fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
         match header.p_type {
             PT_LOAD => {
                 let virt_addr = VirtAddr::new(header.p_vaddr);
-                info!(
-                    "Loading PT_LOAD: vaddr={:#x}, memsz={:#x}, filesz={:#x}",
-                    header.p_vaddr, header.p_memsz, header.p_filesz
-                );
 
                 // Align down to page boundary for mapping
                 let page_offset = virt_addr.as_u64() & 0xFFF;
@@ -90,7 +111,6 @@ fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
                         writable: header.is_write(),
                     },
                 );
-                info!("Mapping complete, copying data");
 
                 // Copy ELF data to the mapped region (at the original unaligned address)
                 // Temporarily disable write protection to allow kernel writes to read-only pages
@@ -102,7 +122,6 @@ fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
                         header.p_filesz as usize,
                     );
                 });
-                info!("Data copied");
 
                 mappings.push(mapping);
             }
@@ -111,7 +130,6 @@ fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
         }
     }
 
-    info!("ELF loading complete, {} segments loaded", mappings.len());
     mappings
 }
 
@@ -129,6 +147,7 @@ impl ProcessId {
 pub enum ProcessState {
     Runnable,
     Running,
+    Blocked,
 }
 
 pub struct Process {
@@ -205,8 +224,8 @@ impl Process {
 
     /// Get the IP, SP, and page table address needed for exec.
     /// Used by scheduler to exec after releasing locks.
-    pub fn exec_params(&self) -> (VirtAddr, VirtAddr, x86_64::PhysAddr) {
-        (self.ip, self.sp, self.context.page_table_phys())
+    pub fn exec_params(&self) -> (VirtAddr, VirtAddr, x86_64::PhysAddr, Option<&SavedState>) {
+        (self.ip, self.sp, self.context.page_table_phys(), self.saved_state.as_ref())
     }
 
     pub(crate) fn state(&self) -> ProcessState {

@@ -1,8 +1,8 @@
 SHELL := /bin/bash
-.PHONY: build panda-kernel init run test kernel-test userspace-test
+.PHONY: build panda-kernel init shell run test kernel-test userspace-test
 
 KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic
-USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test
+USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test keyboard_test
 
 # Extra binaries needed for specific tests (space-separated)
 spawn_test_EXTRAS := spawn_child
@@ -10,13 +10,15 @@ yield_test_EXTRAS := yield_child
 export spawn_test_EXTRAS yield_test_EXTRAS
 
 # Build targets
-build: panda-kernel init
-	cp target/x86_64-panda-uefi/debug/panda-kernel.efi build/efi/boot/bootx64.efi
-	mkdir -p build/initrd
-	cp target/x86_64-panda-userspace/debug/init build/initrd/init
-	echo "Hello from the initrd!" > build/initrd/hello.txt
-	tar --format=ustar -cf build/efi/initrd.tar -C build/initrd init hello.txt
-	echo "fs0:\efi\boot\bootx64.efi" > build/efi/boot/startup.nsh
+build: panda-kernel init shell
+	mkdir -p build/run/efi/boot
+	mkdir -p build/run/initrd
+	cp target/x86_64-panda-uefi/debug/panda-kernel.efi build/run/efi/boot/bootx64.efi
+	cp target/x86_64-panda-userspace/debug/init build/run/initrd/init
+	cp target/x86_64-panda-userspace/debug/shell build/run/initrd/shell
+	echo "Hello from the initrd!" > build/run/initrd/hello.txt
+	tar --format=ustar -cf build/run/efi/initrd.tar -C build/run/initrd init shell hello.txt
+	echo 'fs0:\efi\boot\bootx64.efi' > build/run/efi/boot/startup.nsh
 
 panda-kernel:
 	cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json
@@ -24,9 +26,12 @@ panda-kernel:
 init:
 	cargo +nightly build -Z build-std=core,alloc --package init --target ./x86_64-panda-userspace.json
 
+shell:
+	cargo +nightly build -Z build-std=core,alloc --package shell --target ./x86_64-panda-userspace.json
+
 run: build
 	$(QEMU_COMMON) \
-		-drive format=raw,file=fat:rw:build \
+		-drive format=raw,file=fat:rw:build/run \
 		-no-shutdown -no-reboot \
 		-display gtk \
 		-monitor vc

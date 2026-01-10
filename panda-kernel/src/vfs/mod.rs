@@ -8,8 +8,11 @@ pub use tarfs::TarFs;
 
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spinning_top::RwSpinlock;
+
+use crate::waker::Waker;
 
 /// A kernel resource that can be accessed via a handle
 pub trait Resource: Send + Sync {
@@ -32,7 +35,6 @@ pub enum SeekFrom {
 }
 
 /// Filesystem errors
-#[derive(Debug)]
 pub enum FsError {
     /// Path not found
     NotFound,
@@ -44,6 +46,21 @@ pub enum FsError {
     NotWritable,
     /// Resource is not seekable
     NotSeekable,
+    /// Operation would block - caller should block on the waker
+    WouldBlock(Arc<Waker>),
+}
+
+impl core::fmt::Debug for FsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            FsError::NotFound => write!(f, "NotFound"),
+            FsError::InvalidOffset => write!(f, "InvalidOffset"),
+            FsError::NotReadable => write!(f, "NotReadable"),
+            FsError::NotWritable => write!(f, "NotWritable"),
+            FsError::NotSeekable => write!(f, "NotSeekable"),
+            FsError::WouldBlock(_) => write!(f, "WouldBlock"),
+        }
+    }
 }
 
 /// File metadata
