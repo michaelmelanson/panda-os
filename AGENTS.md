@@ -2,6 +2,10 @@
 
 This file is a table of contents into the docs/ directory. Keep detailed documentation there, not here.
 
+## Style
+
+- Use Canadian English in chat and code (e.g., colour, behaviour, centre)
+
 ## Documentation
 
 - [docs/BUILDING.md](docs/BUILDING.md) - Build commands, custom targets, cargo invocations
