@@ -34,10 +34,13 @@ panda-abi/             # Shared ABI definitions (syscalls, constants)
 # Build everything
 make build
 
-# Run kernel tests
+# Run all tests (kernel and userspace)
 make test
 
-# Run userspace tests
+# Run only kernel tests
+make kernel-test
+
+# Run only userspace tests
 make userspace-test
 
 # Run in QEMU interactively
