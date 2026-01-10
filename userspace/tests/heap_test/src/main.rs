@@ -240,10 +240,10 @@ fn test_alignment() -> bool {
     // Test struct with alignment requirement
     #[repr(align(64))]
     struct Aligned64 {
-        data: u64,
+        _data: u64,
     }
 
-    let boxed_aligned = Box::new(Aligned64 { data: 42 });
+    let boxed_aligned = Box::new(Aligned64 { _data: 42 });
     let addr = &*boxed_aligned as *const Aligned64 as usize;
     if addr % 64 != 0 {
         environment::log("FAIL: Aligned64 not 64-byte aligned");

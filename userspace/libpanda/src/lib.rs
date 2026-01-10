@@ -13,7 +13,7 @@ pub mod syscall;
 pub use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 
 #[alloc_error_handler]
-fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
+fn alloc_error_handler(_layout: core::alloc::Layout) -> ! {
     syscall::syscall_log("ALLOC ERROR: out of memory");
     syscall::syscall_exit(102);
 }

@@ -138,6 +138,8 @@ pub struct Process {
     context: Context,
     sp: VirtAddr,
     ip: VirtAddr,
+    /// Memory mappings for this process (code, data, stack). Dropped on process exit.
+    #[allow(dead_code)]
     mappings: Vec<Mapping>,
     handles: HandleTable,
     /// Saved CPU state when process is preempted. Only valid when state is Runnable.

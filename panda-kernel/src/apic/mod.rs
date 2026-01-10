@@ -18,6 +18,7 @@ use x86_64::{PhysAddr, VirtAddr};
 use crate::memory::physical_address_to_virtual;
 
 /// Local APIC register offsets
+#[allow(dead_code)]
 mod reg {
     pub const ID: u32 = 0x020;
     pub const VERSION: u32 = 0x030;
@@ -59,6 +60,7 @@ pub enum TimerDivide {
 const DEFAULT_APIC_BASE: u64 = 0xFEE0_0000;
 
 /// APIC base address MSR
+#[allow(dead_code)]
 const IA32_APIC_BASE_MSR: u32 = 0x1B;
 
 /// Local APIC driver
