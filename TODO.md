@@ -1,53 +1,47 @@
 # Panda OS TODO
 
-## Known Issues
+## Current state
 
-- 63 unsafe blocks with limited safety wrappers
-- Identity mapping limits address space usage
-- Global mutable state with potential deadlock risk
-- ACPI handler completely unimplemented (27 todo!() macros)
-- **proc-macro2 >= 1.0.104 causes test failures**: The `log!` macros generate incorrect code when used in x86-interrupt handlers with proc-macro2 1.0.104+. This causes register corruption during timer interrupts, leading to userspace computation errors. Cargo.lock pins proc-macro2 to 1.0.103 as a workaround. See upstream issue investigation needed.
+Working:
+- UEFI boot, memory management, page tables
+- Preemptive scheduler with blocking I/O support
+- Syscall ABI with callee-saved register preservation
+- VFS with tarfs (initrd), resource scheme system
+- Virtio GPU (basic), virtio keyboard with blocking reads
+- Userspace: libpanda, init, shell (echo-only), 9 test suites
 
-## Immediate Priorities
+Not yet implemented:
+- `OP_PROCESS_WAIT`, `OP_PROCESS_SIGNAL`, `OP_ENVIRONMENT_TIME`
+- Spawn returns 0 instead of process handle
+- Preemptive context switch (timer handler just restarts timer)
+- ACPI handler read/write methods (27 todo!() macros)
 
-### Basic Console I/O
-- Simple line-buffered input from keyboard
+## Next steps
 
-## Medium-term Goals
+1. **Implement preemptive context switching**: The timer interrupt handler currently just restarts the timer. Save process state in the interrupt handler and switch to the next runnable process.
 
-### Deadline-based Scheduler
-- Optimize for latency over throughput
-- Niceness for processes that yield early (I/O bound)
-- Preemption based on deadlines
+2. **Return process handle from spawn**: `OP_ENVIRONMENT_SPAWN` returns 0 instead of a handle. Return a proper handle so parent can wait on child.
 
-### Memory Pressure Handling
-- Add OOM (out-of-memory) handling
-- Consider adding memory pressure notifications
+3. **Implement OP_PROCESS_WAIT**: Allow parent to wait for child process to exit. Requires tracking parent-child relationships and storing exit codes.
 
-### Basic VFS Abstraction
-- In-memory filesystem (tmpfs)
+4. **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
 
-### Userspace Library (libpanda)
-- String/memory functions (memcpy, strlen, etc.)
+5. **Make shell execute commands**: Currently shell just echoes input. Parse command line, spawn programs from initrd (e.g., `spawn file:/initrd/program`).
 
-### Keyboard Input
-- PS/2 or Virtio input device driver
-- Interrupt-driven input
-- Ring buffer for key events
+6. **Add directory listing to VFS**: Implement `OP_FILE_READDIR` or similar. Shell needs this for `ls` command.
 
-## Long-term Goals
+7. **Implement virtio-blk driver**: Block device support for persistent storage. Reuse virtio HAL from keyboard/GPU.
 
-### Block Device & Filesystem
-- Virtio block driver
-- Simple FAT filesystem
-- Persistent storage
+8. **Add simple filesystem (FAT or ext2-readonly)**: Mount a disk image. Start with read-only access.
 
-### Shell
-- Command interpreter
-- Process spawning via sys_spawn
-- Built-in commands
+9. **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes.
 
-### POSIX Compatibility Subsystem
-- Optional layer mapping POSIX calls to Panda syscalls
-- fork/exec emulation via spawn where possible
-- Compatibility for porting existing software
+10. **GPU blitting/composition API**: The virtio-gpu driver just provides a framebuffer and flush. The kernel needs to manage this framebuffer and expose blitting/composition operations to userspace (e.g., create surface, blit surface to screen, flush region). A windowing system would allocate surfaces and the kernel composites them.
+
+## Known issues
+
+- **proc-macro2 >= 1.0.104 causes test failures**: The `log!` macros generate incorrect code when used in x86-interrupt handlers with proc-macro2 1.0.104+. Cargo.lock pins proc-macro2 to 1.0.103 as a workaround.
+
+- **ConfigurationAccess::unsafe_clone unimplemented**: virtio_gpu/mod.rs has a `todo!()` in the PCI configuration access trait impl.
+
+- **ACPI handler incomplete**: 27 `todo!()` macros in acpi/handler.rs for memory read/write operations.
