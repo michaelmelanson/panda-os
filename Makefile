@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: build panda-kernel init run test userspace-test
+.PHONY: build panda-kernel init run test kernel-test userspace-test
 
 KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic
 USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test
@@ -31,8 +31,11 @@ run: build
 		-display gtk \
 		-monitor vc
 
+# All tests
+test: kernel-test userspace-test
+
 # Kernel tests
-test:
+kernel-test:
 	@echo "Building kernel tests..."
 	@cargo +nightly test --package panda-kernel --target ./x86_64-panda-uefi.json --no-run 2>&1 | grep -E "Compiling|Executable"
 	@echo ""

@@ -5,10 +5,13 @@ This document describes how to write and run tests for the Panda kernel.
 ## Running Tests
 
 ```bash
-# Run all kernel tests
+# Run all tests (kernel and userspace)
 make test
 
-# Run all userspace tests
+# Run only kernel tests
+make kernel-test
+
+# Run only userspace tests
 make userspace-test
 ```
 
