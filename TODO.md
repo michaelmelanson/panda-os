@@ -10,11 +10,6 @@
 
 ## Immediate Priorities
 
-### Expand Syscalls
-- Message-passing with structured objects (BSON) instead of byte streams
-- `sys_send(handle, object)` - send structured object to resource
-- `sys_recv(handle)` - receive structured object from resource
-
 ### Basic Console I/O
 - Console as capability granted to init process
 - Implement write to serial output
