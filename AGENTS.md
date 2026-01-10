@@ -5,6 +5,7 @@ This file is a table of contents into the docs/ directory. Keep detailed documen
 ## Style
 
 - Use Canadian English in chat and code (e.g., colour, behaviour, centre)
+- Use "Sentence case" rather than "Title Case" for headers.
 
 ## Documentation
 
