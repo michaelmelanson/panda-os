@@ -3,7 +3,7 @@
 ## Current state
 
 Working:
-- UEFI boot, memory management, page tables
+- UEFI boot, memory management, page tables, demand-paged stack/heap
 - Preemptive multitasking with full context switching
 - Syscall ABI with callee-saved register preservation
 - VFS with tarfs (initrd), resource scheme system
@@ -33,7 +33,7 @@ Not yet implemented:
 
 ## Technical debt
 
-- **Reorganise kernel modules**: Some modules are getting large (e.g., syscall.rs, memory/mod.rs). Consider splitting into submodules as was done for scheduler/.
+None currently tracked.
 
 ## Known issues
 
