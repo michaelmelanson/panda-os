@@ -111,13 +111,10 @@ impl VirtioKeyboard {
 
     /// Poll the device for new events (called from IRQ handler)
     pub fn poll(&mut self) {
-        let mut count = 0;
         // Poll virtio device and push events to buffer
         while let Some(event) = self.device.pop_pending_event() {
-            count += 1;
             // Only care about key events
             if event.event_type == EV_KEY {
-
                 self.buffer.push(InputEvent {
                     event_type: event.event_type,
                     code: event.code,
@@ -125,7 +122,6 @@ impl VirtioKeyboard {
                 });
             }
         }
-
 
         // Acknowledge the interrupt after consuming events
         self.device.ack_interrupt();

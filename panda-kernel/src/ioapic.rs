@@ -14,6 +14,7 @@ use crate::memory::physical_address_to_virtual;
 
 /// IOAPIC register offsets (accessed via index/data registers)
 mod reg {
+    #![allow(dead_code)]
     pub const ID: u32 = 0x00;
     pub const VERSION: u32 = 0x01;
     pub const ARBITRATION: u32 = 0x02;
@@ -148,6 +149,7 @@ impl IoApic {
     }
 
     /// Get the IOAPIC ID
+    #[allow(dead_code)]
     fn id(&self) -> u8 {
         ((self.read(reg::ID) >> 24) & 0xF) as u8
     }
