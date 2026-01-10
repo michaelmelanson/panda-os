@@ -290,13 +290,8 @@ pub unsafe fn yield_current(return_ip: x86_64::VirtAddr, return_sp: x86_64::Virt
             .get_mut(&pid)
             .expect("Current process not found");
 
-        // Save where to resume (only RIP/RSP needed for syscall yield)
-        let state = SavedState {
-            rip: return_ip.as_u64(),
-            rsp: return_sp.as_u64(),
-            ..Default::default()
-        };
-        process.save_state(state);
+        // Save where to resume (only RIP/RSP needed for yield - no register restore)
+        process.set_resume_point(return_ip, return_sp);
 
         // Mark as runnable (not running)
         scheduler.change_state(pid, ProcessState::Runnable);

@@ -4,6 +4,20 @@ use core::{arch::naked_asm, slice, str};
 use log::{debug, error, info};
 use spinning_top::Spinlock;
 
+/// Callee-saved registers that must be preserved across syscalls.
+/// These are saved by syscall_entry and passed to syscall_handler for use
+/// when a process blocks and needs to restore full state on resume.
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub struct CalleeSavedRegs {
+    pub rbx: u64,
+    pub rbp: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+}
+
 use crate::{context::Context, handle::ResourceType, process::Process, resource, scheduler, vfs};
 use x86_64::{
     VirtAddr,
@@ -96,32 +110,45 @@ extern "C" fn syscall_entry() {
         "lea rsp, [{kernel_stack}]",
         "add rsp, 0x10000",
 
-        "push rbx",
-        "push rbp",
-        "push r11",                 // Save RFLAGS (in r11 from syscall)
-        "push r12",
-        "push r13",
-        "push r14",
+        // Push callee-saved registers in CalleeSavedRegs order (reversed for stack)
+        // CalleeSavedRegs: rbx, rbp, r12, r13, r14, r15
         "push r15",
+        "push r14",
+        "push r13",
+        "push r12",
+        "push rbp",
+        "push rbx",
 
+        "push r11",                 // Save RFLAGS (in r11 from syscall)
         "push rcx",                 // Save return RIP (in rcx from syscall)
-        // Stack args for handler: user_rsp, return_rip, syscall_code
-        "push gs:[0x0]",            // arg8: user_rsp
-        "push rcx",                 // arg7: return_rip
-        "push rax",                 // syscall code as 7th argument
-        "mov rcx, r10",             // arg3 (sysv64 uses r10 instead of rcx)
-        "call {handler}",
-        "add rsp, 24",              // pop the 3 stack args
-        "pop rcx",                  // Restore return RIP
-        // rax now contains the return value from syscall_handler
 
-        "pop r15",
-        "pop r14",
-        "pop r13",
-        "pop r12",
-        "pop r11",
-        "pop rbp",
+        // Stack args for handler: callee_saved_ptr, user_rsp, return_rip, syscall_code
+        // Stack at this point (before pushes):
+        //   [rsp+0]  = rcx (return RIP)
+        //   [rsp+8]  = r11 (RFLAGS)
+        //   [rsp+16] = rbx (start of CalleeSavedRegs)
+        //
+        // sysv64 ABI: args in rdi, rsi, rdx, rcx, r8, r9, then stack (right to left)
+        // arg3 should be in rcx, but syscall convention puts it in r10 (rcx has return addr)
+        "mov rcx, r10",             // arg3: move from r10 to rcx before we use r10 as temp
+        "lea r10, [rsp + 16]",      // r10 = pointer to CalleeSavedRegs on stack
+        "push r10",                 // arg9: callee_saved_ptr (rsp -= 8)
+        "push gs:[0x0]",            // arg8: user_rsp (rsp -= 8)
+        "push [rsp + 16]",          // arg7: return_rip (was at rsp+0, now at rsp+16 after 2 pushes)
+        "push rax",                 // arg6: syscall code
+        "call {handler}",
+        "add rsp, 32",              // pop the 4 stack args
+
+        "pop rcx",                  // Restore return RIP
+        "pop r11",                  // Restore RFLAGS
+
+        // Restore callee-saved registers
         "pop rbx",
+        "pop rbp",
+        "pop r12",
+        "pop r13",
+        "pop r14",
+        "pop r15",
 
         "mov rsp, gs:[0x0]",
         "swapgs",
@@ -141,6 +168,7 @@ extern "sysv64" fn syscall_handler(
     code: usize,
     return_rip: usize,
     user_rsp: usize,
+    callee_saved: *const CalleeSavedRegs,
 ) -> isize {
     debug!(
         "SYSCALL: code={code:X}, args: {arg0:X}, {arg1:X}, {arg2:X}, {arg3:X}"
@@ -157,12 +185,15 @@ extern "sysv64" fn syscall_handler(
         arg5,
     };
 
+    // Read callee-saved registers from the stack
+    let callee_saved = unsafe { *callee_saved };
+
     match code {
         panda_abi::SYSCALL_SEND => {
             // arg0 = handle, arg1 = operation, arg2-arg5 = operation args
             let handle = arg0 as u32;
             let operation = arg1 as u32;
-            handle_send(handle, operation, arg2, arg3, return_rip, user_rsp, &syscall_args)
+            handle_send(handle, operation, arg2, arg3, return_rip, user_rsp, &syscall_args, &callee_saved)
         }
         _ => -1,
     }
@@ -189,6 +220,7 @@ fn handle_send(
     return_rip: usize,
     user_rsp: usize,
     syscall_args: &SyscallArgs,
+    callee_saved: &CalleeSavedRegs,
 ) -> isize {
     use panda_abi::*;
     use crate::process::SavedState;
@@ -212,9 +244,11 @@ fn handle_send(
                     // Block the process on this waker.
                     // Save RIP-2 to re-execute the syscall instruction when resumed.
                     // The syscall instruction is 2 bytes (0F 05).
-                    // Save all registers needed to re-execute the syscall.
+                    // Save all registers needed to re-execute the syscall, including
+                    // callee-saved registers which must be preserved across the blocking.
                     let syscall_ip = return_rip - 2;
                     let saved_state = SavedState {
+                        // Syscall argument registers
                         rax: syscall_args.code as u64,
                         rdi: syscall_args.arg0 as u64,
                         rsi: syscall_args.arg1 as u64,
@@ -222,6 +256,13 @@ fn handle_send(
                         r10: syscall_args.arg3 as u64,
                         r8: syscall_args.arg4 as u64,
                         r9: syscall_args.arg5 as u64,
+                        // Callee-saved registers
+                        rbx: callee_saved.rbx,
+                        rbp: callee_saved.rbp,
+                        r12: callee_saved.r12,
+                        r13: callee_saved.r13,
+                        r14: callee_saved.r14,
+                        r15: callee_saved.r15,
                         ..Default::default()
                     };
                     unsafe {

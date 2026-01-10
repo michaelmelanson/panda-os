@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use core::{
-    arch::asm,
+    arch::{asm, naked_asm},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -8,7 +8,7 @@ use goblin::elf::{
     Elf,
     program_header::{PT_LOAD, pt_to_str},
 };
-use log::{info, debug, trace};
+use log::{debug, trace};
 use x86_64::{VirtAddr, registers::rflags::RFlags};
 
 use crate::{
@@ -47,31 +47,16 @@ pub struct SavedState {
 /// Jump to userspace at the given IP and SP. This function never returns.
 /// Must be called with no locks held, as it will not return to release them.
 ///
-/// If `saved_state` is Some, all syscall registers will be restored before jumping.
-/// This is used when resuming a blocked syscall to re-execute it.
+/// If `saved_state` is Some, all registers (syscall args + callee-saved) will be restored
+/// before jumping. This is used when resuming a blocked syscall to re-execute it.
 pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr, saved_state: Option<SavedState>) -> ! {
     let rflags = RFlags::INTERRUPT_FLAG.bits();
 
     if let Some(state) = saved_state {
         debug!("Resuming syscall at IP={:#x}, SP={:#x}", ip.as_u64(), sp.as_u64());
-        // Restore all syscall argument registers for syscall re-execution
+        // Use naked helper to restore all registers including rbx/rbp
         unsafe {
-            asm!(
-                "mov rsp, {stack_pointer}",
-                "swapgs",
-                "sysretq",
-                in("rcx") ip.as_u64(),
-                in("r11") rflags,
-                in("rax") state.rax,
-                in("rdi") state.rdi,
-                in("rsi") state.rsi,
-                in("rdx") state.rdx,
-                in("r10") state.r10,
-                in("r8") state.r8,
-                in("r9") state.r9,
-                stack_pointer = in(reg) sp.as_u64(),
-                options(noreturn)
-            );
+            exec_userspace_with_state(ip.as_u64(), sp.as_u64(), rflags, &state);
         }
     } else {
         debug!("Jumping to userspace: IP={:#x}, SP={:#x}", ip.as_u64(), sp.as_u64());
@@ -82,11 +67,67 @@ pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr, saved_state: Option<Sav
                 "sysretq",
                 in("rcx") ip.as_u64(),
                 in("r11") rflags,
+                in("rax") 0u64,  // Return 0 (success) for yield
                 stack_pointer = in(reg) sp.as_u64(),
                 options(noreturn)
             );
         }
     }
+}
+
+/// Naked helper to restore all registers from SavedState and jump to userspace.
+/// Arguments (sysv64 ABI):
+///   rdi = ip (return address for sysretq -> rcx)
+///   rsi = sp (user stack pointer)
+///   rdx = rflags (-> r11)
+///   rcx = pointer to SavedState
+#[unsafe(naked)]
+unsafe extern "sysv64" fn exec_userspace_with_state(
+    _ip: u64,
+    _sp: u64,
+    _rflags: u64,
+    _state: *const SavedState,
+) -> ! {
+    // SavedState layout (offsets in bytes):
+    //   0x00: rax, 0x08: rbx, 0x10: rcx, 0x18: rdx
+    //   0x20: rsi, 0x28: rdi, 0x30: rbp, 0x38: r8
+    //   0x40: r9,  0x48: r10, 0x50: r11, 0x58: r12
+    //   0x60: r13, 0x68: r14, 0x70: r15, 0x78: rip
+    //   0x80: rsp, 0x88: rflags
+    naked_asm!(
+        // Save arguments we need later
+        "mov r11, rdx",             // r11 = rflags for sysretq
+        "mov r10, rcx",             // r10 = state pointer (temp)
+
+        // Restore callee-saved registers from state
+        "mov rbx, [r10 + 0x08]",
+        "mov rbp, [r10 + 0x30]",
+        "mov r12, [r10 + 0x58]",
+        "mov r13, [r10 + 0x60]",
+        "mov r14, [r10 + 0x68]",
+        "mov r15, [r10 + 0x70]",
+
+        // Restore syscall argument registers
+        "mov r8,  [r10 + 0x38]",
+        "mov r9,  [r10 + 0x40]",
+        "mov rax, [r10 + 0x00]",    // syscall number
+
+        // Save ip (rdi) and sp (rsi) before we overwrite them
+        "mov rcx, rdi",             // rcx = return ip for sysretq
+
+        // Restore remaining syscall args (rdi, rsi, rdx, r10)
+        "mov rdi, [r10 + 0x28]",
+        // rsi still holds sp, save it
+        "push rsi",
+        "mov rsi, [r10 + 0x20]",
+        "mov rdx, [r10 + 0x18]",
+        "mov r10, [r10 + 0x48]",
+
+        // Set user stack pointer and return
+        "pop rsp",                  // rsp = user sp
+        "swapgs",
+        "sysretq",
+    )
 }
 
 fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
@@ -252,12 +293,21 @@ impl Process {
         &mut self.handles
     }
 
-    /// Save the CPU state when preempting this process.
+    /// Save the CPU state when blocking this process on a syscall.
+    /// The saved state will be used to restore registers when resuming.
     pub fn save_state(&mut self, state: SavedState) {
         self.saved_state = Some(state);
         // Update IP/SP from saved state for next exec
         self.ip = VirtAddr::new(state.rip);
         self.sp = VirtAddr::new(state.rsp);
+    }
+
+    /// Set only the IP/SP for resumption (used by yield).
+    /// Does NOT set saved_state, so registers won't be restored.
+    pub fn set_resume_point(&mut self, ip: VirtAddr, sp: VirtAddr) {
+        self.ip = ip;
+        self.sp = sp;
+        self.saved_state = None;
     }
 
     /// Get the saved state, if any.

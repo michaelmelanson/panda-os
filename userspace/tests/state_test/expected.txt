@@ -1,0 +1,18 @@
+=== State Preservation Tests ===
+TEST: registers_preserved_simple_syscall
+PASS: registers_preserved_simple_syscall
+TEST: stack_variables_preserved
+PASS: stack_variables_preserved
+TEST: state_preserved_blocking_read
+PASS: state_preserved_blocking_read
+TEST: multiple_syscalls_preserve_state
+PASS: multiple_syscalls_preserve_state
+TEST: nested_calls_with_syscalls
+PASS: nested_calls_with_syscalls
+TEST: syscall_return_values
+PASS: syscall_return_values
+TEST: syscall_arg_registers_clean
+PASS: syscall_arg_registers_clean
+TEST: heap_preserved_across_syscalls
+PASS: heap_preserved_across_syscalls
+=== All State Preservation Tests Passed ===
