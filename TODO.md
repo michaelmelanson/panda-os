@@ -11,8 +11,6 @@
 ## Immediate Priorities
 
 ### Basic Console I/O
-- Console as capability granted to init process
-- Implement write to serial output
 - Simple line-buffered input from keyboard
 
 ## Medium-term Goals
@@ -30,8 +28,7 @@
 - In-memory filesystem (tmpfs)
 
 ### Userspace Library (libpanda)
-- printf implementation
-- String/memory functions
+- String/memory functions (memcpy, strlen, etc.)
 
 ### Keyboard Input
 - PS/2 or Virtio input device driver
