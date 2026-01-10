@@ -179,8 +179,6 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     // Send EOI first
     apic::eoi();
 
-    debug!("Timer interrupt");
-
     // For now, just restart the timer - with one process there's nothing to switch to
     // TODO: Implement full context switch when we have multiple processes
     start_timer();

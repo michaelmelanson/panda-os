@@ -1,0 +1,4 @@
+# Heap allocation test expected log output
+# Only check key markers to avoid timer interrupt noise in logs
+=== Heap allocation tests ===
+=== All heap tests passed! ===

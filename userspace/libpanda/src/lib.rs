@@ -6,6 +6,7 @@ extern crate alloc;
 pub mod environment;
 pub mod file;
 pub mod heap;
+pub mod print;
 pub mod process;
 pub mod syscall;
 

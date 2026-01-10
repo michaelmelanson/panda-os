@@ -1,0 +1,4 @@
+# Print macro test expected log output
+# Only check key markers to avoid timer interrupt noise in logs
+=== Print macro tests ===
+=== All print tests passed! ===
