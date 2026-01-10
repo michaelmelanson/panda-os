@@ -5,7 +5,11 @@ extern crate alloc;
 
 use ::uefi::{Status, entry};
 use log::info;
-use panda_kernel::{context::Context, initrd, process::Process, resource, scheduler, uefi, vfs};
+use panda_kernel::{
+    initrd,
+    process::{Context, Process},
+    resource, scheduler, uefi, vfs,
+};
 
 #[entry]
 fn main() -> Status {

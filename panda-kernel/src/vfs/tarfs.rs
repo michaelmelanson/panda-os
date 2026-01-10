@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use tar_no_std::TarArchiveRef;
 
-use super::{DirEntry, File, FileStat, Filesystem, FsError, Resource, SeekFrom};
+use super::{DirEntry, File, FileStat, Filesystem, FsError, SeekFrom};
 
 /// A filesystem backed by a TAR archive
 pub struct TarFs {
@@ -48,7 +48,7 @@ impl TarFs {
 }
 
 impl Filesystem for TarFs {
-    fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
+    fn open(&self, path: &str) -> Option<Box<dyn File>> {
         let (ptr, len) = self.files.get(path)?;
         Some(Box::new(TarFile {
             data: *ptr,
@@ -146,16 +146,9 @@ struct TarFile {
     pos: usize,
 }
 
-
 // Safety: Data pointer is from static UEFI allocation
 unsafe impl Send for TarFile {}
 unsafe impl Sync for TarFile {}
-
-impl Resource for TarFile {
-    fn as_file(&mut self) -> Option<&mut dyn File> {
-        Some(self)
-    }
-}
 
 impl File for TarFile {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {

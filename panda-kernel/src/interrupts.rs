@@ -189,10 +189,15 @@ extern "x86-interrupt" fn default_page_fault_handler(
     let fault_address =
         Cr2::read().expect("CR2 contained non-canonical address while handling page fault");
 
-    // Try demand paging for userspace heap access
+    // Try demand paging for userspace memory access
     if error_code.contains(PageFaultErrorCode::USER_MODE) {
-        let brk = crate::scheduler::with_current_process(|proc| proc.brk());
+        // Try stack first (more common for initial faults)
+        if crate::memory::try_handle_stack_page_fault(VirtAddr::new(fault_address.as_u64())) {
+            return;
+        }
 
+        // Try heap
+        let brk = crate::scheduler::with_current_process(|proc| proc.brk());
         if crate::memory::try_handle_heap_page_fault(VirtAddr::new(fault_address.as_u64()), brk) {
             return;
         }

@@ -12,21 +12,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spinning_top::RwSpinlock;
 
-use crate::process_handle::ProcessHandle;
-use crate::waker::Waker;
-
-/// A kernel resource that can be accessed via a handle
-pub trait Resource: Send + Sync {
-    /// Try to get this resource as a file
-    fn as_file(&mut self) -> Option<&mut dyn File> {
-        None
-    }
-
-    /// Try to get this resource as a process handle
-    fn as_process_handle(&self) -> Option<&ProcessHandle> {
-        None
-    }
-}
+use crate::process::waker::Waker;
 
 /// How to reposition within a file
 pub enum SeekFrom {
@@ -88,7 +74,7 @@ pub struct DirEntry {
 /// A filesystem that can be mounted
 pub trait Filesystem: Send + Sync {
     /// Open a file at the given path (relative to mount point)
-    fn open(&self, path: &str) -> Option<Box<dyn Resource>>;
+    fn open(&self, path: &str) -> Option<Box<dyn File>>;
 
     /// Get metadata for a path
     fn stat(&self, path: &str) -> Option<FileStat>;
@@ -98,7 +84,7 @@ pub trait Filesystem: Send + Sync {
 }
 
 /// An open file
-pub trait File: Resource {
+pub trait File: Send + Sync {
     /// Read bytes into the buffer, returning bytes read
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError>;
 
@@ -172,7 +158,7 @@ where
 }
 
 /// Open a file at the given absolute path
-pub fn open(path: &str) -> Option<Box<dyn Resource>> {
+pub fn open(path: &str) -> Option<Box<dyn File>> {
     with_resolved_path(path, |fs, relative| fs.open(relative))
 }
 

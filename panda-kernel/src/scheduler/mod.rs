@@ -1,8 +1,8 @@
 //! Process scheduler with preemptive multitasking.
 
 mod context_switch;
+mod rtc;
 
-use core::arch::x86_64::_rdtsc;
 use core::cmp::Reverse;
 
 use alloc::collections::{BTreeMap, BinaryHeap};
@@ -12,8 +12,9 @@ use spinning_top::RwSpinlock;
 
 use crate::apic;
 use crate::interrupts;
-use crate::process::{Process, ProcessId, ProcessState, SavedState, exec_userspace};
-use crate::waker::Waker;
+use crate::process::{Process, ProcessId, ProcessState, SavedState, exec_userspace, waker::Waker};
+
+pub use rtc::RTC;
 
 pub(crate) static SCHEDULER: RwSpinlock<Option<Scheduler>> = RwSpinlock::new(None);
 
@@ -22,20 +23,6 @@ const TIMER_IRQ: u8 = 0;
 
 /// Time slice in milliseconds
 const TIME_SLICE_MS: u32 = 10;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RTC(u64);
-impl RTC {
-    // represents "never" as in "this process has never been scheduled"
-    pub fn zero() -> RTC {
-        RTC(0)
-    }
-
-    pub fn now() -> RTC {
-        let timestamp = unsafe { _rdtsc() };
-        RTC(timestamp)
-    }
-}
 
 pub(crate) struct Scheduler {
     processes: BTreeMap<ProcessId, Process>,
@@ -182,11 +169,10 @@ impl Scheduler {
 }
 
 pub fn init(init_process: Process) {
-    // Install naked timer interrupt handler for preemptive context switching
-    interrupts::set_raw_handler(
-        TIMER_IRQ,
-        context_switch::timer_interrupt_entry as *const () as u64,
-    );
+    // Install naked interrupt handler for preemptive context switching
+    use context_switch::{preemptable_interrupt_entry, timer_interrupt_handler};
+    let entry = preemptable_interrupt_entry!(timer_interrupt_handler);
+    interrupts::set_raw_handler(TIMER_IRQ, entry as *const () as u64);
     debug!("Preemption initialized with {}ms time slice", TIME_SLICE_MS);
 
     let mut scheduler = SCHEDULER.write();
@@ -227,7 +213,11 @@ pub unsafe fn exec_next_runnable() -> ! {
         match exec_params {
             Some((ip, sp, page_table, saved_state)) => {
                 debug!("exec_next_runnable: jumping to userspace");
-                // Switch to the process's page table
+                // Switch to the process's page table.
+                // Note: We use switch_page_table directly instead of Context::activate()
+                // because we've already dropped the scheduler lock and only have the
+                // extracted PhysAddr. This is intentional to avoid holding the lock
+                // while jumping to userspace.
                 unsafe {
                     crate::memory::switch_page_table(page_table);
                 }
@@ -285,12 +275,16 @@ where
     f(process)
 }
 
-/// Yield the current process: save its state and switch to the next runnable.
-/// The return_ip and return_sp are where the process should resume.
+/// Suspend the current process with a given state transition, then switch to next runnable.
+///
+/// This is the common implementation for yield_current and block_current_on.
 ///
 /// # Safety
 /// This function does not return to the caller. It switches to a different process.
-pub unsafe fn yield_current(return_ip: x86_64::VirtAddr, return_sp: x86_64::VirtAddr) -> ! {
+unsafe fn suspend_current(
+    setup: impl FnOnce(&mut Process, ProcessId),
+    new_state: ProcessState,
+) -> ! {
     {
         let mut scheduler = SCHEDULER.write();
         let scheduler = scheduler
@@ -303,17 +297,34 @@ pub unsafe fn yield_current(return_ip: x86_64::VirtAddr, return_sp: x86_64::Virt
             .get_mut(&pid)
             .expect("Current process not found");
 
-        // Save where to resume (only RIP/RSP needed for yield - no register restore)
-        process.set_resume_point(return_ip, return_sp);
+        // Let the caller set up process state
+        setup(process, pid);
 
-        // Mark as runnable (not running)
-        scheduler.change_state(pid, ProcessState::Runnable);
+        // Change to the new state
+        scheduler.change_state(pid, new_state);
     }
     // Lock dropped
 
     // Switch to next process
     unsafe {
         exec_next_runnable();
+    }
+}
+
+/// Yield the current process: save its state and switch to the next runnable.
+/// The return_ip and return_sp are where the process should resume.
+///
+/// # Safety
+/// This function does not return to the caller. It switches to a different process.
+pub unsafe fn yield_current(return_ip: x86_64::VirtAddr, return_sp: x86_64::VirtAddr) -> ! {
+    unsafe {
+        suspend_current(
+            |process, _| {
+                // Save where to resume (only RIP/RSP needed for yield - no register restore)
+                process.set_resume_point(return_ip, return_sp);
+            },
+            ProcessState::Runnable,
+        )
     }
 }
 
@@ -331,35 +342,20 @@ pub unsafe fn block_current_on(
     return_sp: x86_64::VirtAddr,
     saved_state: SavedState,
 ) -> ! {
-    {
-        let mut scheduler = SCHEDULER.write();
-        let scheduler = scheduler
-            .as_mut()
-            .expect("Scheduler has not been initialized");
-
-        let pid = scheduler.current_process_id();
-        let process = scheduler
-            .processes
-            .get_mut(&pid)
-            .expect("Current process not found");
-
-        // Save where to resume - full state for syscall re-execution
-        let mut state = saved_state;
-        state.rip = return_ip.as_u64();
-        state.rsp = return_sp.as_u64();
-        process.save_state(state);
-
-        // Register this process with the waker before blocking
-        waker.set_waiting(pid);
-
-        // Mark as blocked
-        scheduler.change_state(pid, ProcessState::Blocked);
-    }
-    // Lock dropped
-
-    // Switch to next process
     unsafe {
-        exec_next_runnable();
+        suspend_current(
+            |process, pid| {
+                // Save where to resume - full state for syscall re-execution
+                let mut state = saved_state;
+                state.rip = return_ip.as_u64();
+                state.rsp = return_sp.as_u64();
+                process.save_state(state);
+
+                // Register this process with the waker before blocking
+                waker.set_waiting(pid);
+            },
+            ProcessState::Blocked,
+        )
     }
 }
 

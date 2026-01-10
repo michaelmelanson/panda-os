@@ -1,40 +1,69 @@
 //! Handle-based resource management.
 //!
 //! Handles provide a unified abstraction for kernel resources accessible from userspace.
-//! Each process has its own handle table with type-safe resource access.
+//! Each process has its own handle table mapping handle IDs to resources.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 
-use crate::process_handle::ProcessHandle;
-use crate::vfs::{File, Resource};
+use crate::process::{ProcessId, info::ProcessInfo, waker::Waker};
+use crate::vfs::File;
 
 /// Handle identifier (similar to file descriptor but for any resource)
 pub type HandleId = u32;
 
-/// Type of resource a handle points to
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResourceType {
-    /// A file from the VFS
-    File,
-    /// A child process
-    Process,
+/// A kernel resource accessible via a handle.
+pub enum Handle {
+    /// An open file
+    File(Box<dyn File>),
+    /// A child process handle
+    Process(ProcessHandle),
 }
 
-/// A handle entry with its resource and type
-struct HandleEntry {
-    resource: Box<dyn Resource>,
-    resource_type: ResourceType,
+/// A handle to a child process.
+///
+/// Holds a strong reference to the process's external info, which survives
+/// after the process exits. This allows the parent to retrieve the exit code.
+pub struct ProcessHandle {
+    info: Arc<ProcessInfo>,
 }
 
-/// Per-process handle table with type-safe resource access
+impl ProcessHandle {
+    /// Create a new process handle from process info.
+    pub fn new(info: Arc<ProcessInfo>) -> Self {
+        Self { info }
+    }
+
+    /// Get the process ID.
+    pub fn pid(&self) -> ProcessId {
+        self.info.pid()
+    }
+
+    /// Check if the process has exited.
+    pub fn has_exited(&self) -> bool {
+        self.info.has_exited()
+    }
+
+    /// Get the exit code if the process has exited.
+    pub fn exit_code(&self) -> Option<i32> {
+        self.info.exit_code()
+    }
+
+    /// Get the waker for blocking until process exits.
+    pub fn waker(&self) -> &Arc<Waker> {
+        self.info.waker()
+    }
+}
+
+/// Per-process handle table mapping handle IDs to resources.
 pub struct HandleTable {
-    handles: BTreeMap<HandleId, HandleEntry>,
+    handles: BTreeMap<HandleId, Handle>,
     next_id: HandleId,
 }
 
 impl HandleTable {
-    /// Create a new empty handle table
+    /// Create a new empty handle table.
     pub fn new() -> Self {
         Self {
             handles: BTreeMap::new(),
@@ -42,75 +71,65 @@ impl HandleTable {
         }
     }
 
-    /// Insert a file resource and return its handle ID
-    pub fn insert_file(&mut self, resource: Box<dyn Resource>) -> HandleId {
+    /// Insert a handle and return its ID.
+    pub fn insert(&mut self, handle: Handle) -> HandleId {
         let id = self.next_id;
         self.next_id += 1;
-        self.handles.insert(
-            id,
-            HandleEntry {
-                resource,
-                resource_type: ResourceType::File,
-            },
-        );
+        self.handles.insert(id, handle);
         id
     }
 
-    /// Insert a process resource and return its handle ID
-    pub fn insert_process(&mut self, resource: Box<dyn Resource>) -> HandleId {
-        let id = self.next_id;
-        self.next_id += 1;
-        self.handles.insert(
-            id,
-            HandleEntry {
-                resource,
-                resource_type: ResourceType::Process,
-            },
-        );
-        id
+    /// Get a reference to a handle.
+    pub fn get(&self, id: HandleId) -> Option<&Handle> {
+        self.handles.get(&id)
     }
 
-    /// Get the type of a handle, if it exists
-    pub fn get_type(&self, id: HandleId) -> Option<ResourceType> {
-        self.handles.get(&id).map(|e| e.resource_type)
+    /// Get a mutable reference to a handle.
+    pub fn get_mut(&mut self, id: HandleId) -> Option<&mut Handle> {
+        self.handles.get_mut(&id)
     }
 
-    /// Get a mutable reference to a file resource, returning None if handle
-    /// doesn't exist or is not a file
+    /// Get a mutable reference to a file handle, returning None if not a file.
     pub fn get_file_mut(&mut self, id: HandleId) -> Option<&mut dyn File> {
-        let entry = self.handles.get_mut(&id)?;
-        if entry.resource_type != ResourceType::File {
-            return None;
+        match self.handles.get_mut(&id)? {
+            Handle::File(f) => Some(f.as_mut()),
+            _ => None,
         }
-        entry.resource.as_file()
     }
 
-    /// Get a reference to a process handle, returning None if handle
-    /// doesn't exist or is not a process
-    pub fn get_process_handle(&self, id: HandleId) -> Option<&ProcessHandle> {
-        let entry = self.handles.get(&id)?;
-        if entry.resource_type != ResourceType::Process {
-            return None;
+    /// Get a reference to a process handle, returning None if not a process.
+    pub fn get_process(&self, id: HandleId) -> Option<&ProcessHandle> {
+        match self.handles.get(&id)? {
+            Handle::Process(p) => Some(p),
+            _ => None,
         }
-        entry.resource.as_process_handle()
     }
 
-    /// Remove and return a resource by handle ID, only if it matches the expected type
-    pub fn remove_typed(
-        &mut self,
-        id: HandleId,
-        expected_type: ResourceType,
-    ) -> Option<Box<dyn Resource>> {
-        let entry = self.handles.get(&id)?;
-        if entry.resource_type != expected_type {
-            return None;
-        }
-        self.handles.remove(&id).map(|e| e.resource)
+    /// Remove a handle by ID.
+    pub fn remove(&mut self, id: HandleId) -> Option<Handle> {
+        self.handles.remove(&id)
     }
 
-    /// Remove a resource by handle ID (any type)
-    pub fn remove(&mut self, id: HandleId) -> Option<Box<dyn Resource>> {
-        self.handles.remove(&id).map(|e| e.resource)
+    /// Remove a file handle, returning None if not a file.
+    pub fn remove_file(&mut self, id: HandleId) -> Option<Box<dyn File>> {
+        match self.handles.get(&id)? {
+            Handle::File(_) => match self.handles.remove(&id)? {
+                Handle::File(f) => Some(f),
+                _ => unreachable!(),
+            },
+            _ => None,
+        }
+    }
+
+    /// Remove a process handle, returning None if not a process.
+    pub fn remove_process(&mut self, id: HandleId) -> Option<ProcessHandle> {
+        match self.handles.get(&id)? {
+            Handle::Process(_) => match self.handles.remove(&id)? {
+                Handle::Process(p) => Some(p),
+                _ => unreachable!(),
+            },
+            _ => None,
+        }
     }
 }
 

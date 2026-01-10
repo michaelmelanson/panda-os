@@ -11,12 +11,11 @@ use virtio_drivers::{
 use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
-    apic,
+    apic::{self, ioapic},
     device_address::DeviceAddress,
     interrupts::{self, IrqHandlerFunc},
-    ioapic,
     pci::device::PciDevice,
-    waker::Waker,
+    process::waker::Waker,
 };
 
 use super::virtio_hal::VirtioHal;

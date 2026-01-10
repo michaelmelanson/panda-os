@@ -15,12 +15,12 @@ use x86_64::instructions::port::Port;
 
 use crate::device_address::DeviceAddress;
 use crate::devices::virtio_keyboard::{self, InputEvent, VirtioKeyboard};
-use crate::vfs::{self, File, FileStat, FsError, Resource, SeekFrom};
+use crate::vfs::{self, File, FileStat, FsError, SeekFrom};
 
 /// A handler for a resource scheme (e.g., "file", "console", "pci")
 pub trait SchemeHandler: Send + Sync {
     /// Open a resource at the given path within this scheme
-    fn open(&self, path: &str) -> Option<Box<dyn Resource>>;
+    fn open(&self, path: &str) -> Option<Box<dyn File>>;
 }
 
 /// Global registry of scheme handlers
@@ -34,7 +34,7 @@ pub fn register_scheme(name: &'static str, handler: Box<dyn SchemeHandler>) {
 }
 
 /// Open a resource by URI (e.g., "file:/initrd/init" or "console:/serial/0")
-pub fn open(uri: &str) -> Option<Box<dyn Resource>> {
+pub fn open(uri: &str) -> Option<Box<dyn File>> {
     let (scheme, path) = uri.split_once(':')?;
     let schemes = SCHEMES.read();
     let handler = schemes.get(scheme)?;
@@ -49,7 +49,7 @@ pub fn open(uri: &str) -> Option<Box<dyn Resource>> {
 pub struct FileScheme;
 
 impl SchemeHandler for FileScheme {
-    fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
+    fn open(&self, path: &str) -> Option<Box<dyn File>> {
         vfs::open(path)
     }
 }
@@ -62,7 +62,7 @@ impl SchemeHandler for FileScheme {
 pub struct ConsoleScheme;
 
 impl SchemeHandler for ConsoleScheme {
-    fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
+    fn open(&self, path: &str) -> Option<Box<dyn File>> {
         match path {
             "/serial/0" => Some(Box::new(SerialConsole::new(0x3f8))),
             _ => None,
@@ -78,12 +78,6 @@ pub struct SerialConsole {
 impl SerialConsole {
     pub fn new(port: u16) -> Self {
         Self { port }
-    }
-}
-
-impl Resource for SerialConsole {
-    fn as_file(&mut self) -> Option<&mut dyn File> {
-        Some(self)
     }
 }
 
@@ -122,7 +116,7 @@ impl File for SerialConsole {
 pub struct KeyboardScheme;
 
 impl SchemeHandler for KeyboardScheme {
-    fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
+    fn open(&self, path: &str) -> Option<Box<dyn File>> {
         // Parse path like "/pci/00:03.0"
         let address = DeviceAddress::from_path(path)?;
         let keyboard = virtio_keyboard::get_keyboard(&address)?;
@@ -133,12 +127,6 @@ impl SchemeHandler for KeyboardScheme {
 /// Handle to an open keyboard device
 struct KeyboardHandle {
     keyboard: Arc<Spinlock<VirtioKeyboard>>,
-}
-
-impl Resource for KeyboardHandle {
-    fn as_file(&mut self) -> Option<&mut dyn File> {
-        Some(self)
-    }
 }
 
 impl File for KeyboardHandle {

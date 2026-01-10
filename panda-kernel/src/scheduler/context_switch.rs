@@ -1,9 +1,7 @@
 //! Context switching for preemptive multitasking.
 //!
-//! This module contains the naked assembly entry point for the timer interrupt
+//! This module contains the naked assembly entry point for preemptable interrupts
 //! and the logic for deciding when to preempt the current process.
-
-use core::arch::naked_asm;
 
 use crate::apic;
 use crate::process::{InterruptFrame, ProcessState, SavedGprs, SavedState};
@@ -11,69 +9,78 @@ use crate::syscall::user_code_selector;
 
 use super::{SCHEDULER, exec_next_runnable, start_timer};
 
-/// Naked assembly entry point for the timer interrupt.
+/// Generates a naked assembly entry point for a preemptable interrupt handler.
 ///
-/// This saves all general-purpose registers before calling the Rust handler,
-/// allowing us to capture the full CPU state for context switching.
+/// This saves all general-purpose registers before calling the specified handler,
+/// allowing the handler to capture the full CPU state for context switching.
 ///
 /// # Safety
-/// This function is only safe to call as an interrupt handler registered in the IDT.
-#[unsafe(naked)]
-pub extern "C" fn timer_interrupt_entry() {
-    naked_asm!(
-        // Save all GPRs (in reverse order so SavedRegsOnStack matches)
-        "push rax",
-        "push rbx",
-        "push rcx",
-        "push rdx",
-        "push rsi",
-        "push rdi",
-        "push rbp",
-        "push r8",
-        "push r9",
-        "push r10",
-        "push r11",
-        "push r12",
-        "push r13",
-        "push r14",
-        "push r15",
+/// The generated function is only safe to use as an interrupt handler registered in the IDT.
+macro_rules! preemptable_interrupt_entry {
+    ($handler:ident) => {{
+        #[unsafe(naked)]
+        extern "C" fn entry() {
+            core::arch::naked_asm!(
+                // Save all GPRs (in reverse order so SavedRegsOnStack matches)
+                "push rax",
+                "push rbx",
+                "push rcx",
+                "push rdx",
+                "push rsi",
+                "push rdi",
+                "push rbp",
+                "push r8",
+                "push r9",
+                "push r10",
+                "push r11",
+                "push r12",
+                "push r13",
+                "push r14",
+                "push r15",
 
-        // rdi = pointer to saved regs on stack (first arg)
-        "mov rdi, rsp",
-        // rsi = pointer to interrupt stack frame (second arg)
-        // 15 registers * 8 bytes = 120 bytes offset
-        "lea rsi, [rsp + 120]",
+                // rdi = pointer to saved regs on stack (first arg)
+                "mov rdi, rsp",
+                // rsi = pointer to interrupt stack frame (second arg)
+                // 15 registers * 8 bytes = 120 bytes offset
+                "lea rsi, [rsp + 120]",
 
-        "call {handler}",
+                "call {handler}",
 
-        // If handler returns, resume the same process
-        // Restore all GPRs
-        "pop r15",
-        "pop r14",
-        "pop r13",
-        "pop r12",
-        "pop r11",
-        "pop r10",
-        "pop r9",
-        "pop r8",
-        "pop rbp",
-        "pop rdi",
-        "pop rsi",
-        "pop rdx",
-        "pop rcx",
-        "pop rbx",
-        "pop rax",
+                // If handler returns, resume the same process
+                // Restore all GPRs
+                "pop r15",
+                "pop r14",
+                "pop r13",
+                "pop r12",
+                "pop r11",
+                "pop r10",
+                "pop r9",
+                "pop r8",
+                "pop rbp",
+                "pop rdi",
+                "pop rsi",
+                "pop rdx",
+                "pop rcx",
+                "pop rbx",
+                "pop rax",
 
-        "iretq",
-        handler = sym timer_interrupt_handler,
-    )
+                "iretq",
+                handler = sym $handler,
+            )
+        }
+        entry
+    }};
 }
+
+pub(crate) use preemptable_interrupt_entry;
 
 /// Timer interrupt handler called from the naked entry point.
 ///
+/// This handler is public so the macro can reference it from the parent module.
+///
 /// Decides whether to preempt the current process and switch to another.
 /// If switching, this function does not return - it jumps to exec_next_runnable.
-extern "sysv64" fn timer_interrupt_handler(
+pub(crate) extern "sysv64" fn timer_interrupt_handler(
     saved_gprs: *const SavedGprs,
     interrupt_frame: *const InterruptFrame,
 ) {

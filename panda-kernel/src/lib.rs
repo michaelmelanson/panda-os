@@ -16,26 +16,21 @@ extern crate alloc;
 
 pub mod acpi;
 pub mod apic;
-pub mod context;
 pub mod device_address;
 pub mod devices;
 pub mod handle;
 pub mod initrd;
 pub mod interrupts;
-pub mod ioapic;
 pub mod logging;
 pub mod memory;
 pub mod pci;
 pub mod process;
-pub mod process_handle;
-pub mod process_info;
 pub mod qemu;
 pub mod resource;
 pub mod scheduler;
 pub mod syscall;
 pub mod uefi;
 pub mod vfs;
-pub mod waker;
 
 // Panic handler is defined in each binary (main.rs, tests/*) not in lib
 
@@ -62,7 +57,6 @@ pub fn init() {
     syscall::init();
     interrupts::init();
     apic::init();
-    ioapic::init();
     pci::init();
     devices::init();
 }

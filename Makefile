@@ -41,9 +41,11 @@ run: build
 test: kernel-test userspace-test
 
 # Kernel tests
+# Use 'cargo build --tests' instead of 'cargo test --no-run' to avoid dual-profile
+# issues with build-std (cargo test builds deps in both test and dev profiles)
 kernel-test:
 	@echo "Building kernel tests..."
-	@cargo +nightly test --package panda-kernel --target ./x86_64-panda-uefi.json --no-run 2>&1 | grep -E "Compiling|Executable"
+	@cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json --tests 2>&1 | grep -E "Compiling|Executable" || true
 	@echo ""
 	@for test in $(KERNEL_TESTS); do \
 		./scripts/setup-kernel-test.sh $$test; \

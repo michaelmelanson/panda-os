@@ -1,13 +1,13 @@
-//! Local APIC driver for timer and interrupt management.
+//! APIC drivers for interrupt management.
 //!
-//! The Local APIC (Advanced Programmable Interrupt Controller) is used for:
-//! - Timer interrupts for preemptive scheduling
-//! - Inter-processor interrupts (future multi-core support)
-//! - Local interrupt routing
+//! This module contains drivers for both the Local APIC and I/O APIC:
+//! - Local APIC: Timer interrupts, inter-processor interrupts
+//! - I/O APIC: External interrupt routing from PCI devices
 
+pub mod ioapic;
 mod timer;
 
-pub use timer::{calibrate_timer, ticks_per_ms, set_timer_oneshot, stop_timer};
+pub use timer::{calibrate_timer, set_timer_oneshot, stop_timer, ticks_per_ms};
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -157,15 +157,11 @@ static LOCAL_APIC: Spinlock<Option<LocalApic>> = Spinlock::new(None);
 /// This is set once during init and never changes.
 static APIC_BASE_VIRT: AtomicU64 = AtomicU64::new(0);
 
-/// Initialize the Local APIC.
+/// Initialize the Local APIC and I/O APIC.
 pub fn init() {
     let apic = LocalApic::new();
 
-    debug!(
-        "Local APIC: ID={}, version={}",
-        apic.id(),
-        apic.version()
-    );
+    debug!("Local APIC: ID={}, version={}", apic.id(), apic.version());
 
     // Enable APIC with spurious vector 0xFF
     apic.enable(0xFF);
@@ -177,6 +173,9 @@ pub fn init() {
 
     // Calibrate the timer
     calibrate_timer();
+
+    // Initialize the I/O APIC
+    ioapic::init();
 }
 
 /// Execute a function with the Local APIC.

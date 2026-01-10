@@ -7,7 +7,8 @@ use alloc::sync::Arc;
 use spinning_top::RwSpinlock;
 
 use crate::process::ProcessId;
-use crate::waker::Waker;
+
+use super::waker::Waker;
 
 /// External process information accessible via handles.
 ///
