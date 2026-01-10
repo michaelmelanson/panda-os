@@ -86,10 +86,36 @@ pub fn handle_stat(handle: u32, stat_ptr: usize) -> isize {
 /// Handle file close operation.
 pub fn handle_close(handle: u32) -> isize {
     scheduler::with_current_process(|proc| {
-        if proc.handles_mut().remove_file(handle).is_some() {
+        if proc.handles_mut().remove(handle).is_some() {
             0
         } else {
             -1
+        }
+    })
+}
+
+/// Handle directory read operation (read next entry from directory handle).
+pub fn handle_readdir(handle: u32, entry_ptr: usize) -> isize {
+    let entry_ptr = entry_ptr as *mut panda_abi::DirEntry;
+
+    scheduler::with_current_process(|proc| {
+        if let Some(dir) = proc.handles_mut().get_directory_mut(handle) {
+            if let Some(entry) = dir.next() {
+                let name_bytes = entry.name.as_bytes();
+                let name_len = name_bytes.len().min(panda_abi::DIRENT_NAME_MAX);
+
+                unsafe {
+                    let out_entry = &mut *entry_ptr;
+                    out_entry.name_len = name_len as u8;
+                    out_entry.is_dir = entry.is_dir;
+                    out_entry.name[..name_len].copy_from_slice(&name_bytes[..name_len]);
+                }
+                1 // Entry read
+            } else {
+                0 // End of directory
+            }
+        } else {
+            -1 // Invalid handle
         }
     })
 }

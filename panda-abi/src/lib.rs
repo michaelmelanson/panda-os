@@ -37,6 +37,8 @@ pub const OP_FILE_SEEK: u32 = 0x1_0002;
 pub const OP_FILE_STAT: u32 = 0x1_0003;
 /// Close file: () -> 0 or error
 pub const OP_FILE_CLOSE: u32 = 0x1_0004;
+/// Read directory entry: (entry_ptr) -> 1 if entry read, 0 if end of directory, negative on error
+pub const OP_FILE_READDIR: u32 = 0x1_0005;
 
 // Process operations (0x2_0000 - 0x2_FFFF)
 /// Yield execution: () -> 0
@@ -80,6 +82,8 @@ pub const OP_ENVIRONMENT_SPAWN: u32 = 0x3_0001;
 pub const OP_ENVIRONMENT_LOG: u32 = 0x3_0002;
 /// Get time: () -> timestamp
 pub const OP_ENVIRONMENT_TIME: u32 = 0x3_0003;
+/// Open directory: (path_ptr, path_len) -> dir_handle or error
+pub const OP_ENVIRONMENT_OPENDIR: u32 = 0x3_0004;
 
 // =============================================================================
 // Constants
@@ -100,4 +104,27 @@ pub const SEEK_END: usize = 2;
 pub struct FileStat {
     pub size: u64,
     pub is_dir: bool,
+}
+
+/// Maximum length of a directory entry name
+pub const DIRENT_NAME_MAX: usize = 255;
+
+/// Directory entry structure shared between kernel and userspace
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DirEntry {
+    /// Length of the name (not including null terminator)
+    pub name_len: u8,
+    /// Whether this entry is a directory
+    pub is_dir: bool,
+    /// Entry name (not null-terminated, use name_len)
+    pub name: [u8; DIRENT_NAME_MAX],
+}
+
+impl DirEntry {
+    /// Get the entry name as a string slice
+    pub fn name(&self) -> &str {
+        // Safety: kernel only writes valid UTF-8
+        unsafe { core::str::from_utf8_unchecked(&self.name[..self.name_len as usize]) }
+    }
 }

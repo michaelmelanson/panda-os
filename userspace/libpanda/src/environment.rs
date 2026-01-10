@@ -56,3 +56,18 @@ pub fn log(msg: &str) {
 pub fn time() -> isize {
     send(HANDLE_ENVIRONMENT, OP_ENVIRONMENT_TIME, 0, 0, 0, 0)
 }
+
+/// Open a directory for iteration
+///
+/// Returns a directory handle on success, or negative error code
+#[inline(always)]
+pub fn opendir(path: &str) -> isize {
+    send(
+        HANDLE_ENVIRONMENT,
+        OP_ENVIRONMENT_OPENDIR,
+        path.as_ptr() as usize,
+        path.len(),
+        0,
+        0,
+    )
+}

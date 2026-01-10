@@ -170,6 +170,7 @@ fn handle_send(
         OP_FILE_SEEK => file::handle_seek(handle, arg0, arg1),
         OP_FILE_STAT => file::handle_stat(handle, arg0),
         OP_FILE_CLOSE => file::handle_close(handle),
+        OP_FILE_READDIR => file::handle_readdir(handle, arg0),
 
         // Process operations
         OP_PROCESS_YIELD => process::handle_yield(ctx),
@@ -184,6 +185,7 @@ fn handle_send(
         OP_ENVIRONMENT_SPAWN => environment::handle_spawn(arg0, arg1),
         OP_ENVIRONMENT_LOG => environment::handle_log(arg0, arg1),
         OP_ENVIRONMENT_TIME => environment::handle_time(),
+        OP_ENVIRONMENT_OPENDIR => environment::handle_opendir(arg0, arg1),
 
         _ => {
             error!("Unknown operation: {:#x}", operation);

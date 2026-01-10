@@ -10,17 +10,23 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use spinning_top::{RwSpinlock, Spinlock};
 use x86_64::instructions::port::Port;
 
 use crate::device_address::DeviceAddress;
 use crate::devices::virtio_keyboard::{self, InputEvent, VirtioKeyboard};
-use crate::vfs::{self, File, FileStat, FsError, SeekFrom};
+use crate::vfs::{self, DirEntry, File, FileStat, FsError, SeekFrom};
 
 /// A handler for a resource scheme (e.g., "file", "console", "pci")
 pub trait SchemeHandler: Send + Sync {
     /// Open a resource at the given path within this scheme
     fn open(&self, path: &str) -> Option<Box<dyn File>>;
+
+    /// List directory contents at the given path within this scheme
+    fn readdir(&self, _path: &str) -> Option<Vec<DirEntry>> {
+        None
+    }
 }
 
 /// Global registry of scheme handlers
@@ -41,6 +47,14 @@ pub fn open(uri: &str) -> Option<Box<dyn File>> {
     handler.open(path)
 }
 
+/// List directory contents by URI (e.g., "file:/initrd")
+pub fn readdir(uri: &str) -> Option<Vec<DirEntry>> {
+    let (scheme, path) = uri.split_once(':')?;
+    let schemes = SCHEMES.read();
+    let handler = schemes.get(scheme)?;
+    handler.readdir(path)
+}
+
 // =============================================================================
 // File Scheme - wraps existing VFS
 // =============================================================================
@@ -51,6 +65,10 @@ pub struct FileScheme;
 impl SchemeHandler for FileScheme {
     fn open(&self, path: &str) -> Option<Box<dyn File>> {
         vfs::open(path)
+    }
+
+    fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
+        vfs::readdir(path)
     }
 }
 

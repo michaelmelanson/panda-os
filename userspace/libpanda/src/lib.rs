@@ -13,6 +13,9 @@ pub mod syscall;
 // Re-export alloc types for convenience
 pub use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 
+// Re-export ABI types
+pub use panda_abi::DirEntry;
+
 #[alloc_error_handler]
 fn alloc_error_handler(_layout: core::alloc::Layout) -> ! {
     environment::log("ALLOC ERROR: out of memory");

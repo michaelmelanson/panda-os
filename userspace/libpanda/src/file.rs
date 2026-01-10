@@ -38,14 +38,7 @@ pub fn write(handle: u32, buf: &[u8]) -> isize {
 /// Returns new position, or negative error code
 #[inline(always)]
 pub fn seek(handle: u32, offset: i64, whence: u32) -> isize {
-    send(
-        handle,
-        OP_FILE_SEEK,
-        offset as usize,
-        whence as usize,
-        0,
-        0,
-    )
+    send(handle, OP_FILE_SEEK, offset as usize, whence as usize, 0, 0)
 }
 
 /// Get file statistics
@@ -69,4 +62,19 @@ pub fn stat(handle: u32, stat_buf: &mut FileStat) -> isize {
 #[inline(always)]
 pub fn close(handle: u32) -> isize {
     send(handle, OP_FILE_CLOSE, 0, 0, 0, 0)
+}
+
+/// Read the next directory entry from a directory handle
+///
+/// Returns 1 if an entry was read, 0 if end of directory, or negative error code
+#[inline(always)]
+pub fn readdir(handle: u32, entry: &mut panda_abi::DirEntry) -> isize {
+    send(
+        handle,
+        OP_FILE_READDIR,
+        entry as *mut panda_abi::DirEntry as usize,
+        0,
+        0,
+        0,
+    )
 }

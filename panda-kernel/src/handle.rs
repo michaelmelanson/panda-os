@@ -6,9 +6,10 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::process::{ProcessId, info::ProcessInfo, waker::Waker};
-use crate::vfs::File;
+use crate::vfs::{DirEntry, File};
 
 /// Handle identifier (similar to file descriptor but for any resource)
 pub type HandleId = u32;
@@ -19,6 +20,32 @@ pub enum Handle {
     File(Box<dyn File>),
     /// A child process handle
     Process(ProcessHandle),
+    /// An open directory for iteration
+    Directory(DirectoryHandle),
+}
+
+/// A handle to an open directory for iteration.
+pub struct DirectoryHandle {
+    entries: Vec<DirEntry>,
+    cursor: usize,
+}
+
+impl DirectoryHandle {
+    /// Create a new directory handle from a list of entries.
+    pub fn new(entries: Vec<DirEntry>) -> Self {
+        Self { entries, cursor: 0 }
+    }
+
+    /// Read the next directory entry, returning None if at end.
+    pub fn next(&mut self) -> Option<&DirEntry> {
+        if self.cursor < self.entries.len() {
+            let entry = &self.entries[self.cursor];
+            self.cursor += 1;
+            Some(entry)
+        } else {
+            None
+        }
+    }
 }
 
 /// A handle to a child process.
@@ -101,6 +128,14 @@ impl HandleTable {
     pub fn get_process(&self, id: HandleId) -> Option<&ProcessHandle> {
         match self.handles.get(&id)? {
             Handle::Process(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Get a mutable reference to a directory handle, returning None if not a directory.
+    pub fn get_directory_mut(&mut self, id: HandleId) -> Option<&mut DirectoryHandle> {
+        match self.handles.get_mut(&id)? {
+            Handle::Directory(d) => Some(d),
             _ => None,
         }
     }

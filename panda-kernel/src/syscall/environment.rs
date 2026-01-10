@@ -98,3 +98,24 @@ pub fn handle_time() -> isize {
     // TODO: Implement getting time
     0
 }
+
+/// Handle environment opendir operation.
+pub fn handle_opendir(uri_ptr: usize, uri_len: usize) -> isize {
+    let uri_ptr = uri_ptr as *const u8;
+    let uri = unsafe { slice::from_raw_parts(uri_ptr, uri_len) };
+    let uri = match str::from_utf8(uri) {
+        Ok(u) => u,
+        Err(_) => return -1,
+    };
+
+    let Some(entries) = resource::readdir(uri) else {
+        return -1;
+    };
+
+    let dir_handle = crate::handle::DirectoryHandle::new(entries);
+    let handle_id = scheduler::with_current_process(|proc| {
+        proc.handles_mut()
+            .insert(crate::handle::Handle::Directory(dir_handle))
+    });
+    handle_id as isize
+}

@@ -238,6 +238,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "readdir_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
 name = "resource_test"
 version = "0.1.0"
 dependencies = [
