@@ -2,7 +2,6 @@
 
 ## Known Issues
 
-- Single static kernel stack (4KB) - could overflow
 - 63 unsafe blocks with limited safety wrappers
 - Identity mapping limits address space usage
 - Global mutable state with potential deadlock risk
@@ -12,8 +11,6 @@
 ## Immediate Priorities
 
 ### Expand Syscalls
-- Subsystem-based architecture: default capability-based Panda syscalls, optional POSIX compatibility layer
-- Resource handles (capabilities) instead of file descriptors
 - Message-passing with structured objects (BSON) instead of byte streams
 - `sys_send(handle, object)` - send structured object to resource
 - `sys_recv(handle)` - receive structured object from resource
@@ -36,13 +33,10 @@
 
 ### Basic VFS Abstraction
 - In-memory filesystem (tmpfs)
-- Capability table per process (resource handles)
-- open returns capability, close releases it
 
 ### Userspace Library (libpanda)
 - printf implementation
 - String/memory functions
-- Userspace heap allocator
 
 ### Keyboard Input
 - PS/2 or Virtio input device driver
