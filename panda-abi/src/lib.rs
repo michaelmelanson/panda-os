@@ -128,3 +128,349 @@ impl DirEntry {
         unsafe { core::str::from_utf8_unchecked(&self.name[..self.name_len as usize]) }
     }
 }
+
+// =============================================================================
+// Error codes
+// =============================================================================
+
+/// Error codes for resource operations.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorCode {
+    /// Operation completed successfully.
+    Ok = 0,
+    /// Resource not found.
+    NotFound = 1,
+    /// Invalid offset or position.
+    InvalidOffset = 2,
+    /// Resource is not readable.
+    NotReadable = 3,
+    /// Resource is not writable.
+    NotWritable = 4,
+    /// Resource is not seekable.
+    NotSeekable = 5,
+    /// Operation not supported.
+    NotSupported = 6,
+    /// Permission denied.
+    PermissionDenied = 7,
+    /// I/O error.
+    IoError = 8,
+    /// Would block (used internally, not returned to userspace).
+    WouldBlock = 9,
+    /// Invalid argument.
+    InvalidArgument = 10,
+    /// Protocol error (unexpected message type).
+    Protocol = 11,
+}
+
+// =============================================================================
+// Message types for message-passing interface
+// =============================================================================
+
+/// Message header for tagged messages (used for correlation).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MessageHeader {
+    /// Message ID for request/response correlation.
+    /// ID 0 is reserved for unsolicited events.
+    pub id: u64,
+    /// Message type discriminant.
+    pub msg_type: u32,
+    /// Reserved for future use.
+    pub _reserved: u32,
+}
+
+// -----------------------------------------------------------------------------
+// Block interface messages (files, disks, memory regions)
+// -----------------------------------------------------------------------------
+
+/// Block message types.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockMessageType {
+    /// Read data at offset.
+    Read = 0,
+    /// Write data at offset.
+    Write = 1,
+    /// Get block size.
+    Stat = 2,
+    /// Sync buffered writes.
+    Sync = 3,
+}
+
+/// Block read request.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BlockReadRequest {
+    pub header: MessageHeader,
+    pub offset: u64,
+    pub len: u32,
+    pub _pad: u32,
+}
+
+/// Block read response.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BlockReadResponse {
+    pub header: MessageHeader,
+    pub error: ErrorCode,
+    pub len: u32,
+    // Data follows in buffer
+}
+
+/// Block write request (data follows header).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BlockWriteRequest {
+    pub header: MessageHeader,
+    pub offset: u64,
+    pub len: u32,
+    pub _pad: u32,
+    // Data follows
+}
+
+/// Block write response.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BlockWriteResponse {
+    pub header: MessageHeader,
+    pub error: ErrorCode,
+    pub written: u32,
+}
+
+/// Block stat request.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BlockStatRequest {
+    pub header: MessageHeader,
+}
+
+/// Block stat response.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BlockStatResponse {
+    pub header: MessageHeader,
+    pub error: ErrorCode,
+    pub _pad: u32,
+    pub size: u64,
+}
+
+// -----------------------------------------------------------------------------
+// EventSource interface messages (keyboard, mouse, timers)
+// -----------------------------------------------------------------------------
+
+/// Event source message types.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventMessageType {
+    /// Poll for an event.
+    Poll = 0,
+}
+
+/// Event poll request.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct EventPollRequest {
+    pub header: MessageHeader,
+}
+
+/// Event types.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventType {
+    /// No event available.
+    None = 0,
+    /// Key press/release.
+    Key = 1,
+    /// Mouse movement/button.
+    Mouse = 2,
+    /// Timer expiration.
+    Timer = 3,
+}
+
+/// Key event data.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct KeyEventData {
+    /// Key code.
+    pub code: u16,
+    /// Padding.
+    pub _pad: u16,
+    /// Value: 0=release, 1=press, 2=repeat.
+    pub value: u32,
+}
+
+/// Mouse event data.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MouseEventData {
+    /// X movement delta.
+    pub dx: i32,
+    /// Y movement delta.
+    pub dy: i32,
+    /// Button state.
+    pub buttons: u32,
+    pub _pad: u32,
+}
+
+/// Event poll response.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct EventPollResponse {
+    pub header: MessageHeader,
+    pub event_type: EventType,
+    pub _pad: u32,
+    // Event-specific data follows (KeyEventData, MouseEventData, etc.)
+}
+
+// -----------------------------------------------------------------------------
+// Directory interface messages
+// -----------------------------------------------------------------------------
+
+/// Directory message types.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DirMessageType {
+    /// Get entry at index.
+    Entry = 0,
+    /// Get entry count.
+    Count = 1,
+}
+
+/// Directory entry request.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DirEntryRequest {
+    pub header: MessageHeader,
+    pub index: u64,
+}
+
+/// Directory entry response.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DirEntryResponse {
+    pub header: MessageHeader,
+    pub error: ErrorCode,
+    pub found: u32,
+    pub is_dir: u32,
+    pub name_len: u32,
+    // Name follows
+}
+
+/// Directory count request.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DirCountRequest {
+    pub header: MessageHeader,
+}
+
+/// Directory count response.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DirCountResponse {
+    pub header: MessageHeader,
+    pub error: ErrorCode,
+    pub _pad: u32,
+    pub count: u64,
+}
+
+// -----------------------------------------------------------------------------
+// Process interface messages
+// -----------------------------------------------------------------------------
+
+/// Process message types.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessMessageType {
+    /// Get process status.
+    GetStatus = 0,
+    /// Send signal.
+    Signal = 1,
+    /// Wait for exit.
+    Wait = 2,
+}
+
+/// Process status request.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessStatusRequest {
+    pub header: MessageHeader,
+}
+
+/// Process status response.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessStatusResponse {
+    pub header: MessageHeader,
+    pub error: ErrorCode,
+    pub running: u32,
+    pub exit_code: i32,
+    pub _pad: u32,
+}
+
+/// Process signal request.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessSignalRequest {
+    pub header: MessageHeader,
+    pub signal: u32,
+    pub _pad: u32,
+}
+
+/// Process signal response.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessSignalResponse {
+    pub header: MessageHeader,
+    pub error: ErrorCode,
+    pub _pad: u32,
+}
+
+// -----------------------------------------------------------------------------
+// CharacterOutput interface messages
+// -----------------------------------------------------------------------------
+
+/// Character output message types.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CharOutMessageType {
+    /// Write data.
+    Write = 0,
+    /// Flush output.
+    Flush = 1,
+}
+
+/// Character output write request (data follows header).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CharOutWriteRequest {
+    pub header: MessageHeader,
+    pub len: u32,
+    pub _pad: u32,
+    // Data follows
+}
+
+/// Character output write response.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CharOutWriteResponse {
+    pub header: MessageHeader,
+    pub error: ErrorCode,
+    pub written: u32,
+}
+
+/// Character output flush request.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CharOutFlushRequest {
+    pub header: MessageHeader,
+}
+
+/// Character output flush response.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CharOutFlushResponse {
+    pub header: MessageHeader,
+    pub error: ErrorCode,
+    pub _pad: u32,
+}
