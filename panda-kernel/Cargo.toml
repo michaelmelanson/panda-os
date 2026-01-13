@@ -60,3 +60,7 @@ harness = false
 [[test]]
 name = "apic"
 harness = false
+
+[[test]]
+name = "resource"
+harness = false

@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+pub mod channel;
 pub mod environment;
 pub mod file;
 pub mod heap;
