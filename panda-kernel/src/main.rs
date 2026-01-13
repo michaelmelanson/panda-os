@@ -24,7 +24,7 @@ fn main() -> Status {
     vfs::mount("/initrd", alloc::boxed::Box::new(tarfs));
 
     // Initialize resource scheme system
-    resource::init();
+    resource::init_schemes();
 
     info!("Panda OS");
 

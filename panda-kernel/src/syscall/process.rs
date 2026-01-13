@@ -44,11 +44,11 @@ pub fn handle_get_pid() -> isize {
 }
 
 /// Handle process wait operation.
-pub fn handle_wait(ctx: &SyscallContext, handle: u32) -> isize {
+pub fn handle_wait(ctx: &SyscallContext, handle_id: u32) -> isize {
     let result = scheduler::with_current_process(|proc| {
-        proc.handles()
-            .get_process(handle)
-            .map(|ph| (ph.exit_code(), ph.waker().clone()))
+        let handle = proc.handles().get(handle_id)?;
+        let process_iface = handle.as_process()?;
+        Some((process_iface.exit_code(), process_iface.waker()))
     });
 
     match result {

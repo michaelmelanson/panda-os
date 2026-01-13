@@ -6,80 +6,68 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
-use crate::process::{ProcessId, info::ProcessInfo, waker::Waker};
-use crate::vfs::{DirEntry, File};
+use crate::process::waker::Waker;
+use crate::resource::{Block, CharacterOutput, Directory, EventSource, ProcessInterface, Resource};
 
 /// Handle identifier (similar to file descriptor but for any resource)
 pub type HandleId = u32;
 
-/// A kernel resource accessible via a handle.
-pub enum Handle {
-    /// An open file
-    File(Box<dyn File>),
-    /// A child process handle
-    Process(ProcessHandle),
-    /// An open directory for iteration
-    Directory(DirectoryHandle),
+/// A kernel resource handle with per-handle state.
+pub struct Handle {
+    /// The underlying resource.
+    resource: Box<dyn Resource>,
+    /// Current offset for block-based reads (managed per-handle).
+    offset: u64,
 }
 
-/// A handle to an open directory for iteration.
-pub struct DirectoryHandle {
-    entries: Vec<DirEntry>,
-    cursor: usize,
-}
-
-impl DirectoryHandle {
-    /// Create a new directory handle from a list of entries.
-    pub fn new(entries: Vec<DirEntry>) -> Self {
-        Self { entries, cursor: 0 }
-    }
-
-    /// Read the next directory entry, returning None if at end.
-    pub fn next(&mut self) -> Option<&DirEntry> {
-        if self.cursor < self.entries.len() {
-            let entry = &self.entries[self.cursor];
-            self.cursor += 1;
-            Some(entry)
-        } else {
-            None
+impl Handle {
+    /// Create a new handle wrapping a resource.
+    pub fn new(resource: Box<dyn Resource>) -> Self {
+        Self {
+            resource,
+            offset: 0,
         }
     }
-}
 
-/// A handle to a child process.
-///
-/// Holds a strong reference to the process's external info, which survives
-/// after the process exits. This allows the parent to retrieve the exit code.
-pub struct ProcessHandle {
-    info: Arc<ProcessInfo>,
-}
-
-impl ProcessHandle {
-    /// Create a new process handle from process info.
-    pub fn new(info: Arc<ProcessInfo>) -> Self {
-        Self { info }
+    /// Get the current offset.
+    pub fn offset(&self) -> u64 {
+        self.offset
     }
 
-    /// Get the process ID.
-    pub fn pid(&self) -> ProcessId {
-        self.info.pid()
+    /// Set the current offset.
+    pub fn set_offset(&mut self, offset: u64) {
+        self.offset = offset;
     }
 
-    /// Check if the process has exited.
-    pub fn has_exited(&self) -> bool {
-        self.info.has_exited()
+    /// Get this handle's resource as a Block interface.
+    pub fn as_block(&self) -> Option<&dyn Block> {
+        self.resource.as_block()
     }
 
-    /// Get the exit code if the process has exited.
-    pub fn exit_code(&self) -> Option<i32> {
-        self.info.exit_code()
+    /// Get this handle's resource as an EventSource interface.
+    pub fn as_event_source(&self) -> Option<&dyn EventSource> {
+        self.resource.as_event_source()
     }
 
-    /// Get the waker for blocking until process exits.
-    pub fn waker(&self) -> &Arc<Waker> {
-        self.info.waker()
+    /// Get this handle's resource as a Directory interface.
+    pub fn as_directory(&self) -> Option<&dyn Directory> {
+        self.resource.as_directory()
+    }
+
+    /// Get this handle's resource as a Process interface.
+    pub fn as_process(&self) -> Option<&dyn ProcessInterface> {
+        self.resource.as_process()
+    }
+
+    /// Get this handle's resource as a CharacterOutput interface.
+    pub fn as_char_output(&self) -> Option<&dyn CharacterOutput> {
+        self.resource.as_char_output()
+    }
+
+    /// Get a waker for blocking on this handle.
+    pub fn waker(&self) -> Option<Arc<Waker>> {
+        self.resource.waker()
     }
 }
 
@@ -98,11 +86,11 @@ impl HandleTable {
         }
     }
 
-    /// Insert a handle and return its ID.
-    pub fn insert(&mut self, handle: Handle) -> HandleId {
+    /// Insert a resource and return its handle ID.
+    pub fn insert(&mut self, resource: Box<dyn Resource>) -> HandleId {
         let id = self.next_id;
         self.next_id += 1;
-        self.handles.insert(id, handle);
+        self.handles.insert(id, Handle::new(resource));
         id
     }
 
@@ -116,55 +104,9 @@ impl HandleTable {
         self.handles.get_mut(&id)
     }
 
-    /// Get a mutable reference to a file handle, returning None if not a file.
-    pub fn get_file_mut(&mut self, id: HandleId) -> Option<&mut dyn File> {
-        match self.handles.get_mut(&id)? {
-            Handle::File(f) => Some(f.as_mut()),
-            _ => None,
-        }
-    }
-
-    /// Get a reference to a process handle, returning None if not a process.
-    pub fn get_process(&self, id: HandleId) -> Option<&ProcessHandle> {
-        match self.handles.get(&id)? {
-            Handle::Process(p) => Some(p),
-            _ => None,
-        }
-    }
-
-    /// Get a mutable reference to a directory handle, returning None if not a directory.
-    pub fn get_directory_mut(&mut self, id: HandleId) -> Option<&mut DirectoryHandle> {
-        match self.handles.get_mut(&id)? {
-            Handle::Directory(d) => Some(d),
-            _ => None,
-        }
-    }
-
     /// Remove a handle by ID.
     pub fn remove(&mut self, id: HandleId) -> Option<Handle> {
         self.handles.remove(&id)
-    }
-
-    /// Remove a file handle, returning None if not a file.
-    pub fn remove_file(&mut self, id: HandleId) -> Option<Box<dyn File>> {
-        match self.handles.get(&id)? {
-            Handle::File(_) => match self.handles.remove(&id)? {
-                Handle::File(f) => Some(f),
-                _ => unreachable!(),
-            },
-            _ => None,
-        }
-    }
-
-    /// Remove a process handle, returning None if not a process.
-    pub fn remove_process(&mut self, id: HandleId) -> Option<ProcessHandle> {
-        match self.handles.get(&id)? {
-            Handle::Process(_) => match self.handles.remove(&id)? {
-                Handle::Process(p) => Some(p),
-                _ => unreachable!(),
-            },
-            _ => None,
-        }
     }
 }
 

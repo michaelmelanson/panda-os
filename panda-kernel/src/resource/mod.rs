@@ -1,0 +1,63 @@
+//! Resource abstraction and interface traits.
+//!
+//! Resources are kernel objects that can be accessed via handles from userspace.
+//! Each resource implements one or more focused interface traits.
+
+mod block;
+mod char_output;
+mod directory;
+mod event_source;
+mod process;
+mod process_resource;
+mod scheme;
+
+pub use block::{Block, BlockError};
+pub use char_output::{CharOutError, CharacterOutput};
+pub use directory::{DirEntry, Directory};
+pub use event_source::{Event, EventSource, KeyEvent};
+pub use process::Process as ProcessInterface;
+pub use process_resource::ProcessResource;
+pub use scheme::{
+    ConsoleScheme, DirectoryResource, FileScheme, KeyboardScheme, SchemeHandler,
+    init as init_schemes, open, readdir, register_scheme,
+};
+
+use alloc::sync::Arc;
+
+use crate::process::waker::Waker;
+
+/// A kernel resource that can be accessed via handles.
+///
+/// Resources implement one or more focused interface traits (Block, EventSource, etc.).
+/// The `as_*` methods allow dynamic dispatch to the appropriate interface.
+pub trait Resource: Send + Sync {
+    /// Get this resource as a Block (for files, disks, memory regions).
+    fn as_block(&self) -> Option<&dyn Block> {
+        None
+    }
+
+    /// Get this resource as an EventSource (for keyboard, mouse, timers).
+    fn as_event_source(&self) -> Option<&dyn EventSource> {
+        None
+    }
+
+    /// Get this resource as a Directory (for directory listings).
+    fn as_directory(&self) -> Option<&dyn Directory> {
+        None
+    }
+
+    /// Get this resource as a Process (for child process handles).
+    fn as_process(&self) -> Option<&dyn ProcessInterface> {
+        None
+    }
+
+    /// Get this resource as a CharacterOutput (for serial console, terminal).
+    fn as_char_output(&self) -> Option<&dyn CharacterOutput> {
+        None
+    }
+
+    /// Get a waker for blocking on this resource, if applicable.
+    fn waker(&self) -> Option<Arc<Waker>> {
+        None
+    }
+}

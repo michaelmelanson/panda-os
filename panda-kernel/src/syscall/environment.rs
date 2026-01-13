@@ -1,14 +1,14 @@
 //! Environment operation syscall handlers (OP_ENVIRONMENT_*).
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::{slice, str};
 
 use log::{debug, error, info};
 
 use crate::{
-    handle::{Handle, ProcessHandle},
     process::{Process, context::Context},
-    resource, scheduler,
+    resource::{self, ProcessResource},
+    scheduler,
 };
 
 /// Handle environment open operation.
@@ -21,10 +21,9 @@ pub fn handle_open(uri_ptr: usize, uri_len: usize) -> isize {
     };
 
     match resource::open(uri) {
-        Some(file) => {
-            let handle_id = scheduler::with_current_process(|proc| {
-                proc.handles_mut().insert(Handle::File(file))
-            });
+        Some(resource) => {
+            let handle_id =
+                scheduler::with_current_process(|proc| proc.handles_mut().insert(resource));
             handle_id as isize
         }
         None => -1,
@@ -42,19 +41,25 @@ pub fn handle_spawn(uri_ptr: usize, uri_len: usize) -> isize {
 
     debug!("SPAWN: uri={}", uri);
 
-    let Some(mut file) = resource::open(uri) else {
+    let Some(resource) = resource::open(uri) else {
         error!("SPAWN: failed to open {}", uri);
         return -1;
     };
 
-    let stat = file.stat();
-    let mut elf_data: Vec<u8> = Vec::new();
-    elf_data.resize(stat.size as usize, 0);
+    // Get the Block interface for reading ELF data
+    let Some(block) = resource.as_block() else {
+        error!("SPAWN: {} is not a readable file", uri);
+        return -1;
+    };
 
-    match file.read(&mut elf_data) {
-        Ok(n) if n == stat.size as usize => {}
+    let size = block.size() as usize;
+    let mut elf_data: Vec<u8> = Vec::new();
+    elf_data.resize(size, 0);
+
+    match block.read_at(0, &mut elf_data) {
+        Ok(n) if n == size => {}
         Ok(n) => {
-            error!("SPAWN: incomplete read: {} of {} bytes", n, stat.size);
+            error!("SPAWN: incomplete read: {} of {} bytes", n, size);
             return -1;
         }
         Err(e) => {
@@ -64,7 +69,7 @@ pub fn handle_spawn(uri_ptr: usize, uri_len: usize) -> isize {
     }
 
     let elf_data = elf_data.into_boxed_slice();
-    let elf_ptr: *const [u8] = Box::leak(elf_data);
+    let elf_ptr: *const [u8] = alloc::boxed::Box::leak(elf_data);
 
     let process = Process::from_elf_data(Context::new_user_context(), elf_ptr);
     let pid = process.id();
@@ -74,9 +79,10 @@ pub fn handle_spawn(uri_ptr: usize, uri_len: usize) -> isize {
     scheduler::add_process(process);
 
     // Create a handle for the parent to track the child
-    let process_handle = ProcessHandle::new(process_info);
+    let process_resource = ProcessResource::new(process_info);
     let handle_id = scheduler::with_current_process(|proc| {
-        proc.handles_mut().insert(Handle::Process(process_handle))
+        proc.handles_mut()
+            .insert(alloc::boxed::Box::new(process_resource))
     });
     handle_id as isize
 }
@@ -112,10 +118,10 @@ pub fn handle_opendir(uri_ptr: usize, uri_len: usize) -> isize {
         return -1;
     };
 
-    let dir_handle = crate::handle::DirectoryHandle::new(entries);
+    let dir_resource = resource::DirectoryResource::new(entries);
     let handle_id = scheduler::with_current_process(|proc| {
         proc.handles_mut()
-            .insert(crate::handle::Handle::Directory(dir_handle))
+            .insert(alloc::boxed::Box::new(dir_resource))
     });
     handle_id as isize
 }
