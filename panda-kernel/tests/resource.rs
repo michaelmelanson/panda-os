@@ -9,17 +9,26 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;
 
-use panda_kernel::resource::{Block, BlockError, DirEntry, DirectoryResource, Resource};
+use panda_kernel::handle::HandleTable;
+use panda_kernel::resource::{
+    Block, BlockError, CharOutError, CharacterOutput, DirEntry, DirectoryResource, Resource,
+};
 
 panda_kernel::test_harness!(
     directory_interface_available,
     directory_entry_access,
     directory_count,
     directory_entry_past_end,
+    directory_empty,
     mock_block_interface,
     mock_block_read,
+    mock_block_read_partial,
     mock_block_size,
+    mock_char_output,
     resource_interface_dispatch,
+    handle_table_insert_and_get,
+    handle_table_remove,
+    handle_table_offset_state,
 );
 
 // =============================================================================
@@ -57,6 +66,42 @@ impl Block for MockBlock {
 
     fn size(&self) -> u64 {
         self.data.len() as u64
+    }
+}
+
+// =============================================================================
+// Mock CharacterOutput resource for testing
+// =============================================================================
+
+use spinning_top::Spinlock;
+
+/// A mock character output that records what was written.
+struct MockCharOutput {
+    written: Spinlock<alloc::vec::Vec<u8>>,
+}
+
+impl MockCharOutput {
+    fn new() -> Self {
+        Self {
+            written: Spinlock::new(alloc::vec::Vec::new()),
+        }
+    }
+
+    fn get_written(&self) -> alloc::vec::Vec<u8> {
+        self.written.lock().clone()
+    }
+}
+
+impl Resource for MockCharOutput {
+    fn as_char_output(&self) -> Option<&dyn CharacterOutput> {
+        Some(self)
+    }
+}
+
+impl CharacterOutput for MockCharOutput {
+    fn write(&self, buf: &[u8]) -> Result<usize, CharOutError> {
+        self.written.lock().extend_from_slice(buf);
+        Ok(buf.len())
     }
 }
 
@@ -216,4 +261,130 @@ fn resource_interface_dispatch() {
     fn check_resource(_r: &dyn Resource) {}
     check_resource(block.as_ref());
     check_resource(dir.as_ref());
+}
+
+// =============================================================================
+// Additional directory tests
+// =============================================================================
+
+fn directory_empty() {
+    let entries = vec![];
+    let resource: Box<dyn Resource> = Box::new(DirectoryResource::new(entries));
+    let directory = resource.as_directory().unwrap();
+
+    assert_eq!(
+        directory.count(),
+        0,
+        "Empty directory should have 0 entries"
+    );
+    assert!(
+        directory.entry(0).is_none(),
+        "Empty directory should have no entries"
+    );
+}
+
+// =============================================================================
+// Additional block tests
+// =============================================================================
+
+fn mock_block_read_partial() {
+    let resource = create_test_block();
+    let block = resource.as_block().unwrap();
+
+    // Read with buffer larger than remaining data
+    // "Hello from test data!" = 21 bytes
+    //  0123456789...
+    let mut buf = [0u8; 100];
+    let n = block.read_at(16, &mut buf).expect("Read should succeed");
+
+    // offset 16 leaves 5 bytes: "data!"
+    assert_eq!(n, 5);
+    assert_eq!(&buf[..n], b"data!");
+}
+
+// =============================================================================
+// CharacterOutput tests
+// =============================================================================
+
+fn mock_char_output() {
+    let output = MockCharOutput::new();
+
+    // Verify interface dispatch
+    assert!(output.as_char_output().is_some());
+    assert!(output.as_block().is_none());
+    assert!(output.as_directory().is_none());
+
+    // Write some data
+    let char_out = output.as_char_output().unwrap();
+    let n = char_out.write(b"Hello").expect("Write should succeed");
+    assert_eq!(n, 5);
+
+    let n = char_out.write(b" World").expect("Write should succeed");
+    assert_eq!(n, 6);
+
+    // Verify written data
+    assert_eq!(output.get_written(), b"Hello World");
+}
+
+// =============================================================================
+// Handle table tests
+// =============================================================================
+
+fn handle_table_insert_and_get() {
+    let mut table = HandleTable::new();
+
+    let resource1 = create_test_block();
+    let resource2 = create_test_directory();
+
+    let id1 = table.insert(resource1);
+    let id2 = table.insert(resource2);
+
+    // IDs should be different
+    assert_ne!(id1, id2);
+
+    // Should be able to get both handles
+    assert!(table.get(id1).is_some());
+    assert!(table.get(id2).is_some());
+
+    // First should be Block, second should be Directory
+    assert!(table.get(id1).unwrap().as_block().is_some());
+    assert!(table.get(id2).unwrap().as_directory().is_some());
+}
+
+fn handle_table_remove() {
+    let mut table = HandleTable::new();
+
+    let resource = create_test_block();
+    let id = table.insert(resource);
+
+    // Should exist
+    assert!(table.get(id).is_some());
+
+    // Remove it
+    let removed = table.remove(id);
+    assert!(removed.is_some());
+
+    // Should no longer exist
+    assert!(table.get(id).is_none());
+
+    // Double remove should return None
+    assert!(table.remove(id).is_none());
+}
+
+fn handle_table_offset_state() {
+    let mut table = HandleTable::new();
+
+    let resource = create_test_block();
+    let id = table.insert(resource);
+
+    // Initial offset should be 0
+    assert_eq!(table.get(id).unwrap().offset(), 0);
+
+    // Set offset
+    table.get_mut(id).unwrap().set_offset(42);
+    assert_eq!(table.get(id).unwrap().offset(), 42);
+
+    // Offset persists across get calls
+    table.get_mut(id).unwrap().set_offset(100);
+    assert_eq!(table.get(id).unwrap().offset(), 100);
 }
