@@ -77,9 +77,8 @@ pub fn handle_write(handle_id: u32, buf_ptr: usize, buf_len: usize) -> isize {
     let buf_ptr = buf_ptr as *const u8;
 
     scheduler::with_current_process(|proc| {
-        let handle = match proc.handles_mut().get_mut(handle_id) {
-            Some(h) => h,
-            None => return -1,
+        let Some(handle) = proc.handles_mut().get_mut(handle_id) else {
+            return -1;
         };
 
         let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len) };
@@ -110,9 +109,8 @@ pub fn handle_seek(handle_id: u32, offset_lo: usize, offset_hi: usize) -> isize 
     let whence = (offset_hi >> 32) as usize;
 
     scheduler::with_current_process(|proc| {
-        let handle = match proc.handles_mut().get_mut(handle_id) {
-            Some(h) => h,
-            None => return -1,
+        let Some(handle) = proc.handles_mut().get_mut(handle_id) else {
+            return -1;
         };
 
         // Only block resources support seeking
@@ -144,9 +142,8 @@ pub fn handle_stat(handle_id: u32, stat_ptr: usize) -> isize {
     let stat_ptr = stat_ptr as *mut FileStat;
 
     scheduler::with_current_process(|proc| {
-        let handle = match proc.handles().get(handle_id) {
-            Some(h) => h,
-            None => return -1,
+        let Some(handle) = proc.handles().get(handle_id) else {
+            return -1;
         };
 
         if let Some(block) = handle.as_block() {
@@ -191,9 +188,8 @@ pub fn handle_readdir(handle_id: u32, entry_ptr: usize) -> isize {
     let entry_ptr = entry_ptr as *mut panda_abi::DirEntry;
 
     scheduler::with_current_process(|proc| {
-        let handle = match proc.handles_mut().get_mut(handle_id) {
-            Some(h) => h,
-            None => return -1,
+        let Some(handle) = proc.handles_mut().get_mut(handle_id) else {
+            return -1;
         };
 
         let Some(directory) = handle.as_directory() else {
