@@ -14,6 +14,7 @@ use core::arch::asm;
 use libpanda::environment;
 use libpanda::file;
 use libpanda::process;
+use libpanda::Handle;
 
 /// Test that callee-saved registers are preserved across a simple (non-blocking) syscall.
 fn test_registers_preserved_simple_syscall() {
@@ -161,12 +162,10 @@ fn test_state_preserved_blocking_read() {
     environment::log("TEST: state_preserved_blocking_read");
 
     // Open the keyboard (this will be a blocking read)
-    let keyboard = environment::open("keyboard:/pci/00:03.0", 0);
-    if keyboard < 0 {
+    let Ok(keyboard) = environment::open("keyboard:/pci/00:03.0", 0) else {
         environment::log("SKIP: keyboard not available");
         return;
-    }
-    let keyboard = keyboard as u32;
+    };
 
     // Set up state before blocking
     let magic1: u64 = 0xAAAABBBBCCCCDDDD;
@@ -178,13 +177,11 @@ fn test_state_preserved_blocking_read() {
     // Instead, let's test with a file read which is non-blocking.
 
     // Open a file from initrd
-    let f = environment::open("file:/initrd/hello.txt", 0);
-    if f < 0 {
+    let Ok(f) = environment::open("file:/initrd/hello.txt", 0) else {
         environment::log("SKIP: test file not available");
         file::close(keyboard);
         return;
-    }
-    let f = f as u32;
+    };
 
     let mut buf = [0u8; 32];
     let _n = file::read(f, &mut buf);
@@ -295,7 +292,7 @@ fn test_syscall_return_values() {
 
     // Test that yield returns 0
     let ret = libpanda::syscall::send(
-        panda_abi::HANDLE_SELF,
+        Handle::SELF,
         panda_abi::OP_PROCESS_YIELD,
         0,
         0,
@@ -308,22 +305,20 @@ fn test_syscall_return_values() {
     }
 
     // Test that open returns a valid handle
-    let fd = environment::open("file:/initrd/hello.txt", 0);
-    if fd < 0 {
+    let Ok(fd) = environment::open("file:/initrd/hello.txt", 0) else {
         environment::log("FAIL: open should return valid fd");
         process::exit(1);
-    }
+    };
 
     // Test that close returns 0
-    let ret = file::close(fd as u32);
+    let ret = file::close(fd);
     if ret != 0 {
         environment::log("FAIL: close should return 0");
         process::exit(1);
     }
 
     // Test that opening non-existent file returns error
-    let fd = environment::open("file:/initrd/nonexistent", 0);
-    if fd >= 0 {
+    if let Ok(_) = environment::open("file:/initrd/nonexistent", 0) {
         environment::log("FAIL: open nonexistent should fail");
         process::exit(1);
     }
@@ -366,7 +361,7 @@ fn test_syscall_arg_registers_clean() {
             "mov {r9_out}, r9",
             "mov {r10_out}, r10",
             syscall_send = const panda_abi::SYSCALL_SEND,
-            handle = const panda_abi::HANDLE_SELF,
+            handle = const Handle::SELF.as_raw(),
             op = const panda_abi::OP_PROCESS_YIELD,
             rdi_out = out(reg) rdi_after,
             rsi_out = out(reg) rsi_after,

@@ -1,5 +1,6 @@
 //! File operations using the send-based API
 
+use crate::handle::Handle;
 use crate::syscall::send;
 use panda_abi::*;
 
@@ -7,7 +8,7 @@ use panda_abi::*;
 ///
 /// Returns number of bytes read, or negative error code
 #[inline(always)]
-pub fn read(handle: u32, buf: &mut [u8]) -> isize {
+pub fn read(handle: Handle, buf: &mut [u8]) -> isize {
     send(
         handle,
         OP_FILE_READ,
@@ -22,7 +23,7 @@ pub fn read(handle: u32, buf: &mut [u8]) -> isize {
 ///
 /// Returns number of bytes written, or negative error code
 #[inline(always)]
-pub fn write(handle: u32, buf: &[u8]) -> isize {
+pub fn write(handle: Handle, buf: &[u8]) -> isize {
     send(
         handle,
         OP_FILE_WRITE,
@@ -37,7 +38,7 @@ pub fn write(handle: u32, buf: &[u8]) -> isize {
 ///
 /// Returns new position, or negative error code
 #[inline(always)]
-pub fn seek(handle: u32, offset: i64, whence: u32) -> isize {
+pub fn seek(handle: Handle, offset: i64, whence: u32) -> isize {
     send(handle, OP_FILE_SEEK, offset as usize, whence as usize, 0, 0)
 }
 
@@ -45,7 +46,7 @@ pub fn seek(handle: u32, offset: i64, whence: u32) -> isize {
 ///
 /// Returns 0 on success, or negative error code
 #[inline(always)]
-pub fn stat(handle: u32, stat_buf: &mut FileStat) -> isize {
+pub fn stat(handle: Handle, stat_buf: &mut FileStat) -> isize {
     send(
         handle,
         OP_FILE_STAT,
@@ -60,7 +61,7 @@ pub fn stat(handle: u32, stat_buf: &mut FileStat) -> isize {
 ///
 /// Returns 0 on success, or negative error code
 #[inline(always)]
-pub fn close(handle: u32) -> isize {
+pub fn close(handle: Handle) -> isize {
     send(handle, OP_FILE_CLOSE, 0, 0, 0, 0)
 }
 
@@ -68,7 +69,7 @@ pub fn close(handle: u32) -> isize {
 ///
 /// Returns 1 if an entry was read, 0 if end of directory, or negative error code
 #[inline(always)]
-pub fn readdir(handle: u32, entry: &mut panda_abi::DirEntry) -> isize {
+pub fn readdir(handle: Handle, entry: &mut panda_abi::DirEntry) -> isize {
     send(
         handle,
         OP_FILE_READDIR,

@@ -7,12 +7,12 @@ libpanda::main! {
     environment::log("readdir test starting");
 
     // Test: Open the initrd directory
-    let handle = environment::opendir("file:/initrd");
-    if handle < 0 {
+    let handle = if let Ok(h) = environment::opendir("file:/initrd") {
+        h
+    } else {
         environment::log("FAIL: Could not open file:/initrd");
         return 1;
-    }
-    let handle = handle as u32;
+    };
 
     // Test: Read directory entries
     let mut count = 0;

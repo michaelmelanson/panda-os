@@ -29,6 +29,12 @@ panda_kernel::test_harness!(
     handle_table_insert_and_get,
     handle_table_remove,
     handle_table_offset_state,
+    buffer_free_list_no_merge,
+    buffer_free_list_merge_with_next,
+    buffer_free_list_merge_with_prev,
+    buffer_free_list_merge_both,
+    buffer_free_list_partial_reuse,
+    buffer_free_list_multiple_free_ranges,
 );
 
 // =============================================================================
@@ -387,4 +393,168 @@ fn handle_table_offset_state() {
     // Offset persists across get calls
     table.get_mut(id).unwrap().set_offset(100);
     assert_eq!(table.get(id).unwrap().offset(), 100);
+}
+
+// Helper to create a mock process for buffer tests
+fn create_test_process() -> panda_kernel::process::Process {
+    use panda_kernel::process::context::Context;
+
+    // Create a minimal ELF binary (just headers, no actual code)
+    let mut elf_data = alloc::vec![0u8; 4096];
+
+    // ELF magic number
+    elf_data[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+    // 64-bit
+    elf_data[4] = 2;
+    // Little endian
+    elf_data[5] = 1;
+    // Version
+    elf_data[6] = 1;
+    // e_type (ET_EXEC)
+    elf_data[16] = 2;
+    // e_machine (x86-64)
+    elf_data[18] = 0x3e;
+    // e_version
+    elf_data[20] = 1;
+    // e_entry (entry point at 0x400000)
+    elf_data[24..32].copy_from_slice(&0x400000u64.to_le_bytes());
+    // e_phoff (program header offset at 64)
+    elf_data[32..40].copy_from_slice(&64u64.to_le_bytes());
+    // e_ehsize (ELF header size)
+    elf_data[52..54].copy_from_slice(&64u16.to_le_bytes());
+    // e_phentsize (program header size)
+    elf_data[54..56].copy_from_slice(&56u16.to_le_bytes());
+    // e_phnum (0 program headers)
+    elf_data[56..58].copy_from_slice(&0u16.to_le_bytes());
+
+    let context = Context::new_user_context();
+    let elf_slice: &[u8] = &elf_data;
+    panda_kernel::process::Process::from_elf_data(context, elf_slice as *const [u8])
+}
+
+fn buffer_free_list_no_merge() {
+    let mut proc = create_test_process();
+
+    // Allocate and free a range with no adjacent ranges
+    let addr1 = proc.alloc_buffer_vaddr(2).unwrap(); // 2 pages at base
+    proc.free_buffer_vaddr(addr1, 2);
+
+    // Should be able to allocate from free list
+    let addr2 = proc.alloc_buffer_vaddr(2).unwrap();
+    assert_eq!(addr1, addr2, "Should reuse freed range");
+}
+
+fn buffer_free_list_merge_with_next() {
+    let mut proc = create_test_process();
+
+    // Allocate three ranges
+    let addr1 = proc.alloc_buffer_vaddr(2).unwrap(); // 2 pages
+    let addr2 = proc.alloc_buffer_vaddr(3).unwrap(); // 3 pages
+    let addr3 = proc.alloc_buffer_vaddr(1).unwrap(); // 1 page
+
+    // Free in order: addr2 then addr1 (should merge)
+    proc.free_buffer_vaddr(addr2, 3);
+    proc.free_buffer_vaddr(addr1, 2);
+
+    // Should be able to allocate a 5-page range (merged)
+    let addr4 = proc.alloc_buffer_vaddr(5).unwrap();
+    assert_eq!(addr1, addr4, "Should allocate from merged range");
+
+    // addr3 should still be allocated
+    let _ = addr3;
+}
+
+fn buffer_free_list_merge_with_prev() {
+    let mut proc = create_test_process();
+
+    // Allocate three ranges
+    let addr1 = proc.alloc_buffer_vaddr(2).unwrap(); // 2 pages
+    let addr2 = proc.alloc_buffer_vaddr(3).unwrap(); // 3 pages
+    let addr3 = proc.alloc_buffer_vaddr(1).unwrap(); // 1 page
+
+    // Free in order: addr1 then addr2 (should merge)
+    proc.free_buffer_vaddr(addr1, 2);
+    proc.free_buffer_vaddr(addr2, 3);
+
+    // Should be able to allocate a 5-page range (merged)
+    let addr4 = proc.alloc_buffer_vaddr(5).unwrap();
+    assert_eq!(addr1, addr4, "Should allocate from merged range");
+
+    // addr3 should still be allocated
+    let _ = addr3;
+}
+
+fn buffer_free_list_merge_both() {
+    let mut proc = create_test_process();
+
+    // Allocate four ranges
+    let addr1 = proc.alloc_buffer_vaddr(2).unwrap(); // 2 pages
+    let addr2 = proc.alloc_buffer_vaddr(3).unwrap(); // 3 pages
+    let addr3 = proc.alloc_buffer_vaddr(1).unwrap(); // 1 page
+    let addr4 = proc.alloc_buffer_vaddr(2).unwrap(); // 2 pages
+
+    // Free addr1 and addr3 first
+    proc.free_buffer_vaddr(addr1, 2);
+    proc.free_buffer_vaddr(addr3, 1);
+
+    // Now free addr2 (should merge with both)
+    proc.free_buffer_vaddr(addr2, 3);
+
+    // Should be able to allocate a 6-page range (2+3+1 merged)
+    let addr5 = proc.alloc_buffer_vaddr(6).unwrap();
+    assert_eq!(addr1, addr5, "Should allocate from fully merged range");
+
+    // addr4 should still be allocated
+    let _ = addr4;
+}
+
+fn buffer_free_list_partial_reuse() {
+    let mut proc = create_test_process();
+
+    // Allocate and free a 5-page range
+    let addr1 = proc.alloc_buffer_vaddr(5).unwrap();
+    proc.free_buffer_vaddr(addr1, 5);
+
+    // Allocate 2 pages (should split the free range)
+    let addr2 = proc.alloc_buffer_vaddr(2).unwrap();
+    assert_eq!(addr1, addr2, "Should use start of free range");
+
+    // Should still have 3 pages free
+    let addr3 = proc.alloc_buffer_vaddr(3).unwrap();
+    let expected_addr3 = x86_64::VirtAddr::new(addr1.as_u64() + (2 * 4096));
+    assert_eq!(addr3, expected_addr3, "Should use remainder of split range");
+
+    // Should not be able to allocate 4 pages from free list (only 3 available)
+    let addr4 = proc.alloc_buffer_vaddr(1).unwrap();
+    // This should come from bump allocation, not the free list
+    let expected_addr4 = x86_64::VirtAddr::new(panda_abi::BUFFER_BASE as u64 + (5 * 4096));
+    assert_eq!(addr4, expected_addr4, "Should use bump allocator when free list insufficient");
+}
+
+fn buffer_free_list_multiple_free_ranges() {
+    let mut proc = create_test_process();
+
+    // Allocate 5 ranges
+    let addr1 = proc.alloc_buffer_vaddr(1).unwrap();
+    let addr2 = proc.alloc_buffer_vaddr(1).unwrap();
+    let addr3 = proc.alloc_buffer_vaddr(1).unwrap();
+    let addr4 = proc.alloc_buffer_vaddr(1).unwrap();
+    let addr5 = proc.alloc_buffer_vaddr(1).unwrap();
+
+    // Free alternating ranges: addr1, addr3, addr5
+    proc.free_buffer_vaddr(addr1, 1);
+    proc.free_buffer_vaddr(addr3, 1);
+    proc.free_buffer_vaddr(addr5, 1);
+
+    // Should have 3 separate 1-page free ranges
+    // Allocate 1 page - should get first free range (addr1)
+    let addr6 = proc.alloc_buffer_vaddr(1).unwrap();
+    assert_eq!(addr6, addr1, "Should reuse first free range");
+
+    // Allocate 1 page - should get second free range (addr3)
+    let addr7 = proc.alloc_buffer_vaddr(1).unwrap();
+    assert_eq!(addr7, addr3, "Should reuse second free range");
+
+    // addr2 and addr4 should still be allocated
+    let _ = (addr2, addr4);
 }

@@ -19,6 +19,7 @@ pub use info::ProcessInfo;
 pub use state::{InterruptFrame, SavedGprs, SavedState};
 pub use waker::Waker;
 
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -72,6 +73,9 @@ pub struct Process {
     /// External process info visible to handle holders.
     /// Survives process exit until all handles are dropped.
     info: Arc<ProcessInfo>,
+    /// Free buffer virtual address ranges (start_address -> size_in_pages).
+    /// Sorted by address for efficient merging of adjacent ranges.
+    buffer_free_ranges: BTreeMap<VirtAddr, usize>,
 }
 
 impl Process {
@@ -116,6 +120,12 @@ impl Process {
         );
 
         let id = ProcessId::new();
+
+        // Initialize the entire buffer region as free
+        let mut buffer_free_ranges = BTreeMap::new();
+        let buffer_pages = panda_abi::BUFFER_MAX_SIZE / 4096;
+        buffer_free_ranges.insert(VirtAddr::new(panda_abi::BUFFER_BASE as u64), buffer_pages);
+
         Process {
             id,
             state: ProcessState::Runnable,
@@ -129,6 +139,7 @@ impl Process {
             stack,
             heap,
             info: Arc::new(ProcessInfo::new(id)),
+            buffer_free_ranges,
         }
     }
 
@@ -231,6 +242,88 @@ impl Process {
         self.heap.resize(new_size);
 
         self.brk()
+    }
+
+    /// Allocate a virtual address range for a buffer.
+    /// Uses first-fit allocation from the free list.
+    /// Returns None if out of buffer space.
+    pub fn alloc_buffer_vaddr(&mut self, num_pages: usize) -> Option<VirtAddr> {
+        // Find a suitable free range (first-fit)
+        let (&free_addr, &free_pages) = self
+            .buffer_free_ranges
+            .iter()
+            .find(|&(_, &pages)| pages >= num_pages)?;
+
+        // Remove the free range
+        self.buffer_free_ranges.remove(&free_addr);
+
+        if free_pages > num_pages {
+            // Partial fit, add back the remaining range
+            let remaining_addr = VirtAddr::new(free_addr.as_u64() + (num_pages as u64 * 4096));
+            let remaining_pages = free_pages - num_pages;
+            self.buffer_free_ranges.insert(remaining_addr, remaining_pages);
+        }
+
+        Some(free_addr)
+    }
+
+    /// Free a buffer's virtual address range and add it to the free list.
+    /// Adjacent free ranges are merged to reduce fragmentation.
+    pub fn free_buffer_vaddr(&mut self, vaddr: VirtAddr, num_pages: usize) {
+        let end_addr = VirtAddr::new(vaddr.as_u64() + (num_pages as u64 * 4096));
+
+        // Check if we can merge with the previous range (one that ends where this starts)
+        let prev_merge = self
+            .buffer_free_ranges
+            .range(..vaddr)
+            .next_back()
+            .and_then(|(&prev_addr, &prev_pages)| {
+                let prev_end = VirtAddr::new(prev_addr.as_u64() + (prev_pages as u64 * 4096));
+                if prev_end == vaddr {
+                    Some((prev_addr, prev_pages))
+                } else {
+                    None
+                }
+            });
+
+        // Check if we can merge with the next range (one that starts where this ends)
+        let next_merge = self
+            .buffer_free_ranges
+            .range(vaddr..)
+            .next()
+            .and_then(|(&next_addr, &next_pages)| {
+                if next_addr == end_addr {
+                    Some((next_addr, next_pages))
+                } else {
+                    None
+                }
+            });
+
+        match (prev_merge, next_merge) {
+            (Some((prev_addr, prev_pages)), Some((next_addr, next_pages))) => {
+                // Merge with both previous and next
+                self.buffer_free_ranges.remove(&prev_addr);
+                self.buffer_free_ranges.remove(&next_addr);
+                self.buffer_free_ranges
+                    .insert(prev_addr, prev_pages + num_pages + next_pages);
+            }
+            (Some((prev_addr, prev_pages)), None) => {
+                // Merge with previous only
+                self.buffer_free_ranges.remove(&prev_addr);
+                self.buffer_free_ranges
+                    .insert(prev_addr, prev_pages + num_pages);
+            }
+            (None, Some((next_addr, next_pages))) => {
+                // Merge with next only
+                self.buffer_free_ranges.remove(&next_addr);
+                self.buffer_free_ranges
+                    .insert(vaddr, num_pages + next_pages);
+            }
+            (None, None) => {
+                // No merging, just insert
+                self.buffer_free_ranges.insert(vaddr, num_pages);
+            }
+        }
     }
 
     /// Get the page table physical address for this process.

@@ -50,7 +50,7 @@ fn syscall(
 /// in `file`, `process`, and `environment` modules.
 #[inline(always)]
 pub fn send(
-    handle: u32,
+    handle: crate::Handle,
     operation: u32,
     arg0: usize,
     arg1: usize,
@@ -59,7 +59,7 @@ pub fn send(
 ) -> isize {
     syscall(
         SYSCALL_SEND,
-        handle as usize,
+        u32::from(handle) as usize,
         operation as usize,
         arg0,
         arg1,

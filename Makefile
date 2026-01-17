@@ -2,7 +2,7 @@ SHELL := /bin/bash
 .PHONY: build panda-kernel init shell run test kernel-test userspace-test
 
 KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic resource
-USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test keyboard_test state_test readdir_test
+USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test keyboard_test state_test readdir_test buffer_test
 
 # Extra binaries needed for specific tests (space-separated)
 spawn_test_EXTRAS := spawn_child
@@ -43,6 +43,19 @@ test: kernel-test userspace-test
 # Kernel tests
 # Use 'cargo build --tests' instead of 'cargo test --no-run' to avoid dual-profile
 # issues with build-std (cargo test builds deps in both test and dev profiles)
+ifdef TEST
+kernel-test:
+	@if echo "$(KERNEL_TESTS)" | grep -q -w "$(TEST)"; then \
+		echo "Building kernel test $(TEST)..."; \
+		cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json --tests 2>&1 | grep -E "Compiling|Executable" || true; \
+		./scripts/setup-kernel-test.sh $(TEST); \
+		echo "Running kernel test $(TEST)..."; \
+		./scripts/run-tests.sh kernel $(TEST); \
+	else \
+		echo "Error: Test '$(TEST)' not found in KERNEL_TESTS"; \
+		exit 1; \
+	fi
+else
 kernel-test:
 	@echo "Building kernel tests..."
 	@cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json --tests 2>&1 | grep -E "Compiling|Executable" || true
@@ -52,8 +65,26 @@ kernel-test:
 	done
 	@echo "Running kernel tests..."
 	@./scripts/run-tests.sh kernel $(KERNEL_TESTS)
+endif
 
 # Userspace tests
+ifdef TEST
+userspace-test: panda-kernel
+	@if echo "$(USERSPACE_TESTS)" | grep -q -w "$(TEST)"; then \
+		echo "Building userspace test $(TEST)..."; \
+		cargo +nightly build -Z build-std=core,alloc --package $(TEST) --target ./x86_64-panda-userspace.json; \
+		extras_var=$(TEST)_EXTRAS; \
+		for extra in $${!extras_var}; do \
+			cargo +nightly build -Z build-std=core,alloc --package $$extra --target ./x86_64-panda-userspace.json; \
+		done; \
+		./scripts/setup-userspace-test.sh $(TEST) $${!extras_var}; \
+		echo "Running userspace test $(TEST)..."; \
+		./scripts/run-tests.sh userspace $(TEST); \
+	else \
+		echo "Error: Test '$(TEST)' not found in USERSPACE_TESTS"; \
+		exit 1; \
+	fi
+else
 userspace-test: panda-kernel
 	@echo "Building userspace tests..."
 	@for test in $(USERSPACE_TESTS); do \
@@ -69,6 +100,7 @@ userspace-test: panda-kernel
 	done
 	@echo "Running userspace tests..."
 	@./scripts/run-tests.sh userspace $(USERSPACE_TESTS)
+endif
 
 # QEMU command for interactive use
 QEMU_COMMON = qemu-system-x86_64 -nodefaults \

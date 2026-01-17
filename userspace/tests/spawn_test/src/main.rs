@@ -7,16 +7,15 @@ libpanda::main! {
     environment::log("Spawn test: starting");
 
     // Spawn a child process using file: scheme
-    let child_handle = environment::spawn("file:/initrd/spawn_child");
-    if child_handle < 0 {
+    let Ok(child_handle) = environment::spawn("file:/initrd/spawn_child") else {
         environment::log("FAIL: spawn returned error");
         return 1;
-    }
+    };
 
     environment::log("Spawn test: child spawned, waiting for exit...");
 
     // Wait for the child to exit
-    let exit_code = process::wait(child_handle as u32);
+    let exit_code = process::wait(child_handle);
 
     if exit_code == 42 {
         environment::log("Spawn test: child exited with expected code 42");

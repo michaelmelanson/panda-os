@@ -8,12 +8,10 @@ libpanda::main! {
     environment::log("VFS test starting");
 
     // Test: Open a file from initrd using file: scheme
-    let handle = environment::open("file:/initrd/hello.txt", 0);
-    if handle < 0 {
+    let Ok(handle) = environment::open("file:/initrd/hello.txt", 0) else {
         environment::log("FAIL: Could not open file:/initrd/hello.txt");
         return 1;
-    }
-    let handle = handle as u32;
+    };
 
     // Test: Read from the file
     let mut buf = [0u8; 64];

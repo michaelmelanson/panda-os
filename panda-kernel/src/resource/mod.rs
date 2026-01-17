@@ -4,6 +4,7 @@
 //! Each resource implements one or more focused interface traits.
 
 mod block;
+mod buffer;
 mod char_output;
 mod directory;
 mod event_source;
@@ -12,6 +13,7 @@ mod process_resource;
 mod scheme;
 
 pub use block::{Block, BlockError};
+pub use buffer::{Buffer, BufferError, SharedBuffer};
 pub use char_output::{CharOutError, CharacterOutput};
 pub use directory::{DirEntry, Directory};
 pub use event_source::{Event, EventSource, KeyEvent};
@@ -53,6 +55,16 @@ pub trait Resource: Send + Sync {
 
     /// Get this resource as a CharacterOutput (for serial console, terminal).
     fn as_char_output(&self) -> Option<&dyn CharacterOutput> {
+        None
+    }
+
+    /// Get this resource as a Buffer (for shared memory regions).
+    fn as_buffer(&self) -> Option<&dyn Buffer> {
+        None
+    }
+
+    /// Get this resource as a mutable Buffer.
+    fn as_buffer_mut(&mut self) -> Option<&mut dyn Buffer> {
         None
     }
 

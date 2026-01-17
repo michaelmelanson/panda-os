@@ -6,6 +6,7 @@
 //! - Syscall entry point (via SYSCALL/SYSRET)
 //! - Dispatch to operation-specific handlers
 
+mod buffer;
 mod entry;
 mod environment;
 mod file;
@@ -186,6 +187,15 @@ fn handle_send(
         OP_ENVIRONMENT_LOG => environment::handle_log(arg0, arg1),
         OP_ENVIRONMENT_TIME => environment::handle_time(),
         OP_ENVIRONMENT_OPENDIR => environment::handle_opendir(arg0, arg1),
+
+        // Buffer operations
+        OP_BUFFER_ALLOC => buffer::handle_alloc(arg0, arg1),
+        OP_BUFFER_RESIZE => buffer::handle_resize(handle, arg0, arg1),
+        OP_BUFFER_FREE => buffer::handle_free(handle),
+
+        // Buffer-based file operations
+        OP_FILE_READ_BUFFER => buffer::handle_read_buffer(handle, arg0 as u32),
+        OP_FILE_WRITE_BUFFER => buffer::handle_write_buffer(handle, arg0 as u32, arg1),
 
         _ => {
             error!("Unknown operation: {:#x}", operation);

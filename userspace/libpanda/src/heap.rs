@@ -8,8 +8,9 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use panda_abi::{HEAP_BASE, HEAP_MAX_SIZE, HANDLE_SELF, OP_PROCESS_BRK};
+use panda_abi::{HEAP_BASE, HEAP_MAX_SIZE, OP_PROCESS_BRK};
 
+use crate::handle::Handle;
 use crate::syscall::send;
 
 /// Simple bump allocator for userspace heap.
@@ -51,7 +52,7 @@ impl BumpAllocator {
             }
 
             // Try to set the new brk via syscall
-            let result = send(HANDLE_SELF, OP_PROCESS_BRK, new_brk, 0, 0, 0);
+            let result = send(Handle::SELF, OP_PROCESS_BRK, new_brk, 0, 0, 0);
 
             if result as usize != new_brk {
                 // brk failed

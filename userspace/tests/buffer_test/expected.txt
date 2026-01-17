@@ -1,0 +1,13 @@
+# Buffer test expected log output
+Buffer test starting
+PASS: Buffer allocated
+PASS: Buffer size correct
+PASS: Wrote to buffer
+PASS: Read back correct data
+PASS: Read file into buffer
+PASS: File content correct in buffer
+PASS: Buffer freed
+PASS: Allocated multiple buffers
+PASS: Freed multiple buffers
+PASS: Allocated buffer after freeing
+Buffer test passed

@@ -56,6 +56,14 @@ pub const OP_PROCESS_SIGNAL: u32 = 0x2_0004;
 /// Pages are allocated on demand via page faults.
 pub const OP_PROCESS_BRK: u32 = 0x2_0005;
 
+// Userspace buffer region constants
+/// Base address of the userspace buffer region.
+/// Buffers are shared memory regions for zero-copy I/O.
+/// Must be in userspace PML4 range (entries 20-22) and canonical (bit 47 = 0).
+pub const BUFFER_BASE: usize = 0xaff_0000_0000;
+/// Maximum size of the userspace buffer region (4 GB virtual address space).
+pub const BUFFER_MAX_SIZE: usize = 0x1_0000_0000;
+
 // Userspace stack region constants
 /// Base address of the userspace stack region.
 /// Stack grows downward from STACK_BASE + STACK_MAX_SIZE.
@@ -84,6 +92,30 @@ pub const OP_ENVIRONMENT_LOG: u32 = 0x3_0002;
 pub const OP_ENVIRONMENT_TIME: u32 = 0x3_0003;
 /// Open directory: (path_ptr, path_len) -> dir_handle or error
 pub const OP_ENVIRONMENT_OPENDIR: u32 = 0x3_0004;
+
+// Buffer operations (0x4_0000 - 0x4_FFFF)
+/// Allocate a shared buffer: (size, info_ptr) -> buffer_handle or error
+/// If info_ptr is non-zero, writes BufferAllocInfo (addr, size) to that address.
+pub const OP_BUFFER_ALLOC: u32 = 0x4_0000;
+/// Resize a buffer: (buffer_handle, new_size, info_ptr) -> 0 or error
+/// If info_ptr is non-zero, writes BufferAllocInfo (addr, size) to that address.
+pub const OP_BUFFER_RESIZE: u32 = 0x4_0002;
+/// Free a buffer: (buffer_handle) -> 0 or error
+pub const OP_BUFFER_FREE: u32 = 0x4_0003;
+
+/// Buffer allocation info returned via pointer in BUFFER_ALLOC.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BufferAllocInfo {
+    pub addr: usize,
+    pub size: usize,
+}
+
+// Buffer-based file operations (0x5_0000 - 0x5_FFFF)
+/// Read from file into buffer: (file_handle, buffer_handle) -> bytes_read
+pub const OP_FILE_READ_BUFFER: u32 = 0x5_0000;
+/// Write from buffer to file: (file_handle, buffer_handle, len) -> bytes_written
+pub const OP_FILE_WRITE_BUFFER: u32 = 0x5_0001;
 
 // =============================================================================
 // Constants

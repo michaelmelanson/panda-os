@@ -9,12 +9,12 @@ libpanda::main! {
 
     // Test 1: Open a file using file: scheme
     environment::log("Test 1: file: scheme");
-    let handle = environment::open("file:/initrd/hello.txt", 0);
-    if handle < 0 {
+    let handle = if let Ok(h) = environment::open("file:/initrd/hello.txt", 0) {
+        h
+    } else {
         environment::log("FAIL: Could not open file:/initrd/hello.txt");
         return 1;
-    }
-    let handle = handle as u32;
+    };
 
     // Read from the file to verify it works
     let mut buf = [0u8; 64];
@@ -28,12 +28,12 @@ libpanda::main! {
 
     // Test 2: Open console using console: scheme
     environment::log("Test 2: console: scheme");
-    let console = environment::open("console:/serial/0", 0);
-    if console < 0 {
+    let console = if let Ok(h) = environment::open("console:/serial/0", 0) {
+        h
+    } else {
         environment::log("FAIL: Could not open console:/serial/0");
         return 1;
-    }
-    let console = console as u32;
+    };
 
     // Write to console
     let msg = b"Hello from console write!\n";
@@ -47,8 +47,7 @@ libpanda::main! {
 
     // Test 3: Invalid scheme should fail
     environment::log("Test 3: invalid scheme");
-    let bad = environment::open("badscheme:/foo", 0);
-    if bad >= 0 {
+    if let Ok(_) = environment::open("badscheme:/foo", 0) {
         environment::log("FAIL: Invalid scheme should return error");
         return 1;
     }
@@ -56,8 +55,7 @@ libpanda::main! {
 
     // Test 4: Invalid path within scheme should fail
     environment::log("Test 4: invalid path");
-    let bad = environment::open("console:/invalid/path", 0);
-    if bad >= 0 {
+    if let Ok(_) = environment::open("console:/invalid/path", 0) {
         environment::log("FAIL: Invalid path should return error");
         return 1;
     }

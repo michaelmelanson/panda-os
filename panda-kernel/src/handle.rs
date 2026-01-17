@@ -8,7 +8,9 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
 use crate::process::waker::Waker;
-use crate::resource::{Block, CharacterOutput, Directory, EventSource, ProcessInterface, Resource};
+use crate::resource::{
+    Block, Buffer, CharacterOutput, Directory, EventSource, ProcessInterface, Resource,
+};
 
 /// Handle identifier (similar to file descriptor but for any resource)
 pub type HandleId = u32;
@@ -40,6 +42,11 @@ impl Handle {
         self.offset = offset;
     }
 
+    /// Replace the underlying resource (used for operations like buffer resize).
+    pub fn replace_resource(&mut self, new_resource: Box<dyn Resource>) {
+        self.resource = new_resource;
+    }
+
     /// Get this handle's resource as a Block interface.
     pub fn as_block(&self) -> Option<&dyn Block> {
         self.resource.as_block()
@@ -63,6 +70,16 @@ impl Handle {
     /// Get this handle's resource as a CharacterOutput interface.
     pub fn as_char_output(&self) -> Option<&dyn CharacterOutput> {
         self.resource.as_char_output()
+    }
+
+    /// Get this handle's resource as a Buffer interface.
+    pub fn as_buffer(&self) -> Option<&dyn Buffer> {
+        self.resource.as_buffer()
+    }
+
+    /// Get this handle's resource as a mutable Buffer interface.
+    pub fn as_buffer_mut(&mut self) -> Option<&mut dyn Buffer> {
+        self.resource.as_buffer_mut()
     }
 
     /// Get a waker for blocking on this handle.

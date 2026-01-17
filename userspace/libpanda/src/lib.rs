@@ -3,9 +3,11 @@
 
 extern crate alloc;
 
+pub mod buffer;
 pub mod channel;
 pub mod environment;
 pub mod file;
+pub mod handle;
 pub mod heap;
 pub mod print;
 pub mod process;
@@ -13,6 +15,9 @@ pub mod syscall;
 
 // Re-export alloc types for convenience
 pub use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
+
+// Re-export core types
+pub use handle::Handle;
 
 // Re-export ABI types
 pub use panda_abi::DirEntry;

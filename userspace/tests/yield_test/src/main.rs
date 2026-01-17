@@ -6,10 +6,10 @@ use libpanda::process;
 
 libpanda::main! {
     environment::log("Parent: spawning child");
-    if environment::spawn("file:/initrd/yield_child") < 0 {
+    let Ok(_) = environment::spawn("file:/initrd/yield_child") else {
         environment::log("Parent: FAIL - spawn failed");
         return 1;
-    }
+    };
 
     for _ in 0..3 {
         environment::log("Parent: before yield");

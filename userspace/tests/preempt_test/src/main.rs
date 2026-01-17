@@ -15,11 +15,10 @@ libpanda::main! {
 
     // Spawn multiple children that do CPU-bound work without yielding
     for _ in 0..3 {
-        let result = environment::spawn("file:/initrd/preempt_child");
-        if result < 0 {
+        let Ok(_) = environment::spawn("file:/initrd/preempt_child") else {
             environment::log("FAIL: spawn returned error");
             return 1;
-        }
+        };
     }
 
     // Parent also does CPU-bound work to compete for CPU time

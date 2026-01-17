@@ -59,20 +59,16 @@ const KEY_RIGHTSHIFT: u16 = 54;
 
 libpanda::main! {
     // Open the keyboard device
-    let keyboard = environment::open("keyboard:/pci/00:03.0", 0);
-    if keyboard < 0 {
+    let Ok(keyboard) = environment::open("keyboard:/pci/00:03.0", 0) else {
         environment::log("shell: failed to open keyboard");
         return 1;
-    }
-    let keyboard = keyboard as u32;
+    };
 
     // Open console for output
-    let console = environment::open("console:/serial/0", 0);
-    if console < 0 {
+    let Ok(console) = environment::open("console:/serial/0", 0) else {
         environment::log("shell: failed to open console");
         return 1;
-    }
-    let console = console as u32;
+    };
 
     // Print prompt
     let prompt = b"\n> ";
