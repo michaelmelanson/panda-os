@@ -133,18 +133,47 @@ impl Surface for FramebufferSurface {
             return Err(SurfaceError::InvalidDataSize);
         }
 
-        // Copy pixels row by row
+        // Blit with alpha blending
         unsafe {
             for row in 0..height {
-                let dst_y = y + row;
-                let dst_offset = (dst_y * self.info.stride + x * bytes_per_pixel) as isize;
-                let dst_ptr = self.framebuffer.offset(dst_offset);
+                for col in 0..width {
+                    let dst_y = y + row;
+                    let dst_x = x + col;
+                    let dst_offset = (dst_y * self.info.stride + dst_x * bytes_per_pixel) as isize;
+                    let dst_ptr = self.framebuffer.offset(dst_offset);
 
-                let src_offset = (row * width * bytes_per_pixel) as usize;
-                let row_bytes = (width * bytes_per_pixel) as usize;
-                let src_slice = &pixels[src_offset..src_offset + row_bytes];
+                    let src_idx = ((row * width + col) * bytes_per_pixel) as usize;
 
-                core::ptr::copy_nonoverlapping(src_slice.as_ptr(), dst_ptr, row_bytes);
+                    // Read source pixel (BGRA byte order for little-endian ARGB8888)
+                    let src_b = pixels[src_idx] as u32;
+                    let src_g = pixels[src_idx + 1] as u32;
+                    let src_r = pixels[src_idx + 2] as u32;
+                    let src_a = pixels[src_idx + 3] as u32;
+
+                    if src_a == 0 {
+                        // Fully transparent, skip
+                        continue;
+                    } else if src_a == 255 {
+                        // Fully opaque, direct copy
+                        core::ptr::copy_nonoverlapping(pixels[src_idx..].as_ptr(), dst_ptr, 4);
+                    } else {
+                        // Alpha blend: dst = src * alpha + dst * (1 - alpha)
+                        let dst_b = *dst_ptr as u32;
+                        let dst_g = *dst_ptr.offset(1) as u32;
+                        let dst_r = *dst_ptr.offset(2) as u32;
+
+                        let inv_alpha = 255 - src_a;
+
+                        let final_b = ((src_b * src_a + dst_b * inv_alpha) / 255) as u8;
+                        let final_g = ((src_g * src_a + dst_g * inv_alpha) / 255) as u8;
+                        let final_r = ((src_r * src_a + dst_r * inv_alpha) / 255) as u8;
+
+                        *dst_ptr = final_b;
+                        *dst_ptr.offset(1) = final_g;
+                        *dst_ptr.offset(2) = final_r;
+                        *dst_ptr.offset(3) = 255; // Keep dest alpha at full opacity
+                    }
+                }
             }
         }
 

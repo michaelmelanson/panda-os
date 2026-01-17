@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 libpanda = { path = "../libpanda" }
 panda-abi = { path = "../../panda-abi" }
+fontdue = { path = "../../vendor/fontdue", default-features = false, features = ["hashbrown"] }

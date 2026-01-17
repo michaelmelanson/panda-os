@@ -22,7 +22,7 @@ pub use mapping::{Mapping, MappingBacking};
 pub use paging::{
     allocate_and_map, create_user_page_table, current_page_table_phys, free_region, map,
     map_external, switch_page_table, try_handle_heap_page_fault, try_handle_stack_page_fault,
-    unmap_page, unmap_region, without_write_protection,
+    unmap_page, unmap_region, update_permissions, without_write_protection,
 };
 
 /// Mapping options for memory regions.

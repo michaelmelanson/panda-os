@@ -2,7 +2,7 @@
 
 use log::debug;
 
-use crate::{resource::Surface, scheduler};
+use crate::scheduler;
 
 /// Handle OP_SURFACE_INFO syscall.
 ///

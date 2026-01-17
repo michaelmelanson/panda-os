@@ -17,7 +17,7 @@ build: panda-kernel init shell terminal
 	cp target/x86_64-panda-uefi/debug/panda-kernel.efi build/run/efi/boot/bootx64.efi
 	cp target/x86_64-panda-userspace/debug/init build/run/initrd/init
 	cp target/x86_64-panda-userspace/debug/shell build/run/initrd/shell
-	cp target/x86_64-panda-userspace/debug/terminal build/run/initrd/terminal
+	cp target/x86_64-unknown-none/debug/terminal build/run/initrd/terminal
 	echo "Hello from the initrd!" > build/run/initrd/hello.txt
 	tar --format=ustar -cf build/run/efi/initrd.tar -C build/run/initrd init shell terminal hello.txt
 	echo 'fs0:\efi\boot\bootx64.efi' > build/run/efi/boot/startup.nsh
@@ -32,7 +32,7 @@ shell:
 	cargo +nightly build -Z build-std=core,alloc --package shell --target ./x86_64-panda-userspace.json
 
 terminal:
-	cargo +nightly build -Z build-std=core,alloc --package terminal --target ./x86_64-panda-userspace.json
+	RUSTFLAGS="-C relocation-model=static -C code-model=large -C link-arg=-Tx86_64-panda-userspace.ld" cargo +nightly build --package terminal --target x86_64-unknown-none
 
 run: build
 	$(QEMU_COMMON) \

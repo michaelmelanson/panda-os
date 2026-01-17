@@ -1,4 +1,26 @@
 //! ELF binary loading.
+//!
+//! ## Segment Overlap Handling
+//!
+//! When ELF segments share pages (due to sub-page alignment), we must handle
+//! permission conflicts. For example:
+//! - Code segment (RX) ends at 0x...90583
+//! - Rodata segment (R) starts at 0x...90583
+//! - They share page 0x...90000
+//!
+//! Our approach:
+//! 1. Map the first segment with its permissions (RX)
+//! 2. Skip remapping the overlapping page for the second segment
+//! 3. If the second segment needs more permissive access (e.g., write), upgrade
+//!
+//! ### Assumptions
+//! - Standard segment order: Code (RX) → Rodata (R) → Data (RW)
+//! - The linker doesn't create binaries where code and writable data share pages
+//!   (this would violate W^X security policy)
+//!
+//! ### Limitations
+//! - If a malformed binary has RX and RW sharing a page, we'll make it RW,
+//!   breaking code execution. The linker should prevent this with MAXPAGESIZE.
 
 use alloc::vec::Vec;
 
@@ -6,7 +28,7 @@ use goblin::elf::{
     Elf,
     program_header::{PT_LOAD, pt_to_str},
 };
-use log::trace;
+use log::{debug, trace, warn};
 use x86_64::VirtAddr;
 
 use crate::memory::{self, Mapping, MemoryMappingOptions};
@@ -15,26 +37,89 @@ use crate::memory::{self, Mapping, MemoryMappingOptions};
 /// Returns the list of mappings created.
 pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
     let mut mappings = Vec::new();
+    let mut last_segment_end: u64 = 0;
+    let mut last_segment_executable = false;
 
     for header in &elf.program_headers {
         match header.p_type {
             PT_LOAD => {
                 let virt_addr = VirtAddr::new(header.p_vaddr);
-
-                // Align down to page boundary for mapping
                 let page_offset = virt_addr.as_u64() & 0xFFF;
-                let aligned_virt_addr = virt_addr.align_down(4096u64);
-                let aligned_size = header.p_memsz as usize + page_offset as usize;
+                let mut aligned_virt_addr = virt_addr.align_down(4096u64);
+                let mut aligned_size = header.p_memsz as usize + page_offset as usize;
+                let original_aligned_virt = aligned_virt_addr;
 
-                let mapping = memory::allocate_and_map(
-                    aligned_virt_addr,
+                // Handle overlapping segments (segments sharing page boundaries)
+                if aligned_virt_addr.as_u64() < last_segment_end {
+                    let overlap = last_segment_end - aligned_virt_addr.as_u64();
+                    debug!(
+                        "ELF LOAD: Segment overlap detected: {:#x} bytes",
+                        overlap
+                    );
+
+                    // Adjust mapping to skip already-mapped pages
+                    aligned_virt_addr = VirtAddr::new(last_segment_end);
+                    if aligned_size > overlap as usize {
+                        aligned_size -= overlap as usize;
+                    } else {
+                        aligned_size = 0;
+                    }
+
+                    // Upgrade permissions if this segment needs write access
+                    if header.is_write() {
+                        // Safety check: warn if we're about to make executable pages writable
+                        if last_segment_executable {
+                            warn!(
+                                "ELF segment overlap: making executable pages writable (RX+RW at {:#x}). \
+                                 This violates W^X policy and may indicate a malformed binary.",
+                                original_aligned_virt.as_u64()
+                            );
+                        }
+
+                        let overlap_size = (aligned_virt_addr.as_u64() - original_aligned_virt.as_u64()) as usize;
+                        debug!(
+                            "ELF LOAD: Upgrading overlapping pages to RW (removing execute)"
+                        );
+                        memory::update_permissions(
+                            original_aligned_virt,
+                            overlap_size,
+                            MemoryMappingOptions {
+                                user: true,
+                                executable: false,  // W^X: can't be both writable and executable
+                                writable: true,
+                            },
+                        );
+                    }
+                }
+
+                debug!(
+                    "ELF LOAD: vaddr={:#x} memsz={:#x} aligned_vaddr={:#x} aligned_size={:#x} flags={}{}{}",
+                    header.p_vaddr,
+                    header.p_memsz,
+                    aligned_virt_addr.as_u64(),
                     aligned_size,
-                    MemoryMappingOptions {
-                        user: true,
-                        executable: header.is_executable(),
-                        writable: header.is_write(),
-                    },
+                    if header.is_read() { "R" } else { "" },
+                    if header.is_write() { "W" } else { "" },
+                    if header.is_executable() { "X" } else { "" },
                 );
+
+                if aligned_size > 0 {
+                    let mapping = memory::allocate_and_map(
+                        aligned_virt_addr,
+                        aligned_size,
+                        MemoryMappingOptions {
+                            user: true,
+                            executable: header.is_executable(),
+                            writable: header.is_write(),
+                        },
+                    );
+
+                    last_segment_end = aligned_virt_addr.as_u64() + ((aligned_size + 4095) & !4095) as u64;
+                    mappings.push(mapping);
+                }
+
+                // Track if this segment was executable for overlap detection
+                last_segment_executable = header.is_executable();
 
                 // Copy ELF data to the mapped region (at the original unaligned address)
                 // Temporarily disable write protection to allow kernel writes to read-only pages
@@ -46,8 +131,6 @@ pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
                         header.p_filesz as usize,
                     );
                 });
-
-                mappings.push(mapping);
             }
 
             _ => trace!("Ignoring {} program header", pt_to_str(header.p_type)),

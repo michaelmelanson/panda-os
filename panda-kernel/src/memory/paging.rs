@@ -101,6 +101,39 @@ pub fn map(
     map_inner(base_phys_addr, base_virt_addr, size_bytes, &options);
 }
 
+/// Update permissions for already-mapped pages.
+/// This is used when ELF segments overlap and need merged permissions.
+pub fn update_permissions(
+    base_virt_addr: VirtAddr,
+    size_bytes: usize,
+    options: MemoryMappingOptions,
+) {
+    assert!(
+        base_virt_addr.is_aligned(4096u64),
+        "virtual address must be page-aligned"
+    );
+
+    for i in (0..size_bytes).step_by(4096) {
+        let virt_addr = base_virt_addr + i as u64;
+
+        let mut flags = PageTableFlags::PRESENT;
+        if options.user {
+            flags |= PageTableFlags::USER_ACCESSIBLE;
+        }
+        if options.writable {
+            flags |= PageTableFlags::WRITABLE;
+        }
+        if !options.executable {
+            flags |= PageTableFlags::NO_EXECUTE;
+        }
+
+        let (entry, _level) = l1_page_table_entry(virt_addr, flags);
+        let entry = unsafe { &mut *entry };
+        without_write_protection(|| entry.set_flags(flags));
+        tlb::flush(virt_addr);
+    }
+}
+
 /// Map physical memory to virtual address (internal implementation).
 fn map_inner(
     base_phys_addr: PhysAddr,
