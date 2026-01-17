@@ -17,6 +17,16 @@ MONITOR_FILE="${6:-}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
+# Check if this test needs screenshot verification
+SCREENSHOT_TEST=0
+EXPECTED_PNG=""
+if [ -n "$EXPECTED_FILE" ]; then
+    EXPECTED_PNG="${EXPECTED_FILE%.txt}.png"
+    if [ -f "$EXPECTED_PNG" ]; then
+        SCREENSHOT_TEST=1
+    fi
+fi
+
 # Base QEMU command
 QEMU_CMD=(
     qemu-system-x86_64 -nodefaults
@@ -31,11 +41,141 @@ QEMU_CMD=(
     -drive "format=raw,file=fat:rw:$BUILD_DIR"
     -display none
     -accel kvm -accel tcg
-    -device isa-debug-exit,iobase=0xf4,iosize=0x04
 )
 
-# If we have monitor commands, run QEMU with a monitor socket
-if [ -n "$MONITOR_FILE" ] && [ -f "$MONITOR_FILE" ]; then
+# For screenshot tests, use monitor socket instead of isa-debug-exit
+if [ $SCREENSHOT_TEST -eq 1 ]; then
+    MONITOR_SOCK="/tmp/qemu-test-$$.sock"
+    QEMU_CMD+=(-monitor "unix:$MONITOR_SOCK,server,nowait")
+else
+    QEMU_CMD+=(-device isa-debug-exit,iobase=0xf4,iosize=0x04)
+fi
+
+# Handle screenshot tests
+if [ $SCREENSHOT_TEST -eq 1 ]; then
+    cleanup() {
+        rm -f "$MONITOR_SOCK"
+        jobs -p | xargs -r kill 2>/dev/null
+    }
+    trap cleanup EXIT
+
+    # Start QEMU in background
+    "${QEMU_CMD[@]}" > "$LOG_FILE" 2>&1 &
+    QEMU_PID=$!
+
+    # Wait for monitor socket
+    for i in {1..50}; do
+        [ -S "$MONITOR_SOCK" ] && break
+        sleep 0.1
+    done
+
+    if [ ! -S "$MONITOR_SOCK" ]; then
+        echo "Failed to create QEMU monitor socket" >&2
+        kill $QEMU_PID 2>/dev/null
+        exit 1
+    fi
+
+    # Watch for screenshot ready marker in log
+    SCREENSHOT_TIMEOUT=$((TIMEOUT * 2))
+    for i in $(seq 1 $SCREENSHOT_TIMEOUT); do
+        if grep -q "<<<SCREENSHOT_READY>>>" "$LOG_FILE" 2>/dev/null; then
+            # Test is ready for screenshot
+            sleep 0.2  # Brief delay to ensure log is flushed
+
+            # Capture screenshot
+            ACTUAL_PNG_TMP="$BUILD_DIR/${TEST_NAME}_actual.ppm"
+            ACTUAL_PNG="$BUILD_DIR/${TEST_NAME}_actual.png"
+
+            # Send commands to monitor with proper formatting
+            {
+                sleep 0.1
+                echo "screendump $ACTUAL_PNG_TMP"
+                sleep 0.3
+                echo "quit"
+            } | nc -U "$MONITOR_SOCK" > /dev/null 2>&1
+
+            # Wait for QEMU to exit
+            wait $QEMU_PID 2>/dev/null || true
+
+            # Verify screenshot was captured
+            if [ ! -f "$ACTUAL_PNG_TMP" ]; then
+                echo "Screenshot not captured: $ACTUAL_PNG_TMP" >&2
+                exit 1
+            fi
+
+            # Convert PPM to PNG
+            if command -v convert >/dev/null 2>&1; then
+                convert "$ACTUAL_PNG_TMP" "$ACTUAL_PNG"
+                rm -f "$ACTUAL_PNG_TMP"
+            else
+                # No ImageMagick - keep PPM format
+                mv "$ACTUAL_PNG_TMP" "$ACTUAL_PNG"
+            fi
+
+            # If expected.png doesn't exist, this is the first run
+            if [ ! -f "$EXPECTED_PNG" ]; then
+                echo "No expected.png found - saving actual screenshot for review" >&2
+                echo "Screenshot saved to: $ACTUAL_PNG" >&2
+                echo "If it looks correct, copy it to: $EXPECTED_PNG" >&2
+                exit 1
+            fi
+
+            # Compare screenshots
+            SCREENSHOT_PASSED=0
+            if command -v compare >/dev/null 2>&1; then
+                DIFF_PNG="$BUILD_DIR/${TEST_NAME}_diff.png"
+                # Allow 1% fuzz for anti-aliasing differences
+                DIFF_PIXELS=$(compare -metric AE -fuzz 1% "$EXPECTED_PNG" "$ACTUAL_PNG" "$DIFF_PNG" 2>&1 | head -1 | awk '{print $1}' || echo "999999")
+                if [ "$DIFF_PIXELS" -gt 1000 ] 2>/dev/null; then
+                    echo "Screenshot differs from expected (${DIFF_PIXELS} pixels different)" >&2
+                    echo "Expected: $EXPECTED_PNG" >&2
+                    echo "Actual: $ACTUAL_PNG (preserved for inspection)" >&2
+                    echo "Diff: $DIFF_PNG" >&2
+                    echo "" >&2
+                    echo "To accept new screenshot: cp $ACTUAL_PNG $EXPECTED_PNG" >&2
+                    exit 1
+                fi
+                rm -f "$DIFF_PNG"
+                SCREENSHOT_PASSED=1
+            else
+                # Pixel-perfect comparison
+                if ! cmp -s "$EXPECTED_PNG" "$ACTUAL_PNG"; then
+                    echo "Screenshot differs from expected (install ImageMagick for fuzzy compare)" >&2
+                    echo "Expected: $EXPECTED_PNG" >&2
+                    echo "Actual: $ACTUAL_PNG (preserved for inspection)" >&2
+                    echo "" >&2
+                    echo "To accept new screenshot: cp $ACTUAL_PNG $EXPECTED_PNG" >&2
+                    exit 1
+                fi
+                SCREENSHOT_PASSED=1
+            fi
+
+            # Only clean up actual screenshot if it passed
+            if [ $SCREENSHOT_PASSED -eq 1 ]; then
+                rm -f "$ACTUAL_PNG"
+            fi
+
+            # Screenshot test passed - now check expected.txt if it exists
+            break
+        fi
+
+        # Check if QEMU died
+        if ! kill -0 $QEMU_PID 2>/dev/null; then
+            echo "QEMU exited before screenshot ready" >&2
+            exit 1
+        fi
+
+        sleep 0.5
+    done
+
+    # If we got here without seeing the marker, it's a timeout
+    if ! grep -q "<<<SCREENSHOT_READY>>>" "$LOG_FILE" 2>/dev/null; then
+        kill $QEMU_PID 2>/dev/null
+        exit 2
+    fi
+
+    EXIT_CODE=0
+elif [ -n "$MONITOR_FILE" ] && [ -f "$MONITOR_FILE" ]; then
     MONITOR_SOCK="/tmp/qemu-test-$$.sock"
     QEMU_CMD+=(-monitor "unix:$MONITOR_SOCK,server,nowait")
 
@@ -109,7 +249,9 @@ fi
 
 if [ $EXIT_CODE -eq 124 ]; then
     exit 2  # timeout
-elif [ $EXIT_CODE -ne 33 ]; then
+elif [ $EXIT_CODE -ne 33 ] && [ $EXIT_CODE -ne 0 ]; then
+    # Exit code 33 = isa-debug-exit success
+    # Exit code 0 = screenshot test success
     exit 1  # failed
 fi
 

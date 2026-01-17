@@ -87,3 +87,15 @@ pub fn opendir(path: &str) -> Result<Handle, isize> {
         Ok(Handle::from(result as u32))
     }
 }
+
+/// Signal that the test is ready for screenshot capture.
+///
+/// This logs a distinctive marker that the test harness watches for.
+/// After calling this, the test should halt or loop - the harness will
+/// capture a screenshot and terminate QEMU.
+///
+/// Only used for tests with expected.png files.
+#[inline(always)]
+pub fn screenshot_ready() {
+    log("<<<SCREENSHOT_READY>>>");
+}

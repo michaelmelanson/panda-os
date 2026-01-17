@@ -1,7 +1,5 @@
-surface_test: Starting
-surface_test: Opened framebuffer
-surface_test: Got surface info
-surface_test: Filled quadrants
-surface_test: Blitted pattern
-surface_test: Flushed surface
-PASS: All surface operations succeeded
+Surface test starting
+PASS: Opened framebuffer
+PASS: Got surface info
+PASS: Drew test pattern
+<<<SCREENSHOT_READY>>>
