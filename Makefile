@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: build panda-kernel init shell run test kernel-test userspace-test
+.PHONY: build panda-kernel init run test kernel-test userspace-test
 
 KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic resource
 USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test keyboard_test state_test readdir_test buffer_test surface_test
@@ -11,15 +11,14 @@ preempt_test_EXTRAS := preempt_child
 export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS
 
 # Build targets
-build: panda-kernel init shell terminal
+build: panda-kernel init terminal
 	mkdir -p build/run/efi/boot
 	mkdir -p build/run/initrd
 	cp target/x86_64-panda-uefi/debug/panda-kernel.efi build/run/efi/boot/bootx64.efi
 	cp target/x86_64-panda-userspace/debug/init build/run/initrd/init
-	cp target/x86_64-panda-userspace/debug/shell build/run/initrd/shell
 	cp target/x86_64-unknown-none/debug/terminal build/run/initrd/terminal
 	echo "Hello from the initrd!" > build/run/initrd/hello.txt
-	tar --format=ustar -cf build/run/efi/initrd.tar -C build/run/initrd init shell terminal hello.txt
+	tar --format=ustar -cf build/run/efi/initrd.tar -C build/run/initrd init terminal hello.txt
 	echo 'fs0:\efi\boot\bootx64.efi' > build/run/efi/boot/startup.nsh
 
 panda-kernel:
@@ -27,9 +26,6 @@ panda-kernel:
 
 init:
 	cargo +nightly build -Z build-std=core,alloc --package init --target ./x86_64-panda-userspace.json
-
-shell:
-	cargo +nightly build -Z build-std=core,alloc --package shell --target ./x86_64-panda-userspace.json
 
 terminal:
 	RUSTFLAGS="-C relocation-model=static -C code-model=large -C link-arg=-Tx86_64-panda-userspace.ld" cargo +nightly build --package terminal --target x86_64-unknown-none
