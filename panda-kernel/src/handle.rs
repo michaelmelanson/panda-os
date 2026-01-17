@@ -9,7 +9,7 @@ use alloc::sync::Arc;
 
 use crate::process::waker::Waker;
 use crate::resource::{
-    Block, Buffer, CharacterOutput, Directory, EventSource, ProcessInterface, Resource,
+    Block, Buffer, CharacterOutput, Directory, EventSource, ProcessInterface, Resource, Surface,
 };
 
 /// Handle identifier (similar to file descriptor but for any resource)
@@ -80,6 +80,16 @@ impl Handle {
     /// Get this handle's resource as a mutable Buffer interface.
     pub fn as_buffer_mut(&mut self) -> Option<&mut dyn Buffer> {
         self.resource.as_buffer_mut()
+    }
+
+    /// Get this handle's resource as a Surface interface.
+    pub fn as_surface(&self) -> Option<&dyn Surface> {
+        self.resource.as_surface()
+    }
+
+    /// Get this handle's resource as a mutable Surface interface.
+    pub fn as_surface_mut(&mut self) -> Option<&mut dyn Surface> {
+        self.resource.as_surface_mut()
     }
 
     /// Get a waker for blocking on this handle.

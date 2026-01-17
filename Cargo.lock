@@ -347,6 +347,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "surface_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.111"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -366,6 +374,14 @@ dependencies = [
  "bitflags",
  "log",
  "num-traits",
+]
+
+[[package]]
+name = "terminal"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
 ]
 
 [[package]]

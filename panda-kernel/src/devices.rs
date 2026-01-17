@@ -1,4 +1,4 @@
-mod virtio_gpu;
+pub mod virtio_gpu;
 mod virtio_hal;
 pub mod virtio_keyboard;
 

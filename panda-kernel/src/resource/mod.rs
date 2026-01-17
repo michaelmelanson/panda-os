@@ -11,6 +11,7 @@ mod event_source;
 mod process;
 mod process_resource;
 mod scheme;
+mod surface;
 
 pub use block::{Block, BlockError};
 pub use buffer::{Buffer, BufferError, SharedBuffer};
@@ -22,6 +23,10 @@ pub use process_resource::ProcessResource;
 pub use scheme::{
     ConsoleScheme, DirectoryResource, FileScheme, KeyboardScheme, SchemeHandler,
     init as init_schemes, open, readdir, register_scheme,
+};
+pub use surface::{
+    FramebufferSurface, PixelFormat, Rect, Surface, SurfaceError, SurfaceInfo,
+    get_framebuffer_surface, init_framebuffer,
 };
 
 use alloc::sync::Arc;
@@ -65,6 +70,16 @@ pub trait Resource: Send + Sync {
 
     /// Get this resource as a mutable Buffer.
     fn as_buffer_mut(&mut self) -> Option<&mut dyn Buffer> {
+        None
+    }
+
+    /// Get this resource as a Surface (for framebuffer, display).
+    fn as_surface(&self) -> Option<&dyn Surface> {
+        None
+    }
+
+    /// Get this resource as a mutable Surface.
+    fn as_surface_mut(&mut self) -> Option<&mut dyn Surface> {
         None
     }
 

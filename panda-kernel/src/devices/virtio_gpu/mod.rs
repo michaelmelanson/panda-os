@@ -10,6 +10,7 @@ use virtio_drivers::{
 use x86_64::VirtAddr;
 
 use crate::pci::device::{PciDevice, PciDeviceAddress};
+use crate::resource::init_framebuffer;
 
 use super::virtio_hal::VirtioHal;
 
@@ -84,10 +85,23 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
         .expect("Could not create framebuffer");
     let framebuffer = VirtAddr::new(framebuffer.as_ptr() as u64);
 
+    // Initialize the framebuffer surface for userspace access
+    unsafe {
+        init_framebuffer(framebuffer.as_mut_ptr(), width, height);
+    }
+
     let mut device = VIRTIO_GPU_DEVICE.write();
     *device = Some(VirtioGpuDevice {
         gpu,
         framebuffer,
         resolution: (width, height),
     });
+}
+
+/// Flush the framebuffer to the display.
+pub fn flush_framebuffer() {
+    let mut device = VIRTIO_GPU_DEVICE.write();
+    if let Some(ref mut dev) = *device {
+        dev.gpu.flush().ok();
+    }
 }

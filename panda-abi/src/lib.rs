@@ -117,6 +117,16 @@ pub const OP_FILE_READ_BUFFER: u32 = 0x5_0000;
 /// Write from buffer to file: (file_handle, buffer_handle, len) -> bytes_written
 pub const OP_FILE_WRITE_BUFFER: u32 = 0x5_0001;
 
+// Surface operations (0x6_0000 - 0x6_FFFF)
+/// Get surface info: (info_ptr) -> 0 or error
+pub const OP_SURFACE_INFO: u32 = 0x6_0000;
+/// Blit pixels to surface: (params_ptr) -> 0 or error
+pub const OP_SURFACE_BLIT: u32 = 0x6_0001;
+/// Fill rectangle with solid color: (params_ptr) -> 0 or error
+pub const OP_SURFACE_FILL: u32 = 0x6_0002;
+/// Flush surface updates: (rect_ptr) -> 0 or error (rect_ptr can be 0 for full flush)
+pub const OP_SURFACE_FLUSH: u32 = 0x6_0003;
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -505,4 +515,58 @@ pub struct CharOutFlushResponse {
     pub header: MessageHeader,
     pub error: ErrorCode,
     pub _pad: u32,
+}
+
+// -----------------------------------------------------------------------------
+// Surface interface types (for framebuffer, display)
+// -----------------------------------------------------------------------------
+
+/// Pixel format for surfaces.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// 32-bit ARGB (alpha, red, green, blue)
+    ARGB8888 = 0,
+}
+
+/// Surface info returned via pointer.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SurfaceInfoOut {
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+    pub stride: u32,
+}
+
+/// Parameters for blit operation.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BlitParams {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub buffer_handle: u32,
+}
+
+/// Parameters for fill operation.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct FillParams {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub color: u32,
+}
+
+/// Rectangle for flush operation.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SurfaceRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }

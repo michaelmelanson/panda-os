@@ -12,6 +12,7 @@ mod environment;
 mod file;
 pub mod gdt;
 mod process;
+mod surface;
 
 use log::{debug, error};
 use x86_64::VirtAddr;
@@ -196,6 +197,12 @@ fn handle_send(
         // Buffer-based file operations
         OP_FILE_READ_BUFFER => buffer::handle_read_buffer(handle, arg0 as u32),
         OP_FILE_WRITE_BUFFER => buffer::handle_write_buffer(handle, arg0 as u32, arg1),
+
+        // Surface operations
+        OP_SURFACE_INFO => surface::handle_info(handle, arg0),
+        OP_SURFACE_BLIT => surface::handle_blit(handle, arg0),
+        OP_SURFACE_FILL => surface::handle_fill(handle, arg0),
+        OP_SURFACE_FLUSH => surface::handle_flush(handle, arg0),
 
         _ => {
             error!("Unknown operation: {:#x}", operation);
