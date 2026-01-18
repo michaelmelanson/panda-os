@@ -90,6 +90,11 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
         init_framebuffer(framebuffer.as_mut_ptr(), width, height);
     }
 
+    // Initialize compositor with a framebuffer surface
+    if let Some(surface) = crate::resource::get_framebuffer_surface() {
+        crate::compositor::init(*surface);
+    }
+
     let mut device = VIRTIO_GPU_DEVICE.write();
     *device = Some(VirtioGpuDevice {
         gpu,

@@ -1,5 +1,6 @@
 //! Environment operation syscall handlers (OP_ENVIRONMENT_*).
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::{slice, str};
 
@@ -22,8 +23,9 @@ pub fn handle_open(uri_ptr: usize, uri_len: usize) -> isize {
 
     match resource::open(uri) {
         Some(resource) => {
-            let handle_id =
-                scheduler::with_current_process(|proc| proc.handles_mut().insert(resource));
+            let handle_id = scheduler::with_current_process(|proc| {
+                proc.handles_mut().insert(Arc::from(resource))
+            });
             handle_id as isize
         }
         None => -1,
@@ -81,8 +83,7 @@ pub fn handle_spawn(uri_ptr: usize, uri_len: usize) -> isize {
     // Create a handle for the parent to track the child
     let process_resource = ProcessResource::new(process_info);
     let handle_id = scheduler::with_current_process(|proc| {
-        proc.handles_mut()
-            .insert(alloc::boxed::Box::new(process_resource))
+        proc.handles_mut().insert(Arc::new(process_resource))
     });
     handle_id as isize
 }
@@ -120,8 +121,7 @@ pub fn handle_opendir(uri_ptr: usize, uri_len: usize) -> isize {
 
     let dir_resource = resource::DirectoryResource::new(entries);
     let handle_id = scheduler::with_current_process(|proc| {
-        proc.handles_mut()
-            .insert(alloc::boxed::Box::new(dir_resource))
+        proc.handles_mut().insert(Arc::new(dir_resource))
     });
     handle_id as isize
 }

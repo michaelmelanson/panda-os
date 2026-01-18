@@ -87,6 +87,11 @@ pub(crate) extern "sysv64" fn timer_interrupt_handler(
     // Send EOI first to allow other interrupts
     apic::eoi();
 
+    // Update system time and compositor
+    const TIME_SLICE_MS: u64 = 10;
+    crate::time::tick(TIME_SLICE_MS);
+    crate::compositor::compositor_tick(crate::time::uptime_ms());
+
     let frame = unsafe { &*interrupt_frame };
 
     // Only preempt if we interrupted userspace (ring 3).

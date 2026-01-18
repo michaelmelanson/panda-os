@@ -3,7 +3,6 @@
 //! Handles provide a unified abstraction for kernel resources accessible from userspace.
 //! Each process has its own handle table mapping handle IDs to resources.
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 
@@ -18,14 +17,14 @@ pub type HandleId = u32;
 /// A kernel resource handle with per-handle state.
 pub struct Handle {
     /// The underlying resource.
-    resource: Box<dyn Resource>,
+    resource: Arc<dyn Resource>,
     /// Current offset for block-based reads (managed per-handle).
     offset: u64,
 }
 
 impl Handle {
     /// Create a new handle wrapping a resource.
-    pub fn new(resource: Box<dyn Resource>) -> Self {
+    pub fn new(resource: Arc<dyn Resource>) -> Self {
         Self {
             resource,
             offset: 0,
@@ -43,8 +42,13 @@ impl Handle {
     }
 
     /// Replace the underlying resource (used for operations like buffer resize).
-    pub fn replace_resource(&mut self, new_resource: Box<dyn Resource>) {
+    pub fn replace_resource(&mut self, new_resource: Arc<dyn Resource>) {
         self.resource = new_resource;
+    }
+
+    /// Get the underlying resource Arc (for sharing ownership).
+    pub fn resource_arc(&self) -> Arc<dyn Resource> {
+        self.resource.clone()
     }
 
     /// Get this handle's resource as a Block interface.
@@ -77,24 +81,19 @@ impl Handle {
         self.resource.as_buffer()
     }
 
-    /// Get this handle's resource as a mutable Buffer interface.
-    pub fn as_buffer_mut(&mut self) -> Option<&mut dyn Buffer> {
-        self.resource.as_buffer_mut()
-    }
-
     /// Get this handle's resource as a Surface interface.
     pub fn as_surface(&self) -> Option<&dyn Surface> {
         self.resource.as_surface()
     }
 
-    /// Get this handle's resource as a mutable Surface interface.
-    pub fn as_surface_mut(&mut self) -> Option<&mut dyn Surface> {
-        self.resource.as_surface_mut()
-    }
-
     /// Get a waker for blocking on this handle.
     pub fn waker(&self) -> Option<Arc<Waker>> {
         self.resource.waker()
+    }
+
+    /// Get this handle's resource as a Window.
+    pub fn as_window(&self) -> Option<Arc<spinning_top::Spinlock<crate::compositor::Window>>> {
+        self.resource.as_window()
     }
 }
 
@@ -114,7 +113,7 @@ impl HandleTable {
     }
 
     /// Insert a resource and return its handle ID.
-    pub fn insert(&mut self, resource: Box<dyn Resource>) -> HandleId {
+    pub fn insert(&mut self, resource: Arc<dyn Resource>) -> HandleId {
         let id = self.next_id;
         self.next_id += 1;
         self.handles.insert(id, Handle::new(resource));

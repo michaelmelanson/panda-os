@@ -23,6 +23,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "alpha_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -226,6 +234,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "multi_window_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -252,6 +268,14 @@ dependencies = [
  "uefi",
  "virtio-drivers",
  "x86_64",
+]
+
+[[package]]
+name = "partial_refresh_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
 ]
 
 [[package]]
@@ -597,6 +621,22 @@ name = "volatile"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "442887c63f2c839b346c192d047a7c87e73d0689c9157b00b53dcc27dd5ea793"
+
+[[package]]
+name = "window_move_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
+name = "window_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
 
 [[package]]
 name = "x86_64"
