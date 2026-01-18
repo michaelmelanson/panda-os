@@ -29,7 +29,7 @@ Not yet implemented:
 
 ## Technical debt
 
-None currently tracked.
+- **Deadline scheduling for timers**: Compositor refresh currently uses simple interval checking in timer interrupt. Should implement deadline scheduling so timers fire precisely on time (needed for reliable 60fps composition and future real-time features).
 
 ## Known issues
 
