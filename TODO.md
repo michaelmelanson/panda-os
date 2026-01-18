@@ -7,9 +7,9 @@ Working:
 - Preemptive multitasking with full context switching
 - Syscall ABI with callee-saved register preservation
 - VFS with tarfs (initrd), resource scheme system
-- Virtio GPU (basic), virtio keyboard with blocking reads
+- Virtio GPU with Surface API (blit, fill, flush), virtio keyboard with blocking reads
 - Process handles: spawn returns handle, OP_PROCESS_WAIT blocks until child exits
-- Userspace: libpanda, init, shell (echo-only), 9 test suites
+- Userspace: libpanda, init, terminal (with keyboard input and font rendering), 12 test suites
 
 Not yet implemented:
 - `OP_PROCESS_SIGNAL`, `OP_ENVIRONMENT_TIME`
@@ -19,17 +19,13 @@ Not yet implemented:
 
 1. **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
 
-2. **Make shell execute commands**: Currently shell just echoes input. Parse command line, spawn programs from initrd (e.g., `spawn file:/initrd/program`).
+2. **Make terminal execute commands**: Currently terminal just echoes input. Parse command line, spawn programs from initrd (e.g., `spawn file:/initrd/program`).
 
-3. **Add directory listing to VFS**: Implement `OP_FILE_READDIR` or similar. Shell needs this for `ls` command.
+3. **Implement virtio-blk driver**: Block device support for persistent storage. Reuse virtio HAL from keyboard/GPU.
 
-4. **Implement virtio-blk driver**: Block device support for persistent storage. Reuse virtio HAL from keyboard/GPU.
+4. **Add simple filesystem (FAT or ext2-readonly)**: Mount a disk image. Start with read-only access.
 
-5. **Add simple filesystem (FAT or ext2-readonly)**: Mount a disk image. Start with read-only access.
-
-6. **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes.
-
-7. **GPU blitting/composition API**: The virtio-gpu driver just provides a framebuffer and flush. The kernel needs to manage this framebuffer and expose blitting/composition operations to userspace (e.g., create surface, blit surface to screen, flush region). A windowing system would allocate surfaces and the kernel composites them.
+5. **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes.
 
 ## Technical debt
 
