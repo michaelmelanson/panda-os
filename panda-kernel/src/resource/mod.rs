@@ -12,6 +12,7 @@ mod process;
 mod process_resource;
 mod scheme;
 mod surface;
+mod window;
 
 pub use block::{Block, BlockError};
 pub use buffer::{Buffer, BufferError, SharedBuffer};
@@ -26,10 +27,12 @@ pub use scheme::{
 };
 pub use surface::{
     FramebufferSurface, PixelFormat, Rect, Surface, SurfaceError, SurfaceInfo,
-    get_framebuffer_surface, init_framebuffer,
+    alpha_blend, get_framebuffer_surface, init_framebuffer,
 };
+pub use window::WindowResource;
 
 use alloc::sync::Arc;
+use spinning_top::Spinlock;
 
 use crate::process::waker::Waker;
 
@@ -85,6 +88,16 @@ pub trait Resource: Send + Sync {
 
     /// Get a waker for blocking on this resource, if applicable.
     fn waker(&self) -> Option<Arc<Waker>> {
+        None
+    }
+
+    /// Get this resource as a Window (for compositor windows).
+    fn as_window(&self) -> Option<Arc<Spinlock<crate::compositor::Window>>> {
+        None
+    }
+
+    /// Get this resource as a SharedBuffer Arc (for sharing buffer ownership).
+    fn as_shared_buffer(&self) -> Option<Arc<SharedBuffer>> {
         None
     }
 }

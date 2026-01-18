@@ -1,7 +1,5 @@
 //! Buffer operation syscall handlers (OP_BUFFER_*).
 
-use alloc::boxed::Box;
-
 use crate::{
     resource::{Buffer, SharedBuffer},
     scheduler,
@@ -14,8 +12,8 @@ pub fn handle_alloc(size: usize, info_ptr: usize) -> isize {
     scheduler::with_current_process(|proc| {
         match SharedBuffer::alloc(proc, size) {
             Ok((buffer, mapped_addr)) => {
-                let buffer_size = Buffer::size(&buffer);
-                let handle_id = proc.handles_mut().insert(Box::new(buffer));
+                let buffer_size = Buffer::size(&*buffer);
+                let handle_id = proc.handles_mut().insert(buffer);
 
                 // Write full info to userspace if pointer provided
                 if info_ptr != 0 {
@@ -40,10 +38,10 @@ pub fn handle_resize(handle_id: u32, new_size: usize, info_ptr: usize) -> isize 
     scheduler::with_current_process(|proc| {
         // Try in-place resize first
         let resize_result = {
-            let Some(handle) = proc.handles_mut().get_mut(handle_id) else {
+            let Some(handle) = proc.handles().get(handle_id) else {
                 return -1;
             };
-            let Some(buffer) = handle.as_buffer_mut() else {
+            let Some(buffer) = handle.as_buffer() else {
                 return -1;
             };
             buffer.resize(new_size)
@@ -99,8 +97,8 @@ pub fn handle_resize(handle_id: u32, new_size: usize, info_ptr: usize) -> isize 
                     let Some(handle) = proc.handles_mut().get_mut(handle_id) else {
                         return -1;
                     };
-                    handle.replace_resource(Box::new(new_buffer));
-                    let Some(buffer) = handle.as_buffer_mut() else {
+                    handle.replace_resource(new_buffer);
+                    let Some(buffer) = handle.as_buffer() else {
                         return -1;
                     };
                     buffer.as_mut_slice()[..old_data.len()].copy_from_slice(&old_data);
@@ -202,10 +200,10 @@ pub fn handle_read_buffer(file_handle_id: u32, buffer_handle_id: u32) -> isize {
 
         // Copy data to the shared buffer
         {
-            let Some(buffer_handle) = proc.handles_mut().get_mut(buffer_handle_id) else {
+            let Some(buffer_handle) = proc.handles().get(buffer_handle_id) else {
                 return -1;
             };
-            let Some(buffer) = buffer_handle.as_buffer_mut() else {
+            let Some(buffer) = buffer_handle.as_buffer() else {
                 return -1;
             };
             buffer.as_mut_slice()[..bytes_read].copy_from_slice(&data);

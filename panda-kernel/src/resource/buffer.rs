@@ -5,7 +5,10 @@
 //! - Accessed by the kernel for zero-copy I/O
 //! - Transferred between processes (ownership moves)
 
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use x86_64::VirtAddr;
 
@@ -34,10 +37,12 @@ pub trait Buffer: Send + Sync {
     fn as_slice(&self) -> &[u8];
 
     /// Get a mutable slice of the buffer contents for writing.
-    fn as_mut_slice(&mut self) -> &mut [u8];
+    /// Uses interior mutability.
+    fn as_mut_slice(&self) -> &mut [u8];
 
     /// Resize the buffer. Returns the new mapped address.
-    fn resize(&mut self, new_size: usize) -> Result<usize, BufferError>;
+    /// Uses interior mutability.
+    fn resize(&self, new_size: usize) -> Result<usize, BufferError>;
 
     /// Get the current mapped address in userspace.
     fn mapped_addr(&self) -> usize;
@@ -48,19 +53,22 @@ pub struct SharedBuffer {
     /// Physical frames backing this buffer.
     frames: Vec<Frame>,
     /// Logical size in bytes (may be less than allocated pages).
-    logical_size: usize,
+    /// Uses AtomicUsize for interior mutability.
+    logical_size: AtomicUsize,
     /// Base virtual address for userspace mapping.
     user_vaddr: VirtAddr,
     /// Whether currently mapped into userspace.
     is_mapped: bool,
+    /// Weak self-reference for returning Arc<SharedBuffer> from trait methods.
+    self_ref: Weak<SharedBuffer>,
 }
 
 impl SharedBuffer {
     /// Allocate a new shared buffer with the given size.
     ///
     /// The buffer will be mapped into the process's address space.
-    /// Returns the buffer and its mapped address.
-    pub fn alloc(process: &mut Process, size: usize) -> Result<(Self, usize), BufferError> {
+    /// Returns the buffer Arc and its mapped address.
+    pub fn alloc(process: &mut Process, size: usize) -> Result<(Arc<Self>, usize), BufferError> {
         if size == 0 {
             return Err(BufferError::InvalidSize);
         }
@@ -68,7 +76,7 @@ impl SharedBuffer {
         let page_size = 4096usize;
         let num_pages = (size + page_size - 1) / page_size;
 
-        // Allocate physical frames
+        // Allocate physical frames (already zeroed by allocator)
         let mut frames = Vec::with_capacity(num_pages);
         for _ in 0..num_pages {
             let frame = memory::allocate_frame();
@@ -85,15 +93,15 @@ impl SharedBuffer {
 
         let mapped_addr = user_vaddr.as_u64() as usize;
 
-        Ok((
-            Self {
-                frames,
-                logical_size: size,
-                user_vaddr,
-                is_mapped: true,
-            },
-            mapped_addr,
-        ))
+        let buffer = Arc::new_cyclic(|weak| Self {
+            frames,
+            logical_size: AtomicUsize::new(size),
+            user_vaddr,
+            is_mapped: true,
+            self_ref: weak.clone(),
+        });
+
+        Ok((buffer, mapped_addr))
     }
 
     /// Map frames into userspace at the given virtual address.
@@ -123,7 +131,9 @@ impl SharedBuffer {
     }
 
     /// Get mutable access to the buffer's physical memory (for kernel use).
-    fn get_kernel_ptr_mut(&mut self) -> *mut u8 {
+    /// Safe because we're not mutating the SharedBuffer struct, just returning
+    /// a pointer to the physical memory it owns.
+    fn get_kernel_ptr_mut(&self) -> *mut u8 {
         if self.frames.is_empty() {
             return core::ptr::null_mut();
         }
@@ -135,26 +145,22 @@ impl SharedBuffer {
 
 impl Buffer for SharedBuffer {
     fn size(&self) -> usize {
-        self.logical_size
+        self.logical_size.load(Ordering::Relaxed)
     }
 
     fn as_slice(&self) -> &[u8] {
-        let ptr = self.get_kernel_ptr();
-        if ptr.is_null() {
-            return &[];
-        }
-        unsafe { core::slice::from_raw_parts(ptr, self.logical_size) }
+        let ptr = self.user_vaddr.as_u64() as *const u8;
+        let size = self.logical_size.load(Ordering::Relaxed);
+        unsafe { core::slice::from_raw_parts(ptr, size) }
     }
 
-    fn as_mut_slice(&mut self) -> &mut [u8] {
-        let ptr = self.get_kernel_ptr_mut();
-        if ptr.is_null() {
-            return &mut [];
-        }
-        unsafe { core::slice::from_raw_parts_mut(ptr, self.logical_size) }
+    fn as_mut_slice(&self) -> &mut [u8] {
+        let ptr = self.user_vaddr.as_u64() as *mut u8;
+        let size = self.logical_size.load(Ordering::Relaxed);
+        unsafe { core::slice::from_raw_parts_mut(ptr, size) }
     }
 
-    fn resize(&mut self, new_size: usize) -> Result<usize, BufferError> {
+    fn resize(&self, new_size: usize) -> Result<usize, BufferError> {
         if new_size == 0 {
             return Err(BufferError::InvalidSize);
         }
@@ -165,7 +171,7 @@ impl Buffer for SharedBuffer {
 
         if new_num_pages == old_num_pages {
             // Same number of pages, just update logical size
-            self.logical_size = new_size;
+            self.logical_size.store(new_size, Ordering::Relaxed);
             return Ok(self.user_vaddr.as_u64() as usize);
         }
 
@@ -186,6 +192,10 @@ impl Resource for SharedBuffer {
 
     fn as_buffer_mut(&mut self) -> Option<&mut dyn Buffer> {
         Some(self)
+    }
+
+    fn as_shared_buffer(&self) -> Option<Arc<SharedBuffer>> {
+        self.self_ref.upgrade()
     }
 }
 

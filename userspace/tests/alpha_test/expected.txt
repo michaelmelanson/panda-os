@@ -1,0 +1,8 @@
+Alpha blending test starting
+PASS: Opened window 1 (red)
+PASS: Created red window with 60% alpha
+PASS: Opened window 2 (green)
+PASS: Created green window with 60% alpha
+PASS: Opened window 3 (blue)
+PASS: Created blue window with 60% alpha
+PASS: Alpha blending test complete

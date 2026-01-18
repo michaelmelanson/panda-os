@@ -16,6 +16,7 @@ extern crate alloc;
 
 pub mod acpi;
 pub mod apic;
+pub mod compositor;
 pub mod device_address;
 pub mod devices;
 pub mod handle;
@@ -29,6 +30,7 @@ pub mod qemu;
 pub mod resource;
 pub mod scheduler;
 pub mod syscall;
+pub mod time;
 pub mod uefi;
 pub mod vfs;
 

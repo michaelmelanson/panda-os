@@ -24,7 +24,6 @@ use super::block::{Block, BlockError};
 use super::char_output::{CharOutError, CharacterOutput};
 use super::directory::{DirEntry, Directory};
 use super::event_source::{Event, EventSource, KeyEvent};
-use super::surface;
 
 /// A handler for a resource scheme (e.g., "file", "console", "pci")
 pub trait SchemeHandler: Send + Sync {
@@ -272,7 +271,7 @@ impl EventSource for KeyboardResource {
 }
 
 // =============================================================================
-// Surface Scheme - framebuffer access
+// Surface Scheme - window compositor access
 // =============================================================================
 
 /// Scheme handler for surface devices
@@ -281,8 +280,14 @@ pub struct SurfaceScheme;
 impl SchemeHandler for SurfaceScheme {
     fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
         match path {
-            "/fb0" => surface::get_framebuffer_surface()
-                .map(|s| s as Box<dyn Resource>),
+            "/window" => {
+                let window = crate::compositor::create_window();
+                Some(Box::new(super::window::WindowResource { window }))
+            }
+            "/fb0" => {
+                // Return the global framebuffer surface
+                super::get_framebuffer_surface().map(|s| Box::new(*s) as Box<dyn Resource>)
+            }
             _ => None,
         }
     }

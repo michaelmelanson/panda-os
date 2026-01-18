@@ -8,8 +8,8 @@ use alloc::string::String;
 use fontdue::{Font, FontSettings};
 use libpanda::{buffer::Buffer, environment, file, syscall::send};
 use panda_abi::{
-    BlitParams, FillParams, PixelFormat, SurfaceInfoOut, OP_SURFACE_BLIT, OP_SURFACE_FILL,
-    OP_SURFACE_FLUSH, OP_SURFACE_INFO,
+    BlitParams, FillParams, PixelFormat, SurfaceInfoOut, UpdateParamsIn, OP_SURFACE_BLIT,
+    OP_SURFACE_FILL, OP_SURFACE_FLUSH, OP_SURFACE_INFO, OP_SURFACE_UPDATE_PARAMS,
 };
 
 // Terminal colors (ARGB format)
@@ -280,33 +280,32 @@ libpanda::main! {
     let font = Font::from_bytes(FONT_DATA, FontSettings::default())
         .expect("Failed to load font");
 
-    // Open the framebuffer surface
-    let Ok(surface) = environment::open("surface:/fb0", 0) else {
-        environment::log("terminal: Failed to open framebuffer");
+    // Open a window surface
+    let Ok(surface) = environment::open("surface:/window", 0) else {
+        environment::log("terminal: Failed to open window");
         return 1;
     };
 
-    // Get surface info
-    let mut info = SurfaceInfoOut {
-        width: 0,
-        height: 0,
-        format: 0,
-        stride: 0,
+    // Set window parameters (640x480 window at position 50, 50)
+    let window_width = 640u32;
+    let window_height = 480u32;
+
+    let window_params = UpdateParamsIn {
+        x: 50,
+        y: 50,
+        width: window_width,
+        height: window_height,
+        visible: 1,
     };
 
-    let result = send(
+    send(
         surface,
-        OP_SURFACE_INFO,
-        &mut info as *mut SurfaceInfoOut as usize,
+        OP_SURFACE_UPDATE_PARAMS,
+        &window_params as *const UpdateParamsIn as usize,
         0,
         0,
         0,
     );
-
-    if result < 0 || info.format != PixelFormat::ARGB8888 as u32 {
-        environment::log("terminal: Failed to get surface info");
-        return 1;
-    }
 
     // Open keyboard
     let Ok(keyboard) = environment::open("keyboard:/pci/00:03.0", 0) else {
@@ -315,7 +314,7 @@ libpanda::main! {
     };
 
     // Create terminal state
-    let mut term = Terminal::new(surface, font, info.width, info.height);
+    let mut term = Terminal::new(surface, font, window_width, window_height);
     term.clear();
 
     environment::log("terminal: Ready - type to see characters echoed");

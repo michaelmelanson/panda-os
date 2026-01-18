@@ -126,6 +126,8 @@ pub const OP_SURFACE_BLIT: u32 = 0x6_0001;
 pub const OP_SURFACE_FILL: u32 = 0x6_0002;
 /// Flush surface updates: (rect_ptr) -> 0 or error (rect_ptr can be 0 for full flush)
 pub const OP_SURFACE_FLUSH: u32 = 0x6_0003;
+/// Update window parameters: (params_ptr) -> 0 or error
+pub const OP_SURFACE_UPDATE_PARAMS: u32 = 0x6_0004;
 
 // =============================================================================
 // Constants
@@ -569,4 +571,15 @@ pub struct SurfaceRect {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+}
+
+/// Parameters for updating window position, size, and visibility.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct UpdateParamsIn {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub visible: u32, // 0 = hidden, 1 = visible
 }

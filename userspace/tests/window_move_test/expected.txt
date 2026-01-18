@@ -1,0 +1,6 @@
+Window move test starting
+PASS: Opened window
+PASS: Set initial window position (50, 50)
+PASS: Displayed red window at (50, 50)
+PASS: Moved window to (300, 200)
+PASS: Window move test complete

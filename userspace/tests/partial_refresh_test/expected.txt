@@ -1,0 +1,7 @@
+Partial refresh test starting
+PASS: Opened window
+PASS: Set window parameters
+PASS: Filled window with blue
+PASS: Updated top-left quarter with red
+PASS: Updated bottom-right quarter with green
+PASS: Partial refresh test complete
