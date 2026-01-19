@@ -326,17 +326,24 @@ pub fn handle_update_params(handle: u32, params_ptr: usize) -> isize {
 
     let params = unsafe { *(params_ptr as *const panda_abi::UpdateParamsIn) };
 
+    debug!("About to call with_current_process");
     scheduler::with_current_process(|proc| {
+        debug!("Inside with_current_process closure");
         let Some(resource) = proc.handles().get(handle) else {
+            debug!("No resource with handle {}", handle);
             return -1;
         };
 
+        debug!("Got resource, checking if window");
         let Some(window_arc) = resource.as_window() else {
+            debug!("Resource is not a window");
             return -1;
         };
 
+        debug!("Got window, locking it");
         let window_id = {
             let mut window = window_arc.lock();
+            debug!("Window locked");
 
             // Update window parameters
             window.position = (params.x, params.y);
@@ -356,9 +363,12 @@ pub fn handle_update_params(handle: u32, params_ptr: usize) -> isize {
 
         // Mark window dirty if visible
         if params.visible != 0 && params.width > 0 && params.height > 0 {
+            debug!("Marking window {} dirty", window_id);
             crate::compositor::mark_window_dirty(window_id);
+            debug!("Marked window dirty, returning");
         }
 
+        debug!("handle_update_params returning 0");
         0
     })
 }

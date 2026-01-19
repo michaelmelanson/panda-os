@@ -93,6 +93,7 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
     // Initialize compositor with a framebuffer surface
     if let Some(surface) = crate::resource::get_framebuffer_surface() {
         crate::compositor::init(*surface);
+        log::info!("Compositor initialized (task will be spawned after scheduler init)");
     }
 
     let mut device = VIRTIO_GPU_DEVICE.write();

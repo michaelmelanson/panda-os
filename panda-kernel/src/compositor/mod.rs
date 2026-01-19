@@ -5,19 +5,15 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
 use spinning_top::Spinlock;
 
-use crate::resource::{Buffer, FramebufferSurface, Rect, SharedBuffer, Surface, alpha_blend};
+use crate::resource::{FramebufferSurface, Rect, SharedBuffer, Surface, alpha_blend};
 
 /// Background color (Nord dark gray)
 const BACKGROUND_COLOR: u32 = 0xFF2E3440;
 
 /// Refresh interval in milliseconds (~60fps)
 const REFRESH_INTERVAL_MS: u64 = 16;
-
-/// Last compositor refresh timestamp
-static LAST_COMPOSITE_TIME: AtomicU64 = AtomicU64::new(0);
 
 /// Global compositor instance
 static COMPOSITOR: Spinlock<Option<WindowManager>> = Spinlock::new(None);
@@ -303,15 +299,38 @@ pub fn force_composite() {
     }
 }
 
-/// Compositor tick - called from timer interrupt
-pub fn compositor_tick(now_ms: u64) {
-    let last = LAST_COMPOSITE_TIME.load(Ordering::Relaxed);
+/// Compositor async task - runs as a kernel task
+async fn compositor_task() {
+    use crate::executor::sleep::sleep_ms;
 
-    if now_ms.saturating_sub(last) >= REFRESH_INTERVAL_MS {
-        let mut compositor = COMPOSITOR.lock();
-        if let Some(compositor) = compositor.as_mut() {
-            compositor.composite();
+    log::info!("Compositor task started");
+
+    loop {
+        // Composite if dirty
+        // Use try_lock to avoid blocking if syscall holds the lock
+        if let Some(mut compositor) = COMPOSITOR.try_lock() {
+            if let Some(compositor) = compositor.as_mut() {
+                if !compositor.dirty_regions.is_empty() {
+                    log::debug!(
+                        "Compositor: processing {} dirty regions",
+                        compositor.dirty_regions.len()
+                    );
+                    compositor.composite();
+                }
+            }
         }
-        LAST_COMPOSITE_TIME.store(now_ms, Ordering::Relaxed);
+
+        // Sleep until next frame
+        sleep_ms(REFRESH_INTERVAL_MS).await;
     }
+}
+
+/// Spawn the compositor task
+pub fn spawn_compositor_task() {
+    crate::executor::spawn(compositor_task());
+}
+
+/// Check if the compositor has been initialized
+pub fn is_initialized() -> bool {
+    COMPOSITOR.lock().is_some()
 }

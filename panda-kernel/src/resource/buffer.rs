@@ -7,7 +7,6 @@
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use x86_64::VirtAddr;

@@ -19,6 +19,7 @@ pub mod apic;
 pub mod compositor;
 pub mod device_address;
 pub mod devices;
+pub mod executor;
 pub mod handle;
 pub mod initrd;
 pub mod interrupts;

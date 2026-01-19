@@ -32,6 +32,10 @@ fn main() -> Status {
         let init_data = initrd::get_init();
         let init_process = Process::from_elf_data(Context::from_current_page_table(), init_data);
         scheduler::init(init_process);
+
+        // Start compositor task now that scheduler is ready
+        panda_kernel::compositor::spawn_compositor_task();
+
         scheduler::exec_next_runnable();
     }
 }

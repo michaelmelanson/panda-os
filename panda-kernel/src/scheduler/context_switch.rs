@@ -7,7 +7,7 @@ use crate::apic;
 use crate::process::{InterruptFrame, ProcessState, SavedGprs, SavedState};
 use crate::syscall::user_code_selector;
 
-use super::{SCHEDULER, exec_next_runnable, start_timer};
+use super::{SCHEDULER, TIME_SLICE_MS, exec_next_runnable, start_timer, start_timer_with_deadline};
 
 /// Generates a naked assembly entry point for a preemptable interrupt handler.
 ///
@@ -84,42 +84,63 @@ pub(crate) extern "sysv64" fn timer_interrupt_handler(
     saved_gprs: *const SavedGprs,
     interrupt_frame: *const InterruptFrame,
 ) {
+    use log::debug;
+
     // Send EOI first to allow other interrupts
     apic::eoi();
 
-    // Update system time and compositor
-    const TIME_SLICE_MS: u64 = 10;
-    crate::time::tick(TIME_SLICE_MS);
-    crate::compositor::compositor_tick(crate::time::uptime_ms());
+    // Update system time
+    crate::time::tick(TIME_SLICE_MS as u64);
 
-    let frame = unsafe { &*interrupt_frame };
+    // Wake tasks whose deadlines have arrived
+    let woken_count = {
+        let now = crate::time::uptime_ms();
+        // Try to acquire write lock - if we can't (e.g., held by syscall), skip for now
+        if let Some(mut scheduler) = SCHEDULER.try_write() {
+            scheduler
+                .as_mut()
+                .map(|s| s.wake_deadline_tasks(now))
+                .unwrap_or(0)
+        } else {
+            0
+        }
+    };
+
+    // Check if we should preempt
+    let should_switch = {
+        // Try to acquire read lock - if we can't, don't switch
+        if let Some(scheduler) = SCHEDULER.try_read() {
+            let scheduler = scheduler.as_ref().unwrap();
+            // Switch if:
+            // 1. Deadline tasks were woken, OR
+            // 2. There are other runnable entities
+            woken_count > 0 || scheduler.has_other_runnable()
+        } else {
+            false
+        }
+    };
+
+    if !should_switch {
+        // No need to switch, restart timer
+        start_timer_with_deadline();
+        return;
+    }
 
     // Only preempt if we interrupted userspace (ring 3).
-    // If we interrupted the kernel (e.g., during idle loop or syscall handling),
-    // just return without restarting the timer - we'll restart it when we
-    // next jump to userspace.
+    // If we're in kernel mode (could be executing a kernel task or syscall),
+    // don't preempt. Return without restarting timer - it will be restarted
+    // when we next jump to userspace.
+    let frame = unsafe { &*interrupt_frame };
     if frame.cs != user_code_selector() as u64 {
         return;
     }
 
-    // Check if we should preempt (there's another runnable process)
-    let should_switch = {
-        let scheduler = SCHEDULER.read();
-        scheduler.as_ref().map_or(false, |s| s.has_other_runnable())
-    };
-
-    if should_switch {
-        let gprs = unsafe { &*saved_gprs };
-        let state = SavedState::from_interrupt(gprs, frame);
-
-        // Save state and switch to next process (doesn't return)
-        unsafe {
-            preempt_current(state);
-        }
+    // Preempt userspace process
+    let gprs = unsafe { &*saved_gprs };
+    let state = SavedState::from_interrupt(gprs, frame);
+    unsafe {
+        preempt_current(state);
     }
-
-    // Resume same process - restart timer
-    start_timer();
 }
 
 /// Preempt the current process: save its state and switch to the next runnable.

@@ -124,35 +124,48 @@ extern "sysv64" fn syscall_handler(
     user_rsp: usize,
     callee_saved: *const CalleeSavedRegs,
 ) -> isize {
-    debug!("SYSCALL: code={code:X}, args: {arg0:X}, {arg1:X}, {arg2:X}, {arg3:X}");
+    // Disable interrupts for the entire syscall to prevent race conditions
+    let flags = x86_64::instructions::interrupts::are_enabled();
+    x86_64::instructions::interrupts::disable();
 
-    let syscall_args = SyscallArgs {
-        code,
-        arg0,
-        arg1,
-        arg2,
-        arg3,
-        arg4,
-        arg5,
-    };
+    let result = {
+        debug!("SYSCALL: code={code:X}, args: {arg0:X}, {arg1:X}, {arg2:X}, {arg3:X}");
 
-    let callee_saved = unsafe { &*callee_saved };
+        let syscall_args = SyscallArgs {
+            code,
+            arg0,
+            arg1,
+            arg2,
+            arg3,
+            arg4,
+            arg5,
+        };
 
-    let ctx = SyscallContext {
-        return_rip,
-        user_rsp,
-        args: &syscall_args,
-        callee_saved,
-    };
+        let callee_saved = unsafe { &*callee_saved };
 
-    match code {
-        panda_abi::SYSCALL_SEND => {
-            let handle = arg0 as u32;
-            let operation = arg1 as u32;
-            handle_send(&ctx, handle, operation, arg2, arg3)
+        let ctx = SyscallContext {
+            return_rip,
+            user_rsp,
+            args: &syscall_args,
+            callee_saved,
+        };
+
+        match code {
+            panda_abi::SYSCALL_SEND => {
+                let handle = arg0 as u32;
+                let operation = arg1 as u32;
+                handle_send(&ctx, handle, operation, arg2, arg3)
+            }
+            _ => -1,
         }
-        _ => -1,
+    };
+
+    // Restore interrupt state before returning to userspace
+    if flags {
+        x86_64::instructions::interrupts::enable();
     }
+
+    result
 }
 
 /// Handle the unified send syscall, dispatching to operation-specific handlers.
