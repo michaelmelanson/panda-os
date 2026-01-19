@@ -29,9 +29,7 @@ Not yet implemented:
 
 ## Technical debt
 
-- **Deadline scheduling for timers**: Compositor refresh currently uses simple interval checking in timer interrupt. Should implement deadline scheduling so timers fire precisely on time (needed for reliable 60fps composition and future real-time features).
-
-- **Kernel tasks**: Add a concept of a 'kernel task' that's scheduled similarly to userspace and can be preempted, except it doesn't need to do a context switch. Turn the compositor into a kernel task.
+No known technical debt
 
 ## Known issues
 
