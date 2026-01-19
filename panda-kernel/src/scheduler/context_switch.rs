@@ -84,8 +84,6 @@ pub(crate) extern "sysv64" fn timer_interrupt_handler(
     saved_gprs: *const SavedGprs,
     interrupt_frame: *const InterruptFrame,
 ) {
-    use log::debug;
-
     // Send EOI first to allow other interrupts
     apic::eoi();
 

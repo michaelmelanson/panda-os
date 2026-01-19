@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use x86_64::VirtAddr;
 
-use crate::memory::{self, Frame, MemoryMappingOptions, map, physical_address_to_virtual, unmap_page};
+use crate::memory::{self, Frame, MemoryMappingOptions, map, unmap_page};
 use crate::process::Process;
 
 use super::Resource;
@@ -119,27 +119,6 @@ impl SharedBuffer {
         }
     }
 
-    /// Get access to the buffer's physical memory (for kernel use).
-    fn get_kernel_ptr(&self) -> *const u8 {
-        if self.frames.is_empty() {
-            return core::ptr::null();
-        }
-        let phys_addr = self.frames[0].start_address();
-        let virt_addr = physical_address_to_virtual(phys_addr);
-        virt_addr.as_ptr()
-    }
-
-    /// Get mutable access to the buffer's physical memory (for kernel use).
-    /// Safe because we're not mutating the SharedBuffer struct, just returning
-    /// a pointer to the physical memory it owns.
-    fn get_kernel_ptr_mut(&self) -> *mut u8 {
-        if self.frames.is_empty() {
-            return core::ptr::null_mut();
-        }
-        let phys_addr = self.frames[0].start_address();
-        let virt_addr = physical_address_to_virtual(phys_addr);
-        virt_addr.as_mut_ptr()
-    }
 }
 
 impl Buffer for SharedBuffer {
