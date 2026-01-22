@@ -1,3 +1,4 @@
+pub mod virtio_block;
 pub mod virtio_gpu;
 mod virtio_hal;
 pub mod virtio_keyboard;
@@ -18,7 +19,15 @@ pub fn init() {
             pci_device.subclass()
         );
 
-        match (pci_device.vendor_id(), pci_device.device_id(), pci_device.subclass()) {
+        match (
+            pci_device.vendor_id(),
+            pci_device.device_id(),
+            pci_device.subclass(),
+        ) {
+            // Virtio Block (legacy device ID 0x1001, modern transitional 0x1042)
+            (0x1AF4, 0x1001, _) | (0x1AF4, 0x1042, _) => {
+                virtio_block::init_from_pci_device(pci_device)
+            }
             // Virtio GPU
             (0x1AF4, 0x1050, _) => virtio_gpu::init_from_pci_device(pci_device),
             // Virtio Input - keyboard (subclass 0x00)

@@ -134,9 +134,9 @@ pub const OP_SURFACE_UPDATE_PARAMS: u32 = 0x6_0004;
 // =============================================================================
 
 // Seek whence values
-pub const SEEK_SET: usize = 0;
-pub const SEEK_CUR: usize = 1;
-pub const SEEK_END: usize = 2;
+pub const SEEK_SET: u32 = 0;
+pub const SEEK_CUR: u32 = 1;
+pub const SEEK_END: u32 = 2;
 
 // =============================================================================
 // Shared types

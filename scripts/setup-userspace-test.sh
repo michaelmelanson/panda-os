@@ -43,3 +43,8 @@ tar --format=ustar -cf "$BUILD_DIR/efi/initrd.tar" \
     -C "$BUILD_DIR/initrd" $INITRD_FILES
 
 echo 'fs0:\efi\boot\bootx64.efi' > "$BUILD_DIR/efi/boot/startup.nsh"
+
+# Create test disk for block tests
+if [ "$TEST_NAME" = "block_test" ]; then
+    dd if=/dev/zero of="$BUILD_DIR/test-disk.img" bs=1M count=1 2>/dev/null
+fi

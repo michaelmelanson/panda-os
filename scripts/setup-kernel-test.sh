@@ -23,3 +23,8 @@ TEST_BIN=$(cargo +nightly build \
 
 cp "$TEST_BIN" "$BUILD_DIR/efi/boot/bootx64.efi"
 echo 'fs0:\efi\boot\bootx64.efi' > "$BUILD_DIR/efi/boot/startup.nsh"
+
+# Create test disk for block tests
+if [ "$TEST_NAME" = "block" ]; then
+    dd if=/dev/zero of="$BUILD_DIR/test-disk.img" bs=1M count=1 2>/dev/null
+fi

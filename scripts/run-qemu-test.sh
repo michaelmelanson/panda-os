@@ -43,6 +43,11 @@ QEMU_CMD=(
     -accel kvm -accel tcg
 )
 
+# Add virtio-blk drive for block tests
+if [ "$TEST_NAME" = "block" ] || [ "$TEST_NAME" = "block_test" ]; then
+    QEMU_CMD+=(-drive "file=$BUILD_DIR/test-disk.img,if=virtio,format=raw")
+fi
+
 # For screenshot tests, use monitor socket instead of isa-debug-exit
 if [ $SCREENSHOT_TEST -eq 1 ]; then
     MONITOR_SOCK="/tmp/qemu-test-$$.sock"

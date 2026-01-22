@@ -1,8 +1,8 @@
 SHELL := /bin/bash
 .PHONY: build panda-kernel init run test kernel-test userspace-test
 
-KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic resource
-USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test keyboard_test state_test readdir_test buffer_test surface_test window_test multi_window_test alpha_test partial_refresh_test window_move_test
+KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic resource block
+USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test keyboard_test state_test readdir_test buffer_test surface_test window_test multi_window_test alpha_test partial_refresh_test window_move_test block_test
 
 # Extra binaries needed for specific tests (space-separated)
 spawn_test_EXTRAS := spawn_child

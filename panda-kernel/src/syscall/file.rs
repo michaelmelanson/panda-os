@@ -106,7 +106,7 @@ pub fn handle_write(handle_id: u32, buf_ptr: usize, buf_len: usize) -> isize {
 /// Handle file seek operation.
 pub fn handle_seek(handle_id: u32, offset_lo: usize, offset_hi: usize) -> isize {
     let offset = ((offset_hi as u64) << 32) | (offset_lo as u64);
-    let whence = (offset_hi >> 32) as usize;
+    let whence = (offset_hi >> 32) as u32;
 
     scheduler::with_current_process(|proc| {
         let Some(handle) = proc.handles_mut().get_mut(handle_id) else {

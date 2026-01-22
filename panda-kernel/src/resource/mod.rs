@@ -14,7 +14,7 @@ mod scheme;
 mod surface;
 mod window;
 
-pub use block::{Block, BlockError};
+pub use block::{Block, BlockDevice, BlockDeviceWrapper, BlockError};
 pub use buffer::{Buffer, BufferError, SharedBuffer};
 pub use char_output::{CharOutError, CharacterOutput};
 pub use directory::{DirEntry, Directory};
@@ -26,8 +26,8 @@ pub use scheme::{
     init as init_schemes, open, readdir, register_scheme,
 };
 pub use surface::{
-    FramebufferSurface, PixelFormat, Rect, Surface, SurfaceError, SurfaceInfo,
-    alpha_blend, get_framebuffer_surface, init_framebuffer,
+    FramebufferSurface, PixelFormat, Rect, Surface, SurfaceError, SurfaceInfo, alpha_blend,
+    get_framebuffer_surface, init_framebuffer,
 };
 pub use window::WindowResource;
 

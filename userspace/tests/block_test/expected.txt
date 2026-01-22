@@ -1,0 +1,9 @@
+# Block test expected log output
+Block test starting
+Test 1: Opening block device
+Block device opened
+Test 2: Reading from block device
+Read succeeded
+Test 3: Write, overwrite, and verify
+Write/overwrite/read verified
+Block test passed

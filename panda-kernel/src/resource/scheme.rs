@@ -15,12 +15,13 @@ use spinning_top::{RwSpinlock, Spinlock};
 use x86_64::instructions::port::Port;
 
 use crate::device_address::DeviceAddress;
+use crate::devices::virtio_block::{self, VirtioBlockDevice};
 use crate::devices::virtio_keyboard::{self, VirtioKeyboard};
 use crate::process::waker::Waker;
 use crate::vfs;
 
 use super::Resource;
-use super::block::{Block, BlockError};
+use super::block::{Block, BlockDevice, BlockDeviceWrapper, BlockError};
 use super::char_output::{CharOutError, CharacterOutput};
 use super::directory::{DirEntry, Directory};
 use super::event_source::{Event, EventSource, KeyEvent};
@@ -294,6 +295,65 @@ impl SchemeHandler for SurfaceScheme {
 }
 
 // =============================================================================
+// Block Scheme - block device access
+// =============================================================================
+
+/// Scheme handler for block devices (virtio-blk, future AHCI, NVMe).
+///
+/// Paths are device addresses: `/pci/00:04.0`
+pub struct BlockScheme;
+
+impl SchemeHandler for BlockScheme {
+    fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
+        // Parse path like "/pci/00:04.0" directly to DeviceAddress
+        let address = DeviceAddress::from_path(path)?;
+
+        // Try virtio-blk registry (future: try AHCI, NVMe registries too)
+        let device = virtio_block::get_device(&address)?;
+        Some(Box::new(BlockDeviceResource { device }))
+    }
+
+    // TODO: Implement readdir for block device discovery (see TODO.md)
+}
+
+/// Resource wrapper for a block device.
+struct BlockDeviceResource {
+    device: Arc<Spinlock<VirtioBlockDevice>>,
+}
+
+impl Resource for BlockDeviceResource {
+    fn as_block(&self) -> Option<&dyn Block> {
+        Some(self)
+    }
+}
+
+impl Block for BlockDeviceResource {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BlockError> {
+        // Use BlockDeviceWrapper to handle sector alignment
+        let wrapper = BlockDeviceWrapper::new(&*self.device);
+        wrapper.read_at(offset, buf)
+    }
+
+    fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, BlockError> {
+        // Use BlockDeviceWrapper to handle sector alignment
+        let wrapper = BlockDeviceWrapper::new(&*self.device);
+        wrapper.write_at(offset, buf)
+    }
+
+    fn size(&self) -> u64 {
+        // Access via BlockDevice trait on Spinlock<VirtioBlockDevice>
+        let device: &dyn BlockDevice = &*self.device;
+        device.sector_count() * device.sector_size() as u64
+    }
+
+    fn sync(&self) -> Result<(), BlockError> {
+        // Access via BlockDevice trait on Spinlock<VirtioBlockDevice>
+        let device: &dyn BlockDevice = &*self.device;
+        device.flush()
+    }
+}
+
+// =============================================================================
 // Initialization
 // =============================================================================
 
@@ -303,4 +363,5 @@ pub fn init() {
     register_scheme("console", Box::new(ConsoleScheme));
     register_scheme("keyboard", Box::new(KeyboardScheme));
     register_scheme("surface", Box::new(SurfaceScheme));
+    register_scheme("block", Box::new(BlockScheme));
 }
