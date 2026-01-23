@@ -18,7 +18,7 @@ Not yet implemented:
 
 ## Next steps
 
-- **Improve virtual address space layout**: We currently have a fairly ad-hoc memory layout. We should switch to a higher-half kernel layout where the kernel space is in the high half, with explicit memory mapping support rather than identity mapping. This will allow userspace to use the entire lower half.
+- **Improve virtual address space layout**: We currently have a fairly ad-hoc memory layout. We should switch to a higher-half kernel layout where the kernel space is in the high half, with explicit memory mapping for physical memory access and MMIO, rather than identity mapping. This will allow userspace to use the entire lower half.
 
 - **Add simple filesystem (FAT or ext2-readonly)**: Mount a disk image. Start with read-only access.
 
