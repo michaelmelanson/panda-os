@@ -10,6 +10,8 @@ panda_kernel::test_harness!(
     physical_to_virtual_high_address,
     physical_window_read_write,
     physical_window_is_mapped,
+    mmio_region_is_in_higher_half,
+    mmio_mapping_is_accessible,
     allocate_frame_is_page_aligned,
     allocate_multiple_frames_are_distinct
 );
@@ -78,6 +80,53 @@ fn physical_window_is_mapped() {
 
     // Verify PHYS_MAP_BASE is set correctly
     assert_eq!(memory::get_phys_map_base(), window_start);
+}
+
+/// Test that MMIO mappings are created in the dedicated MMIO region.
+fn mmio_region_is_in_higher_half() {
+    // Verify the MMIO region constant is correct
+    assert_eq!(memory::MMIO_REGION_BASE, 0xffff_9000_0000_0000);
+
+    // Allocate a frame to use as a test "device"
+    let frame = memory::allocate_frame();
+    let phys_addr = frame.start_address();
+
+    // Create an MMIO mapping
+    let mmio = memory::MmioMapping::new(phys_addr, 4096);
+
+    // Verify the virtual address is in the MMIO region
+    let virt = mmio.virt_addr();
+    assert!(
+        virt.as_u64() >= memory::MMIO_REGION_BASE,
+        "MMIO mapping should be in MMIO region: got {:#x}, expected >= {:#x}",
+        virt.as_u64(),
+        memory::MMIO_REGION_BASE
+    );
+    assert!(
+        virt.as_u64() < memory::MMIO_REGION_BASE + 0x1000_0000_0000, // 16 TB region
+        "MMIO mapping should be within MMIO region bounds"
+    );
+}
+
+/// Test that MMIO mappings are accessible for read/write.
+fn mmio_mapping_is_accessible() {
+    // Allocate a frame to use as a test "device"
+    let frame = memory::allocate_frame();
+    let phys_addr = frame.start_address();
+
+    // Create an MMIO mapping
+    let mmio = memory::MmioMapping::new(phys_addr, 4096);
+
+    // Write via MMIO mapping
+    mmio.write::<u32>(0, 0xCAFEBABE);
+    mmio.write::<u32>(4, 0xDEADBEEF);
+
+    // Read back via MMIO mapping
+    let val1: u32 = mmio.read(0);
+    let val2: u32 = mmio.read(4);
+
+    assert_eq!(val1, 0xCAFEBABE);
+    assert_eq!(val2, 0xDEADBEEF);
 }
 
 fn allocate_frame_is_page_aligned() {

@@ -92,34 +92,19 @@ unsafe fn deallocate_frame_raw(frame: PhysFrame) {
     }
 }
 
-/// Map an MMIO region with identity mapping (virt = phys).
+/// Map an MMIO region to the dedicated MMIO virtual address region.
 ///
-/// This ensures the physical address is accessible via the same virtual address.
-/// The mapping is created with appropriate flags for device memory (writable, non-executable).
+/// Creates a mapping in the MMIO region at `MMIO_REGION_BASE` and returns
+/// the virtual address. The mapping is leaked (persists until kernel shutdown).
 ///
-/// Returns the virtual address (which equals the physical address).
+/// For new code, prefer using `MmioMapping::new()` directly which provides
+/// RAII cleanup.
+///
+/// Returns the virtual address in the MMIO region.
 pub fn map_mmio(phys_addr: PhysAddr, size: usize) -> x86_64::VirtAddr {
-    use x86_64::VirtAddr;
-
-    let virt_addr = VirtAddr::new(phys_addr.as_u64());
-
-    // Align to page boundaries
-    let aligned_phys = phys_addr.align_down(4096u64);
-    let aligned_virt = virt_addr.align_down(4096u64);
-    let offset = phys_addr.as_u64() - aligned_phys.as_u64();
-    let aligned_size = ((size as u64 + offset + 4095) & !4095) as usize;
-
-    // Map the region (will skip if already mapped)
-    map(
-        aligned_phys,
-        aligned_virt,
-        aligned_size,
-        MemoryMappingOptions {
-            writable: true,
-            executable: false,
-            user: false,
-        },
-    );
-
+    // Create an MmioMapping and leak it (callers expect persistent mappings)
+    let mapping = MmioMapping::new(phys_addr, size);
+    let virt_addr = mapping.virt_addr();
+    core::mem::forget(mapping);
     virt_addr
 }

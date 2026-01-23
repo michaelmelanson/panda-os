@@ -2,19 +2,43 @@
 //!
 //! This module provides type-safe, volatile access to device memory through RAII
 //! wrappers. All device register access should go through these types to ensure
-//! proper memory ordering and eventual migration to the dedicated MMIO region.
+//! proper memory ordering.
+//!
+//! MMIO regions are mapped in a dedicated virtual address region starting at
+//! `MMIO_REGION_BASE` (0xffff_9000_0000_0000), separate from the physical memory
+//! window. Virtual address allocation uses a simple bump allocator.
 
 use core::ptr::{read_volatile, write_volatile};
+use core::sync::atomic::{AtomicU64, Ordering};
 
+use log::debug;
 use x86_64::{PhysAddr, VirtAddr};
 
+use super::address_space::MMIO_REGION_BASE;
 use super::{MemoryMappingOptions, map};
+
+/// Next available virtual address in the MMIO region.
+/// This is a simple bump allocator - MMIO mappings are typically not freed.
+static MMIO_NEXT_ADDR: AtomicU64 = AtomicU64::new(MMIO_REGION_BASE);
+
+/// Allocate virtual address space in the MMIO region.
+///
+/// Returns the base virtual address of the allocated region.
+/// The allocation is page-aligned.
+fn allocate_mmio_vaddr(size: usize) -> VirtAddr {
+    let aligned_size = ((size as u64 + 4095) & !4095) as u64;
+    let addr = MMIO_NEXT_ADDR.fetch_add(aligned_size, Ordering::SeqCst);
+    VirtAddr::new(addr)
+}
 
 /// RAII wrapper for accessing a memory-mapped I/O region.
 ///
 /// Provides volatile read/write access to device registers. The mapping is
 /// created when the wrapper is constructed and remains valid for the lifetime
 /// of the wrapper.
+///
+/// MMIO regions are allocated from a dedicated higher-half region starting at
+/// `MMIO_REGION_BASE`, separate from the physical memory window.
 ///
 /// # Example
 ///
@@ -31,23 +55,21 @@ pub struct MmioMapping {
 impl MmioMapping {
     /// Create a new MMIO mapping for a device region.
     ///
+    /// The physical region is mapped to a virtual address in the dedicated MMIO
+    /// region at `MMIO_REGION_BASE`.
+    ///
     /// # Arguments
     ///
     /// * `phys_addr` - Physical address of the MMIO region
     /// * `size` - Size of the region in bytes
-    ///
-    /// # Panics
-    ///
-    /// Panics if the physical address is not page-aligned (for now).
     pub fn new(phys_addr: PhysAddr, size: usize) -> Self {
-        // For now, use identity mapping. Later this will allocate from MMIO region.
-        let virt_addr = VirtAddr::new(phys_addr.as_u64());
-
-        // Align to page boundaries
+        // Align physical address down and calculate offset
         let aligned_phys = phys_addr.align_down(4096u64);
-        let aligned_virt = virt_addr.align_down(4096u64);
-        let offset = phys_addr.as_u64() - aligned_phys.as_u64();
-        let aligned_size = ((size as u64 + offset + 4095) & !4095) as usize;
+        let offset = (phys_addr.as_u64() - aligned_phys.as_u64()) as usize;
+        let aligned_size = (size + offset + 4095) & !4095;
+
+        // Allocate virtual address space in the MMIO region
+        let aligned_virt = allocate_mmio_vaddr(aligned_size);
 
         // Map the region with appropriate flags for device memory
         map(
@@ -59,6 +81,16 @@ impl MmioMapping {
                 executable: false,
                 user: false,
             },
+        );
+
+        // The actual virt_addr includes the offset from page alignment
+        let virt_addr = VirtAddr::new(aligned_virt.as_u64() + offset as u64);
+
+        debug!(
+            "MMIO: mapped phys {:#x} -> virt {:#x} (size {})",
+            phys_addr.as_u64(),
+            virt_addr.as_u64(),
+            size
         );
 
         Self { virt_addr, size }
@@ -141,6 +173,8 @@ impl MmioMapping {
     }
 }
 
-// Note: We intentionally don't implement Drop to unmap the region for now.
-// In the current identity-mapped design, the mapping persists. When we migrate
-// to the dedicated MMIO region, we'll add proper cleanup.
+// Note: We intentionally don't implement Drop to unmap the region.
+// MMIO mappings typically persist for the lifetime of the device driver,
+// and the bump allocator doesn't support deallocation. If needed in the
+// future, we can add a more sophisticated allocator that tracks free regions
+// in kernel heap memory.
