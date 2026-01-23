@@ -20,13 +20,13 @@ Not yet implemented:
 
 - **Improve virtual address space layout**: We currently have a fairly ad-hoc memory layout. We should switch to a higher-half kernel layout where the kernel space is in the high half, with explicit memory mapping support rather than identity mapping. This will allow userspace to use the entire lower half.
 
-- **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
-
-- **Make terminal execute commands**: Currently terminal just echoes input. Parse command line, spawn programs from initrd (e.g., `spawn file:/initrd/program`).
-
 - **Add simple filesystem (FAT or ext2-readonly)**: Mount a disk image. Start with read-only access.
 
+- **Make terminal execute commands**: Currently terminal just echoes input. Parse command line, spawn programs from initrd (e.g., `spawn file:/path/to/program`).
+
 - **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes.
+
+- **Implement system initialization tool**: It should use declarative service configurations, similar to `systemd` on Linux, to describe a set of services to start to boot the machine.
 
 - **Implement block device discovery**: Add `readdir` support to `BlockScheme` to list available block devices via `block:/` path. Currently devices must be accessed by known PCI address (e.g., `block:/pci/00:04.0`).
 
@@ -35,6 +35,8 @@ Not yet implemented:
 - **Block I/O: Read-ahead**: Prefetch subsequent sectors while returning current data to reduce latency for sequential reads.
 
 - **Block I/O: Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
+
+- **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
 
 ## Technical debt
 
