@@ -10,21 +10,30 @@ use core::alloc::Layout;
 use x86_64::{PhysAddr, structures::paging::PhysFrame};
 
 mod address;
+mod address_space;
 pub mod dma;
 mod frame;
 pub mod global_alloc;
 pub mod heap_allocator;
 mod mapping;
+mod mmio;
 mod paging;
+mod phys;
 
-pub use address::{inspect_virtual_address, physical_address_to_virtual};
+pub use address::{
+    get_phys_map_base, inspect_virtual_address, physical_address_to_virtual, set_phys_map_base,
+    virtual_address_to_physical,
+};
+pub use address_space::{KERNEL_HEAP_BASE, KERNEL_IMAGE_BASE, MMIO_REGION_BASE, PHYS_WINDOW_BASE};
 pub use frame::Frame;
 pub use mapping::{Mapping, MappingBacking};
+pub use mmio::MmioMapping;
 pub use paging::{
     allocate_and_map, create_user_page_table, current_page_table_phys, free_region, map,
     map_external, switch_page_table, try_handle_heap_page_fault, try_handle_stack_page_fault,
     unmap_page, unmap_region, update_permissions, without_write_protection,
 };
+pub use phys::{PhysicalMapping, PhysicalSlice};
 
 /// Mapping options for memory regions.
 pub struct MemoryMappingOptions {
