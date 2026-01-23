@@ -34,8 +34,6 @@ Not yet implemented:
 
 8. **Block I/O: Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
 
-9. **Remove identity-mapping assumption**: Update `DmaBuffer` and `VirtioHal` to properly translate between virtual and physical addresses, enabling future IOMMU support.
-
 ## Technical debt
 
 - **Cargo.toml workspace profile warnings**: Several userspace test packages have profile settings that should be moved to the workspace root Cargo.toml.
