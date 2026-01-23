@@ -46,7 +46,8 @@ pub unsafe fn switch_page_table(pml4_phys: PhysAddr) {
 /// address space while sharing kernel mappings.
 pub fn create_user_page_table() -> PhysAddr {
     let frame = allocate_frame_raw();
-    let new_pml4 = frame.start_address().as_u64() as *mut PageTable;
+    let new_pml4 =
+        super::physical_address_to_virtual(frame.start_address()).as_mut_ptr::<PageTable>();
 
     // PML4 entry indices for userspace virtual addresses:
     // 0xa0000000000 >> 39 = 20 (0x14)
@@ -147,7 +148,8 @@ fn is_mapped(addr: VirtAddr) -> bool {
         }
 
         level = next_level.unwrap();
-        page_table = unsafe { &*(entry.addr().as_u64() as *const PageTable) };
+        page_table =
+            unsafe { &*super::physical_address_to_virtual(entry.addr()).as_ptr::<PageTable>() };
     }
 }
 
@@ -264,7 +266,9 @@ fn leaf_page_table_entry(
         }
 
         level = next_level.unwrap();
-        page_table = unsafe { &mut *(entry.addr().as_u64() as *mut PageTable) };
+        page_table = unsafe {
+            &mut *super::physical_address_to_virtual(entry.addr()).as_mut_ptr::<PageTable>()
+        };
     }
 }
 
@@ -352,7 +356,7 @@ pub fn unmap_page(virt_addr: VirtAddr) {
             return;
         }
 
-        table = entry.addr().as_u64() as *mut PageTable;
+        table = super::physical_address_to_virtual(entry.addr()).as_mut_ptr::<PageTable>();
     }
 
     // Clear the L1 entry
@@ -472,7 +476,7 @@ fn free_page(virt_addr: VirtAddr) {
             return;
         }
 
-        table = entry.addr().as_u64() as *mut PageTable;
+        table = super::physical_address_to_virtual(entry.addr()).as_mut_ptr::<PageTable>();
     }
 
     // Walk back up and free empty intermediate tables (same as unmap_page)

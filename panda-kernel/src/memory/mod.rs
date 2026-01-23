@@ -87,7 +87,7 @@ fn allocate_frame_raw() -> PhysFrame {
 /// The frame must have been allocated with allocate_frame_raw().
 unsafe fn deallocate_frame_raw(frame: PhysFrame) {
     let layout = Layout::from_size_align(4096, 4096).unwrap();
-    let ptr = frame.start_address().as_u64() as *mut u8;
+    let ptr = physical_address_to_virtual(frame.start_address()).as_mut_ptr();
     unsafe {
         alloc::alloc::dealloc(ptr, layout);
     }

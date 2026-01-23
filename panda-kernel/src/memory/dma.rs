@@ -1,14 +1,13 @@
 //! DMA buffer abstraction for device I/O.
 //!
 //! Provides a safe wrapper around physical memory suitable for DMA operations.
-//! Uses kernel identity mapping (virt == phys) for CPU access to DMA buffers.
 
 use core::alloc::Layout;
 use core::slice;
 
 use x86_64::{PhysAddr, VirtAddr};
 
-use super::{Frame, allocate_physical};
+use super::{Frame, allocate_physical, physical_address_to_virtual};
 
 /// A buffer suitable for DMA operations.
 ///
@@ -16,11 +15,6 @@ use super::{Frame, allocate_physical};
 /// - Memory is physically contiguous
 /// - Memory remains valid and at fixed physical address until dropped
 /// - Properly aligned for DMA (page-aligned)
-///
-/// Uses kernel identity mapping where virtual address equals physical address.
-/// This is correct for kernel-allocated DMA buffers. If IOMMU support is added
-/// in the future, the IOMMU would handle device-side address translation
-/// separately from CPU-side access.
 pub struct DmaBuffer {
     frame: Frame,
     len: usize,
@@ -44,10 +38,8 @@ impl DmaBuffer {
     }
 
     /// Get the virtual address for CPU access.
-    ///
-    /// Returns the identity-mapped virtual address (virt == phys).
     pub fn virtual_address(&self) -> VirtAddr {
-        VirtAddr::new(self.frame.start_address().as_u64())
+        physical_address_to_virtual(self.frame.start_address())
     }
 
     /// Get a mutable slice of the buffer contents.

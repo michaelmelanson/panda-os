@@ -2,6 +2,8 @@ use alloc::sync::Arc;
 use core::alloc::Layout;
 use x86_64::{PhysAddr, structures::paging::PhysFrame};
 
+use super::physical_address_to_virtual;
+
 struct FrameInner {
     frame: PhysFrame,
     layout: Layout,
@@ -9,8 +11,7 @@ struct FrameInner {
 
 impl Drop for FrameInner {
     fn drop(&mut self) {
-        // Identity mapping: phys addr == virt addr
-        let ptr = self.frame.start_address().as_u64() as *mut u8;
+        let ptr = physical_address_to_virtual(self.frame.start_address()).as_mut_ptr();
         unsafe {
             alloc::alloc::dealloc(ptr, self.layout);
         }
