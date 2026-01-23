@@ -327,22 +327,25 @@ panda-kernel/src/memory/
 
 ## Verification Plan
 
+**IMPORTANT:** Each phase MUST include kernel tests that verify the new mappings are correct.
+Tests should be added to `panda-kernel/tests/` and run via `make test`.
+
 After each phase:
 ```bash
 cargo build --package panda-kernel
-cargo test --package panda-kernel
+make test
 ./scripts/run-qemu.sh
 ```
 
-| Phase | Key Verification |
-|-------|-----------------|
-| 1 | All tests pass, no behavior change |
-| 2 | Kernel boots with physical window active |
-| 3 | VirtIO GPU + block work with MMIO in higher half |
-| 4 | Kernel code/data correct at higher-half addresses (verified by reading globals) |
-| 5 | Kernel runs after jump, timer interrupts work |
-| 6 | Lower half unmapped, kernel runs entirely in higher half |
-| 7 | All userspace tests pass in lower half |
+| Phase | Key Verification | Required Tests |
+|-------|-----------------|----------------|
+| 1 | All tests pass, no behavior change | N/A (infrastructure only) |
+| 2 | Kernel boots with physical window active | Test that `physical_address_to_virtual()` returns higher-half addresses; test read/write via physical window |
+| 3 | VirtIO GPU + block work with MMIO in higher half | Test MMIO region is mapped at `MMIO_REGION_BASE`; test MMIO read/write works |
+| 4 | Kernel code/data correct at higher-half addresses | Test kernel globals accessible via higher-half addresses |
+| 5 | Kernel runs after jump, timer interrupts work | Test execution is in higher half (check RIP); test interrupts work |
+| 6 | Lower half unmapped, kernel runs entirely in higher half | Test lower-half kernel addresses are unmapped (page fault on access) |
+| 7 | All userspace tests pass in lower half | Existing userspace tests verify new layout |
 
 ## Testing & Debugging
 
