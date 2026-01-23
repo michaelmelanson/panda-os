@@ -18,21 +18,23 @@ Not yet implemented:
 
 ## Next steps
 
-1. **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
+- **Improve virtual address space layout**: We currently have a fairly ad-hoc memory layout. We should switch to a higher-half kernel layout where the kernel space is in the high half, with explicit memory mapping support rather than identity mapping. This will allow userspace to use the entire lower half.
 
-2. **Make terminal execute commands**: Currently terminal just echoes input. Parse command line, spawn programs from initrd (e.g., `spawn file:/initrd/program`).
+- **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
 
-3. **Add simple filesystem (FAT or ext2-readonly)**: Mount a disk image. Start with read-only access.
+- **Make terminal execute commands**: Currently terminal just echoes input. Parse command line, spawn programs from initrd (e.g., `spawn file:/initrd/program`).
 
-4. **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes.
+- **Add simple filesystem (FAT or ext2-readonly)**: Mount a disk image. Start with read-only access.
 
-5. **Implement block device discovery**: Add `readdir` support to `BlockScheme` to list available block devices via `block:/` path. Currently devices must be accessed by known PCI address (e.g., `block:/pci/00:04.0`).
+- **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes.
 
-6. **Block I/O: Scatter-gather support**: Submit multiple non-contiguous sectors in one virtio request for better throughput.
+- **Implement block device discovery**: Add `readdir` support to `BlockScheme` to list available block devices via `block:/` path. Currently devices must be accessed by known PCI address (e.g., `block:/pci/00:04.0`).
 
-7. **Block I/O: Read-ahead**: Prefetch subsequent sectors while returning current data to reduce latency for sequential reads.
+- **Block I/O: Scatter-gather support**: Submit multiple non-contiguous sectors in one virtio request for better throughput.
 
-8. **Block I/O: Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
+- **Block I/O: Read-ahead**: Prefetch subsequent sectors while returning current data to reduce latency for sequential reads.
+
+- **Block I/O: Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
 
 ## Technical debt
 
