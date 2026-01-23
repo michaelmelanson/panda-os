@@ -26,6 +26,7 @@ pub use address::{
 };
 pub use address_space::{
     KERNEL_HEAP_BASE, KERNEL_IMAGE_BASE, MMIO_REGION_BASE, PHYS_WINDOW_BASE,
+    get_kernel_image_phys_base, identity_to_higher_half, jump_to_higher_half,
     relocate_kernel_to_higher_half,
 };
 pub use frame::Frame;

@@ -47,7 +47,7 @@ ifdef TEST
 kernel-test:
 	@if echo "$(KERNEL_TESTS)" | grep -q -w "$(TEST)"; then \
 		echo "Building kernel test $(TEST)..."; \
-		cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json --tests 2>&1 | grep -E "Compiling|Executable" || true; \
+		cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json --tests --features testing 2>&1 | grep -E "Compiling|Executable" || true; \
 		./scripts/setup-kernel-test.sh $(TEST); \
 		echo "Running kernel test $(TEST)..."; \
 		./scripts/run-tests.sh kernel $(TEST); \
@@ -58,7 +58,7 @@ kernel-test:
 else
 kernel-test:
 	@echo "Building kernel tests..."
-	@cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json --tests 2>&1 | grep -E "Compiling|Executable" || true
+	@cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json --tests --features testing 2>&1 | grep -E "Compiling|Executable" || true
 	@echo ""
 	@for test in $(KERNEL_TESTS); do \
 		./scripts/setup-kernel-test.sh $$test; \

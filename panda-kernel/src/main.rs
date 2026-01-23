@@ -3,19 +3,62 @@
 
 extern crate alloc;
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use ::uefi::{Status, entry};
 use log::info;
 use panda_kernel::{
-    initrd,
+    initrd, memory,
     process::{Context, Process},
-    resource, scheduler, uefi, vfs,
+    resource, scheduler,
+    syscall::gdt::SYSCALL_STACK,
+    uefi, vfs,
 };
+
+/// ACPI2 RSDP address, stored before higher-half jump for use after.
+static ACPI2_RSDP: AtomicU64 = AtomicU64::new(0);
+
+/// Initrd data pointer, stored before higher-half jump.
+static INITRD_DATA: AtomicU64 = AtomicU64::new(0);
+static INITRD_LEN: AtomicU64 = AtomicU64::new(0);
 
 #[entry]
 fn main() -> Status {
     uefi::init();
+
+    // Load initrd before exiting boot services
     let initrd_data = uefi::load_initrd();
-    panda_kernel::init();
+    let (initrd_ptr, initrd_len) = unsafe {
+        let slice = &*initrd_data;
+        (slice.as_ptr(), slice.len())
+    };
+    INITRD_DATA.store(initrd_ptr as u64, Ordering::SeqCst);
+    INITRD_LEN.store(initrd_len as u64, Ordering::SeqCst);
+
+    // Early init: memory subsystem, physical window, kernel relocation
+    let acpi2_rsdp = panda_kernel::init();
+    ACPI2_RSDP.store(acpi2_rsdp.as_u64(), Ordering::SeqCst);
+
+    // Get the boot stack address (top of SYSCALL_STACK)
+    let boot_stack_top = SYSCALL_STACK.inner.as_ptr() as u64 + SYSCALL_STACK.inner.len() as u64;
+
+    // Jump to higher-half execution
+    unsafe {
+        memory::jump_to_higher_half(boot_stack_top, higher_half_continuation);
+    }
+}
+
+/// Continuation function called after jumping to higher-half.
+/// This runs from the relocated kernel at higher-half addresses.
+unsafe extern "C" fn higher_half_continuation() -> ! {
+    // Continue initialization with ACPI, syscall, interrupts, etc.
+    let acpi2_rsdp = x86_64::PhysAddr::new(ACPI2_RSDP.load(Ordering::SeqCst));
+    panda_kernel::init_after_higher_half_jump(acpi2_rsdp);
+
+    // Reconstruct initrd pointer
+    let initrd_ptr = INITRD_DATA.load(Ordering::SeqCst) as *const u8;
+    let initrd_len = INITRD_LEN.load(Ordering::SeqCst) as usize;
+    let initrd_data: *const [u8] = core::ptr::slice_from_raw_parts(initrd_ptr, initrd_len);
 
     initrd::init(initrd_data);
 
@@ -28,16 +71,15 @@ fn main() -> Status {
 
     info!("Panda OS");
 
-    unsafe {
-        let init_data = initrd::get_init();
-        let init_process = Process::from_elf_data(Context::from_current_page_table(), init_data);
-        scheduler::init(init_process);
+    let init_data = initrd::get_init();
+    let init_process =
+        unsafe { Process::from_elf_data(Context::from_current_page_table(), init_data) };
+    scheduler::init(init_process);
 
-        // Start compositor task now that scheduler is ready
-        panda_kernel::compositor::spawn_compositor_task();
+    // Start compositor task now that scheduler is ready
+    panda_kernel::compositor::spawn_compositor_task();
 
-        scheduler::exec_next_runnable();
-    }
+    unsafe { scheduler::exec_next_runnable() };
 }
 
 #[panic_handler]

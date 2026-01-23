@@ -13,6 +13,8 @@
 //!
 //! See docs/HIGHER_HALF_KERNEL.md for the full plan.
 
+use core::arch::asm;
+
 use goblin::pe::PE;
 use log::info;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned};
@@ -24,6 +26,17 @@ use crate::uefi::KernelImageInfo;
 
 use super::paging::{current_page_table, without_write_protection};
 use super::{allocate_frame_raw, set_phys_map_base};
+
+use core::sync::atomic::{AtomicU64, Ordering};
+
+/// Stored kernel image physical base address for address translation.
+static KERNEL_IMAGE_BASE_PHYS: AtomicU64 = AtomicU64::new(0);
+
+/// Get the physical base address of the kernel image.
+/// Returns 0 if the kernel hasn't been relocated yet.
+pub fn get_kernel_image_phys_base() -> u64 {
+    KERNEL_IMAGE_BASE_PHYS.load(Ordering::SeqCst)
+}
 
 /// Base address of the physical memory window.
 /// All physical RAM is mapped starting at this address.
@@ -300,42 +313,74 @@ unsafe fn apply_kernel_relocations(kernel_info: &KernelImageInfo, higher_half_ba
         core::slice::from_raw_parts(kernel_info.image_base, kernel_info.image_size as usize)
     };
 
-    let pe = PE::parse(image_slice).expect("failed to parse kernel PE");
+    // Use permissive parse mode since we're parsing an in-memory image
+    let opts = goblin::pe::options::ParseOptions::default()
+        .with_parse_mode(goblin::options::ParseMode::Permissive);
+    let pe = PE::parse_with_opts(image_slice, &opts).expect("failed to parse kernel PE");
 
     let pe_image_base = pe.image_base as u64;
     let delta = higher_half_base.as_u64() as i64 - pe_image_base as i64;
 
-    info!(
-        "Applying relocations: PE ImageBase={:#x}, new base={:#x}, delta={:#x}",
-        pe_image_base,
-        higher_half_base.as_u64(),
-        delta
-    );
-
-    // Get the base relocation data
-    let relocation_data = pe
-        .relocation_data
+    // Get the base relocation directory from the data directories
+    // We need to manually access it because goblin's parse uses file offsets,
+    // but we have an in-memory (loaded) image where RVA == offset from image base
+    let reloc_dir = pe
+        .header
+        .optional_header
         .as_ref()
-        .expect("kernel PE should have relocation data");
+        .and_then(|opt| opt.data_directories.get_base_relocation_table())
+        .expect("kernel PE should have base relocation directory");
+
+    let reloc_rva = reloc_dir.virtual_address as usize;
+    let reloc_size = reloc_dir.size as usize;
+
+    if reloc_size == 0 {
+        return;
+    }
+
+    // In a loaded image, RVA is the offset from image base
+    let reloc_bytes = &image_slice[reloc_rva..reloc_rva + reloc_size];
 
     let mut reloc_count = 0;
     let mut highlow_count = 0;
+    let mut block_count = 0;
 
-    for block_result in relocation_data.blocks() {
-        // Skip malformed blocks (e.g., size 0)
-        let block = match block_result {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        let page_rva = block.rva as u64;
+    // Parse relocation blocks manually
+    // Each block starts with: u32 page_rva, u32 block_size
+    // Followed by u16 entries until block_size is reached
+    let mut offset = 0;
+    while offset + 8 <= reloc_bytes.len() {
+        let page_rva = u32::from_le_bytes([
+            reloc_bytes[offset],
+            reloc_bytes[offset + 1],
+            reloc_bytes[offset + 2],
+            reloc_bytes[offset + 3],
+        ]) as u64;
+        let block_size = u32::from_le_bytes([
+            reloc_bytes[offset + 4],
+            reloc_bytes[offset + 5],
+            reloc_bytes[offset + 6],
+            reloc_bytes[offset + 7],
+        ]) as usize;
 
-        for word_result in block.words() {
-            let word = match word_result {
-                Ok(w) => w,
-                Err(_) => continue,
-            };
-            let reloc_type = word.reloc_type() as u16;
-            let reloc_offset = word.offset() as u64;
+        if block_size < 8 || offset + block_size > reloc_bytes.len() {
+            break; // End of relocations or invalid block
+        }
+
+        block_count += 1;
+
+        // Process relocation entries (each is 2 bytes)
+        let entries_start = offset + 8;
+        let entries_end = offset + block_size;
+        let mut entry_offset = entries_start;
+
+        while entry_offset + 2 <= entries_end {
+            let entry =
+                u16::from_le_bytes([reloc_bytes[entry_offset], reloc_bytes[entry_offset + 1]]);
+            entry_offset += 2;
+
+            let reloc_type = (entry >> 12) as u16;
+            let reloc_offset = (entry & 0xFFF) as u64;
 
             match reloc_type {
                 IMAGE_REL_BASED_DIR64 => {
@@ -371,11 +416,14 @@ unsafe fn apply_kernel_relocations(kernel_info: &KernelImageInfo, higher_half_ba
                 }
             }
         }
+
+        // Move to next block
+        offset += block_size;
     }
 
     info!(
-        "Applied {} DIR64 relocations, {} HIGHLOW relocations",
-        reloc_count, highlow_count
+        "Applied {} DIR64 relocations, {} HIGHLOW relocations in {} blocks",
+        reloc_count, highlow_count, block_count
     );
 }
 
@@ -401,20 +449,14 @@ pub unsafe fn relocate_kernel_to_higher_half(kernel_info: &KernelImageInfo) -> V
     // Apply PE relocations to fix absolute addresses
     unsafe { apply_kernel_relocations(kernel_info, higher_half_base) };
 
-    // Verify relocation by reading a known value
-    // Use the KERNEL_IMAGE_BASE constant itself as a sanity check
+    // Verify relocation by reading a known value before jumping.
+    // Use the KERNEL_IMAGE_BASE constant itself as a sanity check.
     let identity_ptr = &KERNEL_IMAGE_BASE as *const u64;
     let higher_half_ptr = (higher_half_base.as_u64()
         + (identity_ptr as u64 - kernel_info.image_base as u64))
         as *const u64;
 
-    let identity_value = unsafe { *identity_ptr };
     let higher_half_value = unsafe { *higher_half_ptr };
-
-    info!(
-        "Relocation verification: identity={:#x}, higher_half={:#x}",
-        identity_value, higher_half_value
-    );
 
     // The higher-half value should equal KERNEL_IMAGE_BASE (the constant's value)
     // since that constant should have been relocated to point to higher-half
@@ -423,10 +465,68 @@ pub unsafe fn relocate_kernel_to_higher_half(kernel_info: &KernelImageInfo) -> V
         "relocation verification failed"
     );
 
-    info!(
-        "Kernel relocated to higher half at {:#x}",
-        higher_half_base.as_u64()
-    );
+    // Store kernel image base for use during higher-half jump
+    KERNEL_IMAGE_BASE_PHYS.store(kernel_info.image_base as u64, Ordering::SeqCst);
 
     higher_half_base
+}
+
+/// Convert an identity-mapped kernel address to its higher-half equivalent.
+///
+/// # Safety
+/// The address must be within the kernel image, and `relocate_kernel_to_higher_half`
+/// must have been called first.
+pub unsafe fn identity_to_higher_half(identity_addr: u64) -> u64 {
+    // If the address is already in higher-half (kernel region), return as-is
+    // This can happen after relocation when static variables already point to higher-half
+    if identity_addr >= KERNEL_IMAGE_BASE {
+        return identity_addr;
+    }
+
+    let image_base = KERNEL_IMAGE_BASE_PHYS.load(Ordering::SeqCst);
+    assert!(image_base != 0, "kernel not relocated yet");
+
+    let offset = identity_addr - image_base;
+    KERNEL_IMAGE_BASE + offset
+}
+
+/// Jump to higher-half kernel execution.
+///
+/// This function:
+/// 1. Calculates the higher-half address of the boot stack
+/// 2. Switches RSP to the higher-half stack
+/// 3. Jumps to the continuation function at its higher-half address
+///
+/// The continuation function must reinitialize GDT/TSS with higher-half stack addresses.
+///
+/// # Safety
+/// - `relocate_kernel_to_higher_half` must have been called first
+/// - The `boot_stack_top` must be the identity-mapped address of a valid stack top
+/// - The continuation function must never return
+pub unsafe fn jump_to_higher_half(
+    boot_stack_top: u64,
+    continuation: unsafe extern "C" fn() -> !,
+) -> ! {
+    // Calculate higher-half addresses
+    let higher_half_stack = unsafe { identity_to_higher_half(boot_stack_top) };
+    let higher_half_continuation = unsafe { identity_to_higher_half(continuation as u64) };
+
+    info!(
+        "Jumping to higher half: stack {:#x} -> {:#x}, continuation {:#x} -> {:#x}",
+        boot_stack_top, higher_half_stack, continuation as u64, higher_half_continuation
+    );
+
+    // Switch stack and jump to higher-half
+    // The x86-64 ABI requires RSP % 16 == 8 on function entry (after call pushes return address).
+    // Since we use jmp instead of call, we need to subtract 8 to simulate the pushed return address.
+    unsafe {
+        asm!(
+            "mov rsp, {new_stack}",
+            "sub rsp, 8",  // Simulate pushed return address for ABI compliance
+            "jmp {continuation}",
+            new_stack = in(reg) higher_half_stack,
+            continuation = in(reg) higher_half_continuation,
+            options(noreturn)
+        );
+    }
 }

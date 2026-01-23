@@ -18,6 +18,7 @@ TEST_BIN=$(cargo +nightly build \
     --package panda-kernel \
     --target "$PROJECT_DIR/x86_64-panda-uefi.json" \
     --test "$TEST_NAME" \
+    --features testing \
     --message-format=json 2>/dev/null | \
     jq -r 'select(.executable != null and .target.kind == ["test"]) | .executable')
 

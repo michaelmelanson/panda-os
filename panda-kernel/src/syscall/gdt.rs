@@ -52,7 +52,8 @@ pub struct KernelStack {
     pub inner: [u8; 0x10000], // 64KB kernel stack
 }
 
-/// Syscall handler stack - used by syscall_entry via manual RSP switch
+/// Syscall handler stack - used by syscall_entry via manual RSP switch.
+/// Also used as the boot stack for higher-half transition.
 pub static SYSCALL_STACK: KernelStack = KernelStack {
     inner: [0; 0x10000],
 };

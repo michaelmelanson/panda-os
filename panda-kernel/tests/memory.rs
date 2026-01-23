@@ -156,22 +156,28 @@ fn kernel_mapped_to_higher_half() {
     assert!(memory::KERNEL_IMAGE_BASE > memory::MMIO_REGION_BASE);
 }
 
-/// Test that kernel relocations were applied correctly by verifying
-/// a known constant has the same value via identity and higher-half addresses.
+/// Test that kernel relocations were applied correctly and we're running
+/// in the higher half by checking the address of a function.
 fn kernel_relocation_verification() {
-    // The KERNEL_IMAGE_BASE constant should have been relocated to point
-    // to the higher-half address in the higher-half copy of the kernel.
-    // This is verified during init, but we re-check here that the constant
-    // has a valid higher-half value.
-    let kernel_base = memory::KERNEL_IMAGE_BASE;
+    // Get the address of this test function - if we're running in higher half,
+    // the function pointer should be in the KERNEL_IMAGE_BASE region
+    let fn_ptr = kernel_relocation_verification as *const () as u64;
 
-    // Should be a canonical higher-half address
     assert!(
-        kernel_base >= 0xffff_8000_0000_0000,
-        "kernel base should be in higher half"
+        fn_ptr >= memory::KERNEL_IMAGE_BASE,
+        "test function should be in kernel image region: got {:#x}, expected >= {:#x}",
+        fn_ptr,
+        memory::KERNEL_IMAGE_BASE
     );
+
+    // Also verify that a static variable address is in the higher half
+    static TEST_STATIC: u64 = 0xDEADBEEF;
+    let static_addr = &TEST_STATIC as *const u64 as u64;
+
     assert!(
-        kernel_base < 0xffff_ffff_ffff_ffff,
-        "kernel base should be valid"
+        static_addr >= memory::KERNEL_IMAGE_BASE,
+        "static variable should be in kernel image region: got {:#x}, expected >= {:#x}",
+        static_addr,
+        memory::KERNEL_IMAGE_BASE
     );
 }

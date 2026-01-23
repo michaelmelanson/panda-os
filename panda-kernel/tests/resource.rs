@@ -7,6 +7,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec;
 
 use panda_kernel::handle::HandleTable;
@@ -116,12 +117,12 @@ impl CharacterOutput for MockCharOutput {
 // =============================================================================
 
 /// Create a test block resource
-fn create_test_block() -> Box<dyn Resource> {
-    Box::new(MockBlock::new(b"Hello from test data!"))
+fn create_test_block() -> Arc<dyn Resource> {
+    Arc::new(MockBlock::new(b"Hello from test data!"))
 }
 
 /// Create a test directory resource
-fn create_test_directory() -> Box<dyn Resource> {
+fn create_test_directory() -> Arc<dyn Resource> {
     let entries = vec![
         DirEntry {
             name: String::from("file1.txt"),
@@ -136,7 +137,7 @@ fn create_test_directory() -> Box<dyn Resource> {
             is_dir: false,
         },
     ];
-    Box::new(DirectoryResource::new(entries))
+    Arc::new(DirectoryResource::new(entries))
 }
 
 // =============================================================================
@@ -528,7 +529,10 @@ fn buffer_free_list_partial_reuse() {
     let addr4 = proc.alloc_buffer_vaddr(1).unwrap();
     // This should come from bump allocation, not the free list
     let expected_addr4 = x86_64::VirtAddr::new(panda_abi::BUFFER_BASE as u64 + (5 * 4096));
-    assert_eq!(addr4, expected_addr4, "Should use bump allocator when free list insufficient");
+    assert_eq!(
+        addr4, expected_addr4,
+        "Should use bump allocator when free list insufficient"
+    );
 }
 
 fn buffer_free_list_multiple_free_ranges() {

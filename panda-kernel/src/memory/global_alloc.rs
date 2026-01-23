@@ -8,7 +8,9 @@ static GLOBAL_ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 pub unsafe fn init(heap_start: usize, heap_size: usize) {
     unsafe {
-        GLOBAL_ALLOCATOR.lock().init(heap_start as *mut u8, heap_size);
+        GLOBAL_ALLOCATOR
+            .lock()
+            .init(heap_start as *mut u8, heap_size);
     }
 }
 

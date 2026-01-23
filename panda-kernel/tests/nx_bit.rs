@@ -3,11 +3,11 @@
 #![feature(abi_x86_interrupt)]
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use panda_kernel::interrupts;
+use panda_kernel::memory::{self, MemoryMappingOptions, map_external};
 use x86_64::VirtAddr;
 use x86_64::registers::control::{Cr2, Efer, EferFlags};
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
-use panda_kernel::memory::{self, MemoryMappingOptions};
-use panda_kernel::interrupts;
 
 panda_kernel::test_harness!(
     efer_nxe_is_enabled,
@@ -37,7 +37,7 @@ fn map_non_executable_page() {
     let phys_addr = frame.start_address();
     let virt_addr = VirtAddr::new(0x0000_4000_0000_0000);
 
-    memory::map(
+    let _mapping = map_external(
         phys_addr,
         virt_addr,
         4096,
@@ -63,13 +63,13 @@ fn map_executable_page() {
     let phys_addr = frame.start_address();
     let virt_addr = VirtAddr::new(0x0000_4001_0000_0000);
 
-    memory::map(
+    let _mapping = map_external(
         phys_addr,
         virt_addr,
         4096,
         MemoryMappingOptions {
             user: false,
-            executable: true,  // NO_EXECUTE flag should NOT be set
+            executable: true, // NO_EXECUTE flag should NOT be set
             writable: false,
         },
     );
@@ -90,7 +90,7 @@ fn map_user_executable_page() {
     // (UEFI uses huge pages for low memory which we can't break down yet)
     let virt_addr = VirtAddr::new(0x0000_5000_0000_0000);
 
-    memory::map(
+    let _mapping = map_external(
         phys_addr,
         virt_addr,
         4096,
@@ -148,13 +148,13 @@ fn execute_from_nx_page_faults() {
     let virt_addr = VirtAddr::new(0x0000_6000_0000_0000);
 
     // Map the page as writable so we can write code to it, but NOT executable
-    memory::map(
+    let _mapping = map_external(
         phys_addr,
         virt_addr,
         4096,
         MemoryMappingOptions {
             user: false,
-            executable: false,  // NX bit should be set
+            executable: false, // NX bit should be set
             writable: true,
         },
     );
@@ -195,9 +195,11 @@ fn execute_from_nx_page_faults() {
     // Verify the fault was at the expected address
     let fault_addr = NX_FAULT_ADDRESS.load(Ordering::SeqCst);
     assert_eq!(
-        fault_addr, virt_addr.as_u64(),
+        fault_addr,
+        virt_addr.as_u64(),
         "Page fault occurred at wrong address: expected {:#x}, got {:#x}",
-        virt_addr.as_u64(), fault_addr
+        virt_addr.as_u64(),
+        fault_addr
     );
 
     // Verify the error code indicates an NX violation specifically:
@@ -205,9 +207,8 @@ fn execute_from_nx_page_faults() {
     // - PROTECTION_VIOLATION must be set (page was present but access denied)
     // - CAUSED_BY_WRITE must NOT be set (this was a fetch, not a write)
     // - USER_MODE must NOT be set (we're in kernel mode)
-    let error_code = PageFaultErrorCode::from_bits_truncate(
-        NX_FAULT_ERROR_CODE.load(Ordering::SeqCst)
-    );
+    let error_code =
+        PageFaultErrorCode::from_bits_truncate(NX_FAULT_ERROR_CODE.load(Ordering::SeqCst));
 
     assert!(
         error_code.contains(PageFaultErrorCode::INSTRUCTION_FETCH),

@@ -3,6 +3,10 @@ name = "panda-kernel"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+testing = []
+
 [dependencies]
 acpi = { workspace = true }
 linked_list_allocator = { workspace = true }
