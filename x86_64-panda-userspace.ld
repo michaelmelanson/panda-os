@@ -1,6 +1,7 @@
 
 SECTIONS {
-    . = 0xA0000000000;
+    /* Userspace base at 4MB in lower canonical half */
+    . = 0x400000;
     .text ALIGN(4096) : { *(.text .text.*); }
     .rodata ALIGN(4096) : { *(.rodata .rodata.*); }
     .data ALIGN(4096) : { *(.data .data.*); }

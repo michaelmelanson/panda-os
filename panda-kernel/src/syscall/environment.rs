@@ -34,8 +34,10 @@ pub fn handle_open(uri_ptr: usize, uri_len: usize) -> isize {
 
 /// Handle environment spawn operation.
 pub fn handle_spawn(uri_ptr: usize, uri_len: usize) -> isize {
+    debug!("SPAWN: uri_ptr={:#x}, uri_len={}", uri_ptr, uri_len);
     let uri_ptr = uri_ptr as *const u8;
     let uri = unsafe { slice::from_raw_parts(uri_ptr, uri_len) };
+    debug!("SPAWN: created slice");
     let uri = match str::from_utf8(uri) {
         Ok(u) => u,
         Err(_) => return -1,
@@ -90,8 +92,10 @@ pub fn handle_spawn(uri_ptr: usize, uri_len: usize) -> isize {
 
 /// Handle environment log operation.
 pub fn handle_log(msg_ptr: usize, msg_len: usize) -> isize {
+    debug!("LOG: msg_ptr={:#x}, msg_len={}", msg_ptr, msg_len);
     let msg_ptr = msg_ptr as *const u8;
     let msg = unsafe { slice::from_raw_parts(msg_ptr, msg_len) };
+    debug!("LOG: created slice");
     let msg = match str::from_utf8(msg) {
         Ok(m) => m,
         Err(_) => return -1,
@@ -120,8 +124,7 @@ pub fn handle_opendir(uri_ptr: usize, uri_len: usize) -> isize {
     };
 
     let dir_resource = resource::DirectoryResource::new(entries);
-    let handle_id = scheduler::with_current_process(|proc| {
-        proc.handles_mut().insert(Arc::new(dir_resource))
-    });
+    let handle_id =
+        scheduler::with_current_process(|proc| proc.handles_mut().insert(Arc::new(dir_resource)));
     handle_id as isize
 }

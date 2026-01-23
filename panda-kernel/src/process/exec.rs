@@ -15,6 +15,13 @@ use super::SavedState;
 pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr, saved_state: Option<SavedState>) -> ! {
     let rflags = RFlags::INTERRUPT_FLAG.bits();
 
+    // Before jumping to userspace (whether new or resuming), ensure KernelGsBase is set.
+    // This is needed because we might be context-switching from another process's
+    // syscall handler, where swapgs left KernelGsBase with the old user value.
+    use x86_64::registers::model_specific::KernelGsBase;
+    let kernel_gs = &crate::syscall::gdt::USER_STACK_PTR as *const usize as u64;
+    KernelGsBase::write(x86_64::VirtAddr::new(kernel_gs));
+
     if let Some(state) = saved_state {
         debug!("Resuming at IP={:#x}, SP={:#x}", state.rip, state.rsp);
         // Use naked helper to restore all registers
@@ -30,7 +37,6 @@ pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr, saved_state: Option<Sav
         unsafe {
             asm!(
                 "mov rsp, {stack_pointer}",
-                "swapgs",
                 "sysretq",
                 in("rcx") ip.as_u64(),
                 in("r11") rflags,
@@ -48,6 +54,11 @@ pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr, saved_state: Option<Sav
 ///
 /// Restores ALL registers from SavedState including rcx, r11, rip, rsp, and rflags.
 /// Used for both syscall restart and preemption resume.
+///
+/// Note: Does NOT do swapgs because:
+/// - For preemption resume: interrupt from userspace never did swapgs
+/// - For syscall restart: we're jumping to userspace to re-execute the syscall,
+///   not returning from the syscall handler (which has its own swapgs+sysretq)
 #[unsafe(naked)]
 unsafe extern "sysv64" fn exec_userspace_with_state(_state: *const SavedState) -> ! {
     // SavedState layout (offsets in bytes):
@@ -83,9 +94,8 @@ unsafe extern "sysv64" fn exec_userspace_with_state(_state: *const SavedState) -
         "mov rdi, [r15 + 0x28]",
         // Restore r15 (we were using it as temp)
         "mov r15, [r15 + 0x70]",
-        // Set user stack pointer and return
+        // Set user stack pointer and return to userspace
         "pop rsp",
-        "swapgs",
         "sysretq",
     )
 }

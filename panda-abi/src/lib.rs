@@ -59,24 +59,24 @@ pub const OP_PROCESS_BRK: u32 = 0x2_0005;
 // Userspace buffer region constants
 /// Base address of the userspace buffer region.
 /// Buffers are shared memory regions for zero-copy I/O.
-/// Must be in userspace PML4 range (entries 20-22) and canonical (bit 47 = 0).
-pub const BUFFER_BASE: usize = 0xaff_0000_0000;
+/// Located in lower canonical half for higher-half kernel layout.
+pub const BUFFER_BASE: usize = 0x0000_0100_0000_0000;
 /// Maximum size of the userspace buffer region (4 GB virtual address space).
 pub const BUFFER_MAX_SIZE: usize = 0x1_0000_0000;
 
 // Userspace stack region constants
 /// Base address of the userspace stack region.
 /// Stack grows downward from STACK_BASE + STACK_MAX_SIZE.
-/// Must be in userspace PML4 range (entries 20-22) and canonical (bit 47 = 0).
-pub const STACK_BASE: usize = 0xb00_0000_0000;
+/// Located near top of lower canonical half (0x7fff_ffff_ffff is max).
+pub const STACK_BASE: usize = 0x0000_7fff_ff00_0000;
 /// Maximum size of the userspace stack (16 MB virtual address space).
 /// Actual physical memory is allocated on demand via page faults.
 pub const STACK_MAX_SIZE: usize = 0x100_0000;
 
 // Userspace heap region constants
-/// Base address of the userspace heap region (after stack).
-/// Must be in userspace PML4 range (entries 20-22) and canonical (bit 47 = 0).
-pub const HEAP_BASE: usize = 0xb00_0100_0000;
+/// Base address of the userspace heap region.
+/// Located in lower canonical half, grows upward.
+pub const HEAP_BASE: usize = 0x0000_0001_0000_0000;
 /// Maximum size of the userspace heap (1 TB virtual address space)
 /// Actual physical memory is allocated on demand via page faults.
 pub const HEAP_MAX_SIZE: usize = 0x100_0000_0000;

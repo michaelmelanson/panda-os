@@ -67,6 +67,10 @@ static PRIVILEGE_STACK: KernelStack = KernelStack {
 /// User stack pointer storage for swapgs.
 pub static USER_STACK_PTR: usize = 0x0badc0de;
 
+/// Top of SYSCALL_STACK - initialized at runtime with the correct higher-half address.
+/// Used by syscall_entry because inline assembly can't use lea with 64-bit addresses.
+pub static mut SYSCALL_STACK_TOP: u64 = 0;
+
 const INTERRUPT_STACK_SIZE: usize = 8192; // 8KB per interrupt stack
 
 /// IST stacks for specific interrupt handlers (page fault, double fault, etc.)
@@ -75,19 +79,28 @@ static INTERRUPT_STACK_1: [u8; INTERRUPT_STACK_SIZE] = [0; INTERRUPT_STACK_SIZE]
 
 /// Initialize the GDT, TSS, and segment selectors.
 pub fn init() {
+    // Initialize syscall stack top address for syscall_entry to use
+    let syscall_stack_top = SYSCALL_STACK.inner.as_ptr() as u64 + SYSCALL_STACK.inner.len() as u64;
+    unsafe {
+        SYSCALL_STACK_TOP = syscall_stack_top;
+    }
+    log::debug!("GDT: syscall_stack_top = {:#x}", syscall_stack_top);
+
     let mut tss = TSS.lock();
     // Privilege stack table entries must point to the TOP of the stack (stacks grow downward)
     // This stack is used by the CPU for ring 3 -> ring 0 transitions (interrupts from userspace)
     let privilege_stack_top =
         PRIVILEGE_STACK.inner.as_ptr() as u64 + PRIVILEGE_STACK.inner.len() as u64;
+    log::debug!("GDT: privilege_stack_top = {:#x}", privilege_stack_top);
     tss.privilege_stack_table[0] = VirtAddr::new(privilege_stack_top);
     tss.privilege_stack_table[1] = VirtAddr::new(privilege_stack_top);
     tss.privilege_stack_table[2] = VirtAddr::new(privilege_stack_top);
     // IST entries must point to the TOP of the stack (stacks grow downward)
-    tss.interrupt_stack_table[0] =
-        VirtAddr::new(INTERRUPT_STACK_0.as_ptr() as u64 + INTERRUPT_STACK_SIZE as u64);
-    tss.interrupt_stack_table[1] =
-        VirtAddr::new(INTERRUPT_STACK_1.as_ptr() as u64 + INTERRUPT_STACK_SIZE as u64);
+    let ist0_top = INTERRUPT_STACK_0.as_ptr() as u64 + INTERRUPT_STACK_SIZE as u64;
+    let ist1_top = INTERRUPT_STACK_1.as_ptr() as u64 + INTERRUPT_STACK_SIZE as u64;
+    log::debug!("GDT: IST[0] = {:#x}, IST[1] = {:#x}", ist0_top, ist1_top);
+    tss.interrupt_stack_table[0] = VirtAddr::new(ist0_top);
+    tss.interrupt_stack_table[1] = VirtAddr::new(ist1_top);
     drop(tss);
 
     let mut gdt = GDT.lock();

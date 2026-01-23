@@ -52,10 +52,7 @@ pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
                 // Handle overlapping segments (segments sharing page boundaries)
                 if aligned_virt_addr.as_u64() < last_segment_end {
                     let overlap = last_segment_end - aligned_virt_addr.as_u64();
-                    debug!(
-                        "ELF LOAD: Segment overlap detected: {:#x} bytes",
-                        overlap
-                    );
+                    debug!("ELF LOAD: Segment overlap detected: {:#x} bytes", overlap);
 
                     // Adjust mapping to skip already-mapped pages
                     aligned_virt_addr = VirtAddr::new(last_segment_end);
@@ -76,16 +73,15 @@ pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
                             );
                         }
 
-                        let overlap_size = (aligned_virt_addr.as_u64() - original_aligned_virt.as_u64()) as usize;
-                        debug!(
-                            "ELF LOAD: Upgrading overlapping pages to RW (removing execute)"
-                        );
+                        let overlap_size =
+                            (aligned_virt_addr.as_u64() - original_aligned_virt.as_u64()) as usize;
+                        debug!("ELF LOAD: Upgrading overlapping pages to RW (removing execute)");
                         memory::update_permissions(
                             original_aligned_virt,
                             overlap_size,
                             MemoryMappingOptions {
                                 user: true,
-                                executable: false,  // W^X: can't be both writable and executable
+                                executable: false, // W^X: can't be both writable and executable
                                 writable: true,
                             },
                         );
@@ -114,23 +110,28 @@ pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
                         },
                     );
 
-                    last_segment_end = aligned_virt_addr.as_u64() + ((aligned_size + 4095) & !4095) as u64;
+                    // Copy ELF data to the mapped region via the physical window.
+                    // The offset within the mapping accounts for page alignment.
+                    let src_data = unsafe {
+                        core::slice::from_raw_parts(
+                            file_ptr.byte_add(header.p_offset as usize) as *const u8,
+                            header.p_filesz as usize,
+                        )
+                    };
+                    // Calculate offset: virt_addr may be unaligned, mapping starts at aligned_virt_addr
+                    let offset_in_mapping =
+                        (virt_addr.as_u64() - aligned_virt_addr.as_u64()) as usize;
+                    unsafe {
+                        mapping.write_at(offset_in_mapping, src_data);
+                    }
+
+                    last_segment_end =
+                        aligned_virt_addr.as_u64() + ((aligned_size + 4095) & !4095) as u64;
                     mappings.push(mapping);
                 }
 
                 // Track if this segment was executable for overlap detection
                 last_segment_executable = header.is_executable();
-
-                // Copy ELF data to the mapped region (at the original unaligned address)
-                // Temporarily disable write protection to allow kernel writes to read-only pages
-                let src_ptr = unsafe { file_ptr.byte_add(header.p_offset as usize) as *const u8 };
-                memory::without_write_protection(|| unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        src_ptr,
-                        virt_addr.as_mut_ptr(),
-                        header.p_filesz as usize,
-                    );
-                });
             }
 
             _ => trace!("Ignoring {} program header", pt_to_str(header.p_type)),

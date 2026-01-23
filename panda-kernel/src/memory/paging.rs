@@ -528,7 +528,7 @@ pub fn try_handle_heap_page_fault(fault_addr: VirtAddr, brk: VirtAddr) -> bool {
 
     log::debug!("Demand paging heap page at {:#x}", page_addr.as_u64());
 
-    // Allocate a physical frame
+    // Allocate a physical frame (already zeroed by alloc_zeroed)
     let frame = super::allocate_frame();
     let phys_addr = PhysAddr::new(frame.phys_frame().start_address().as_u64());
 
@@ -543,11 +543,6 @@ pub fn try_handle_heap_page_fault(fault_addr: VirtAddr, brk: VirtAddr) -> bool {
             executable: false,
         },
     );
-
-    // Zero the page for security
-    unsafe {
-        core::ptr::write_bytes(page_addr.as_u64() as *mut u8, 0, 4096);
-    }
 
     // Intentionally leak the frame and mapping - they're now owned by the page tables
     // and will be freed when the heap shrinks or process exits via free_region()
@@ -572,7 +567,7 @@ pub fn try_handle_stack_page_fault(fault_addr: VirtAddr) -> bool {
     // Page-align the fault address
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
 
-    // Allocate a physical frame
+    // Allocate a physical frame (already zeroed by alloc_zeroed)
     let frame = super::allocate_frame();
     let phys_addr = PhysAddr::new(frame.phys_frame().start_address().as_u64());
 
@@ -587,11 +582,6 @@ pub fn try_handle_stack_page_fault(fault_addr: VirtAddr) -> bool {
             executable: false,
         },
     );
-
-    // Zero the page for security
-    unsafe {
-        core::ptr::write_bytes(page_addr.as_u64() as *mut u8, 0, 4096);
-    }
 
     // Intentionally leak the frame and mapping - they're now owned by the page tables
     // and will be freed when the process exits via free_region()

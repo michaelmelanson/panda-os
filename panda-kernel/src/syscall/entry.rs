@@ -31,7 +31,8 @@ pub fn init() {
         });
     }
 
-    KernelGsBase::write(VirtAddr::new(&gdt::USER_STACK_PTR as *const usize as u64));
+    let user_stack_ptr_addr = &gdt::USER_STACK_PTR as *const usize as u64;
+    KernelGsBase::write(VirtAddr::new(user_stack_ptr_addr));
 }
 
 /// Naked syscall entry point.
@@ -48,8 +49,10 @@ extern "C" fn syscall_entry() {
     naked_asm!(
         "swapgs",
         "mov gs:[0x0], rsp",        // Save user RSP
-        "lea rsp, [{kernel_stack}]",
-        "add rsp, 0x10000",
+        // Load kernel stack address from a 64-bit memory location.
+        // Use RIP-relative addressing which gets properly relocated.
+        // The [rip + symbol] form forces RIP-relative mode.
+        "mov rsp, [rip + {kernel_stack_top}]",
 
         // Push callee-saved registers in CalleeSavedRegs order (reversed for stack)
         // CalleeSavedRegs: rbx, rbp, r12, r13, r14, r15
@@ -95,6 +98,6 @@ extern "C" fn syscall_entry() {
         "swapgs",
         "sysretq",
         handler = sym syscall_handler,
-        kernel_stack = sym gdt::SYSCALL_STACK
+        kernel_stack_top = sym gdt::SYSCALL_STACK_TOP
     )
 }

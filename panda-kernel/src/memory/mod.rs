@@ -7,7 +7,7 @@
 
 use core::alloc::Layout;
 
-use x86_64::{PhysAddr, structures::paging::PhysFrame};
+use x86_64::structures::paging::PhysFrame;
 
 mod address;
 mod address_space;

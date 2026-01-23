@@ -84,8 +84,10 @@ pub(crate) extern "sysv64" fn timer_interrupt_handler(
     saved_gprs: *const SavedGprs,
     interrupt_frame: *const InterruptFrame,
 ) {
+    log::debug!("TIMER: entry");
     // Send EOI first to allow other interrupts
     apic::eoi();
+    log::debug!("TIMER: after EOI");
 
     // Update system time
     crate::time::tick(TIME_SLICE_MS as u64);
