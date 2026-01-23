@@ -325,6 +325,10 @@ impl Resource for BlockDeviceResource {
     fn as_block(&self) -> Option<&dyn Block> {
         Some(self)
     }
+
+    fn as_block_device(&self) -> Option<&dyn BlockDevice> {
+        Some(&*self.device)
+    }
 }
 
 impl Block for BlockDeviceResource {

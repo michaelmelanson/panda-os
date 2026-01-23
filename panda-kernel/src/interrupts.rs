@@ -64,6 +64,22 @@ extern "x86-interrupt" fn default_irq_handler(_stack_frame: InterruptStackFrame)
     crate::apic::eoi();
 }
 
+/// Set a handler for a specific interrupt vector (0-255).
+///
+/// Unlike `set_irq_handler`, this does not add IRQ_BASE_VECTOR offset.
+/// Use this for MSI/MSI-X interrupts that deliver to specific vectors.
+/// Pass `None` to restore the default handler (which just sends EOI).
+pub fn set_interrupt_handler(vector: u8, handler: Option<IrqHandlerFunc>) {
+    let mut descriptor_table = DESCRIPTOR_TABLE.write();
+    let handler = handler.unwrap_or(default_irq_handler);
+    let kernel_cs = SegmentSelector::new(1, PrivilegeLevel::Ring0);
+    unsafe {
+        descriptor_table[vector]
+            .set_handler_fn(handler)
+            .set_code_selector(kernel_cs);
+    }
+}
+
 /// Set a raw handler for an IRQ line (naked function, not x86-interrupt).
 ///
 /// Used for handlers that need full register control, such as context switching

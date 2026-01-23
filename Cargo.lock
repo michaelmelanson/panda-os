@@ -276,6 +276,7 @@ dependencies = [
  "uefi",
  "virtio-drivers",
  "x86_64",
+ "zerocopy",
 ]
 
 [[package]]

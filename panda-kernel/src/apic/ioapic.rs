@@ -235,6 +235,45 @@ pub fn configure_irq(irq: u8, vector: u8) {
     debug!("IOAPIC: Configured IRQ {} -> vector {:#x}", irq, vector);
 }
 
+/// Configure a PCI IRQ with edge-triggered, active-low settings.
+/// Note: PCI INTx spec says level-triggered, active-low, but QEMU's
+/// emulated virtio-pci works better with edge-triggered to avoid
+/// interrupt storms when we can't immediately consume the used ring.
+pub fn configure_pci_irq(irq: u8, vector: u8) {
+    let base = IOAPIC_BASE.load(Ordering::Acquire);
+    if base == 0 {
+        return; // IOAPIC not initialized
+    }
+
+    let ioapic = IoApic {
+        base_virt: base,
+        gsi_base: IOAPIC_GSI_BASE.load(Ordering::Acquire) as u32,
+        max_entries: IOAPIC_MAX_ENTRIES.load(Ordering::Acquire) as u8,
+    };
+
+    if irq >= ioapic.max_entries {
+        return; // IRQ out of range
+    }
+
+    // Route to CPU 0 (APIC ID 0) with edge-triggered settings
+    // Using active-high because QEMU's virtio-pci seems to use positive edges
+    let entry = RedirectionEntry {
+        vector,
+        delivery_mode: DeliveryMode::Fixed,
+        destination_mode_logical: false,
+        polarity_low: false,  // Active-high for QEMU virtio
+        trigger_level: false, // Edge-triggered
+        masked: false,
+        destination: 0,
+    };
+    ioapic.set_redirection(irq, entry);
+
+    debug!(
+        "IOAPIC: Configured PCI IRQ {} -> vector {:#x} (edge-triggered, active-high)",
+        irq, vector
+    );
+}
+
 /// Mask (disable) an IRQ in the IOAPIC
 pub fn mask_irq(irq: u8) {
     let base = IOAPIC_BASE.load(Ordering::Acquire);

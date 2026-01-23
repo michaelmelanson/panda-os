@@ -10,6 +10,7 @@ use core::alloc::Layout;
 use x86_64::{PhysAddr, structures::paging::PhysFrame};
 
 mod address;
+pub mod dma;
 mod frame;
 pub mod global_alloc;
 pub mod heap_allocator;
@@ -78,4 +79,36 @@ unsafe fn deallocate_frame_raw(frame: PhysFrame) {
     unsafe {
         alloc::alloc::dealloc(ptr, layout);
     }
+}
+
+/// Map an MMIO region with identity mapping (virt = phys).
+///
+/// This ensures the physical address is accessible via the same virtual address.
+/// The mapping is created with appropriate flags for device memory (writable, non-executable).
+///
+/// Returns the virtual address (which equals the physical address).
+pub fn map_mmio(phys_addr: PhysAddr, size: usize) -> x86_64::VirtAddr {
+    use x86_64::VirtAddr;
+
+    let virt_addr = VirtAddr::new(phys_addr.as_u64());
+
+    // Align to page boundaries
+    let aligned_phys = phys_addr.align_down(4096u64);
+    let aligned_virt = virt_addr.align_down(4096u64);
+    let offset = phys_addr.as_u64() - aligned_phys.as_u64();
+    let aligned_size = ((size as u64 + offset + 4095) & !4095) as usize;
+
+    // Map the region (will skip if already mapped)
+    map(
+        aligned_phys,
+        aligned_virt,
+        aligned_size,
+        MemoryMappingOptions {
+            writable: true,
+            executable: false,
+            user: false,
+        },
+    );
+
+    virt_addr
 }

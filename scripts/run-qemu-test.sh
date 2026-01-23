@@ -45,7 +45,9 @@ QEMU_CMD=(
 
 # Add virtio-blk drive for block tests
 if [ "$TEST_NAME" = "block" ] || [ "$TEST_NAME" = "block_test" ]; then
-    QEMU_CMD+=(-drive "file=$BUILD_DIR/test-disk.img,if=virtio,format=raw")
+    # Use explicit virtio-blk-pci device with MSI-X enabled (default vectors=3)
+    QEMU_CMD+=(-drive "file=$BUILD_DIR/test-disk.img,if=none,format=raw,id=blk0")
+    QEMU_CMD+=(-device "virtio-blk-pci,drive=blk0")
 fi
 
 # For screenshot tests, use monitor socket instead of isa-debug-exit

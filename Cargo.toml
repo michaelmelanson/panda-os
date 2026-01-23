@@ -10,6 +10,7 @@ spinning_top = "0.3.0"
 uefi = { version = "0.36" }
 virtio-drivers = "0.12"
 x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
+zerocopy = { version = "0.8.24", features = ["derive"] }
 goblin = { version = "0.10", default-features = false, features = ["alloc", "elf32", "elf64", "endian_fd"] }
 tar-no-std = { version = "0.4", default-features = false }
 

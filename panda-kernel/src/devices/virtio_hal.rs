@@ -5,7 +5,7 @@ use core::{alloc::Layout, ptr::NonNull};
 use virtio_drivers::Hal;
 use x86_64::PhysAddr;
 
-use crate::memory::{self, global_alloc};
+use crate::memory::{global_alloc, map_mmio};
 
 pub struct VirtioHal;
 
@@ -15,9 +15,8 @@ unsafe impl Hal for VirtioHal {
         _direction: virtio_drivers::BufferDirection,
     ) -> (virtio_drivers::PhysAddr, NonNull<u8>) {
         let layout = Layout::from_size_align(pages * 4096, 4096).unwrap();
-        let virt_addr = global_alloc::allocate(layout);
+        let virt_addr = global_alloc::allocate(layout); // allocate uses alloc_zeroed
 
-        // nothing special to do here since all memory is available for DMA use
         (
             virt_addr.as_u64(),
             NonNull::new(virt_addr.as_u64() as *mut u8).unwrap(),
@@ -33,9 +32,9 @@ unsafe impl Hal for VirtioHal {
         0
     }
 
-    unsafe fn mmio_phys_to_virt(paddr: virtio_drivers::PhysAddr, _size: usize) -> NonNull<u8> {
-        let phys_addr = PhysAddr::new(paddr);
-        let virt_addr = memory::physical_address_to_virtual(phys_addr);
+    unsafe fn mmio_phys_to_virt(paddr: virtio_drivers::PhysAddr, size: usize) -> NonNull<u8> {
+        // Map MMIO region with identity mapping (virt = phys)
+        let virt_addr = map_mmio(PhysAddr::new(paddr), size);
         let ptr: *mut u8 = virt_addr.as_mut_ptr();
         NonNull::new(ptr).expect("could not get MMIO virtual address")
     }

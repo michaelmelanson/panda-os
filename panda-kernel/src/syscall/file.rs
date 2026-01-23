@@ -1,18 +1,129 @@
 //! File operation syscall handlers (OP_FILE_*).
 
+use alloc::sync::Arc;
 use core::slice;
 
 use panda_abi::*;
 
+use crate::process::ProcessId;
+use crate::process::waker::Waker;
+use crate::resource::{BlockDevice, BlockError};
 use crate::scheduler;
 
 use super::SyscallContext;
 
+/// Result from attempting an async block I/O operation.
+enum AsyncIoResult {
+    /// I/O completed immediately or pending request completed.
+    Completed(usize),
+    /// Request submitted, need to block.
+    WouldBlock(Arc<Waker>),
+    /// No async support, fall back to sync.
+    NotSupported,
+    /// Error occurred.
+    Error,
+}
+
+/// Try to perform an async block device read.
+fn try_async_read(
+    block_device: &dyn BlockDevice,
+    offset: u64,
+    buf: &mut [u8],
+    process_id: ProcessId,
+) -> AsyncIoResult {
+    let sector_size = block_device.sector_size() as u64;
+
+    // Require sector-aligned I/O for async path
+    if offset % sector_size != 0 || buf.len() as u64 % sector_size != 0 {
+        return AsyncIoResult::NotSupported;
+    }
+
+    let start_sector = offset / sector_size;
+
+    // Check for completed pending request
+    match block_device.complete_pending_read(process_id, buf) {
+        Ok(Some(())) => return AsyncIoResult::Completed(buf.len()),
+        Ok(None) => {}
+        Err(_) => return AsyncIoResult::Error,
+    }
+
+    // Submit new async request
+    let waker = Waker::new();
+    match block_device.read_sectors_async(start_sector, buf, process_id, waker.clone()) {
+        Ok(()) => AsyncIoResult::Completed(buf.len()),
+        Err(BlockError::WouldBlock) => AsyncIoResult::WouldBlock(waker),
+        Err(_) => AsyncIoResult::Error,
+    }
+}
+
+/// Try to perform an async block device write.
+fn try_async_write(
+    block_device: &dyn BlockDevice,
+    offset: u64,
+    buf: &[u8],
+    process_id: ProcessId,
+) -> AsyncIoResult {
+    let sector_size = block_device.sector_size() as u64;
+
+    // Require sector-aligned I/O for async path
+    if offset % sector_size != 0 || buf.len() as u64 % sector_size != 0 {
+        return AsyncIoResult::NotSupported;
+    }
+
+    let start_sector = offset / sector_size;
+
+    // Check for completed pending request
+    match block_device.complete_pending_write(process_id) {
+        Ok(Some(())) => return AsyncIoResult::Completed(buf.len()),
+        Ok(None) => {}
+        Err(_) => return AsyncIoResult::Error,
+    }
+
+    // Submit new async request
+    let waker = Waker::new();
+    match block_device.write_sectors_async(start_sector, buf, process_id, waker.clone()) {
+        Ok(()) => AsyncIoResult::Completed(buf.len()),
+        Err(BlockError::WouldBlock) => AsyncIoResult::WouldBlock(waker),
+        Err(_) => AsyncIoResult::Error,
+    }
+}
+
 /// Handle file read operation.
 pub fn handle_read(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_len: usize) -> isize {
     let buf_ptr = buf_ptr as *mut u8;
+    let process_id = scheduler::current_process_id();
 
-    // First, try to read using the Block interface
+    // Try async block device I/O first
+    let async_result = scheduler::with_current_process(|proc| {
+        let handle = proc.handles_mut().get_mut(handle_id)?;
+        let block_device = handle.as_block_device()?;
+
+        if !block_device.supports_async() {
+            return Some(AsyncIoResult::NotSupported);
+        }
+
+        let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
+        let offset = handle.offset();
+        let result = try_async_read(block_device, offset, buf, process_id);
+
+        // Update offset on success
+        if let AsyncIoResult::Completed(n) = &result {
+            handle.set_offset(offset + *n as u64);
+        }
+        Some(result)
+    });
+
+    // Handle async result
+    if let Some(result) = async_result {
+        match result {
+            AsyncIoResult::Completed(n) => return n as isize,
+            AsyncIoResult::WouldBlock(waker) => ctx.block_on(waker),
+            AsyncIoResult::Error => return -1,
+            AsyncIoResult::NotSupported => {}
+        }
+    }
+
+    // Sync path
     let result = scheduler::with_current_process(|proc| {
         let handle = proc.handles_mut().get_mut(handle_id)?;
 
@@ -27,13 +138,10 @@ pub fn handle_read(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_len
                 Err(e) => Some(Err(e)),
             }
         } else if let Some(event_source) = handle.as_event_source() {
-            // For event sources, try to poll for an event
             if let Some(event) = event_source.poll() {
                 let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
-                // Serialize the event to the buffer
                 let event_bytes = match event {
                     crate::resource::Event::Key(key) => {
-                        // Match the InputEvent structure from virtio_keyboard
                         // struct InputEvent { event_type: u16, code: u16, value: u32 }
                         let mut bytes = [0u8; 8];
                         bytes[0..2].copy_from_slice(&0x01u16.to_ne_bytes()); // EV_KEY
@@ -47,11 +155,10 @@ pub fn handle_read(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_len
                 buf[..n].copy_from_slice(&event_bytes[..n]);
                 Some(Ok(n as isize))
             } else {
-                // No event available - need to block
-                None
+                None // No event available - need to block
             }
         } else {
-            Some(Ok(0)) // Resource doesn't support reading
+            Some(Ok(0))
         }
     });
 
@@ -59,7 +166,6 @@ pub fn handle_read(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_len
         Some(Ok(n)) => n,
         Some(Err(_)) => -1,
         None => {
-            // Need to block - get the waker
             let waker = scheduler::with_current_process(|proc| {
                 proc.handles().get(handle_id).and_then(|h| h.waker())
             });
@@ -73,9 +179,41 @@ pub fn handle_read(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_len
 }
 
 /// Handle file write operation.
-pub fn handle_write(handle_id: u32, buf_ptr: usize, buf_len: usize) -> isize {
+pub fn handle_write(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_len: usize) -> isize {
     let buf_ptr = buf_ptr as *const u8;
+    let process_id = scheduler::current_process_id();
 
+    // Try async block device I/O first
+    let async_result = scheduler::with_current_process(|proc| {
+        let handle = proc.handles_mut().get_mut(handle_id)?;
+        let block_device = handle.as_block_device()?;
+
+        if !block_device.supports_async() {
+            return Some(AsyncIoResult::NotSupported);
+        }
+
+        let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len) };
+        let offset = handle.offset();
+        let result = try_async_write(block_device, offset, buf, process_id);
+
+        // Update offset on success
+        if let AsyncIoResult::Completed(n) = &result {
+            handle.set_offset(offset + *n as u64);
+        }
+        Some(result)
+    });
+
+    // Handle async result
+    if let Some(result) = async_result {
+        match result {
+            AsyncIoResult::Completed(n) => return n as isize,
+            AsyncIoResult::WouldBlock(waker) => ctx.block_on(waker),
+            AsyncIoResult::Error => return -1,
+            AsyncIoResult::NotSupported => {}
+        }
+    }
+
+    // Sync path
     scheduler::with_current_process(|proc| {
         let Some(handle) = proc.handles_mut().get_mut(handle_id) else {
             return -1;
@@ -98,7 +236,7 @@ pub fn handle_write(handle_id: u32, buf_ptr: usize, buf_len: usize) -> isize {
                 Err(_) => -1,
             }
         } else {
-            -1 // Resource doesn't support writing
+            -1
         }
     })
 }

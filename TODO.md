@@ -8,7 +8,7 @@ Working:
 - Syscall ABI with callee-saved register preservation
 - VFS with tarfs (initrd), resource scheme system
 - Virtio GPU with Surface API (blit, fill, flush), virtio keyboard with blocking reads
-- Virtio block device driver with byte-level access (sector alignment handled internally)
+- Virtio block device driver with async I/O (interrupt-driven, non-blocking)
 - Process handles: spawn returns handle, OP_PROCESS_WAIT blocks until child exits
 - Userspace: libpanda, init, terminal (with keyboard input and font rendering), 12 test suites
 
@@ -28,9 +28,17 @@ Not yet implemented:
 
 5. **Implement block device discovery**: Add `readdir` support to `BlockScheme` to list available block devices via `block:/` path. Currently devices must be accessed by known PCI address (e.g., `block:/pci/00:04.0`).
 
+6. **Block I/O: Scatter-gather support**: Submit multiple non-contiguous sectors in one virtio request for better throughput.
+
+7. **Block I/O: Read-ahead**: Prefetch subsequent sectors while returning current data to reduce latency for sequential reads.
+
+8. **Block I/O: Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
+
+9. **Remove identity-mapping assumption**: Update `DmaBuffer` and `VirtioHal` to properly translate between virtual and physical addresses, enabling future IOMMU support.
+
 ## Technical debt
 
-No known technical debt
+- **Cargo.toml workspace profile warnings**: Several userspace test packages have profile settings that should be moved to the workspace root Cargo.toml.
 
 ## Known issues
 

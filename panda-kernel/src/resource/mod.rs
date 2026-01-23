@@ -46,6 +46,11 @@ pub trait Resource: Send + Sync {
         None
     }
 
+    /// Get this resource as a BlockDevice (for async sector-level I/O).
+    fn as_block_device(&self) -> Option<&dyn BlockDevice> {
+        None
+    }
+
     /// Get this resource as an EventSource (for keyboard, mouse, timers).
     fn as_event_source(&self) -> Option<&dyn EventSource> {
         None

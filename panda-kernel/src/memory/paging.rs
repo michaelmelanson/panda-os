@@ -134,6 +134,36 @@ pub fn update_permissions(
     }
 }
 
+/// Check if a virtual address is already mapped (including via huge pages).
+/// Returns true if the address can be accessed without a page fault.
+fn is_mapped(addr: VirtAddr) -> bool {
+    let mut page_table = unsafe { &*current_page_table() };
+    let mut level = PageTableLevel::Four;
+
+    loop {
+        let entry = &page_table[addr.page_table_index(level)];
+
+        if !entry.flags().contains(PageTableFlags::PRESENT) {
+            return false;
+        }
+
+        // Check for huge page at level 2 (2MB) or level 3 (1GB)
+        if (level == PageTableLevel::Two || level == PageTableLevel::Three)
+            && entry.flags().contains(PageTableFlags::HUGE_PAGE)
+        {
+            return true; // Huge page covers this address
+        }
+
+        let next_level = PageTableLevel::next_lower_level(level);
+        if next_level.is_none() {
+            return true; // Reached L1, address is mapped
+        }
+
+        level = next_level.unwrap();
+        page_table = unsafe { &*(entry.addr().as_u64() as *const PageTable) };
+    }
+}
+
 /// Map physical memory to virtual address (internal implementation).
 fn map_inner(
     base_phys_addr: PhysAddr,
@@ -153,6 +183,11 @@ fn map_inner(
     for i in (0..size_bytes).step_by(4096) {
         let phys_addr = base_phys_addr + i as u64;
         let virt_addr = base_virt_addr + i as u64;
+
+        // Skip if already mapped (e.g., by UEFI huge pages)
+        if is_mapped(virt_addr) {
+            continue;
+        }
 
         let mut flags = PageTableFlags::PRESENT;
         if options.user {
@@ -247,6 +282,9 @@ fn leaf_page_table_entry(
 }
 
 /// Get or create the L1 page table entry for a virtual address.
+///
+/// Note: This function assumes the address is NOT covered by a huge page.
+/// Call `is_mapped()` first to check if the address is already accessible.
 fn l1_page_table_entry(
     addr: VirtAddr,
     flags: PageTableFlags,

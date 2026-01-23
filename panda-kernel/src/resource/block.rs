@@ -1,6 +1,10 @@
 //! Block interface for random-access data (files, disks, memory regions).
 
+use alloc::sync::Arc;
 use alloc::vec;
+
+use crate::process::ProcessId;
+use crate::process::waker::Waker;
 
 /// Errors that can occur during block operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +17,8 @@ pub enum BlockError {
     NotReadable,
     /// I/O error during operation.
     IoError,
+    /// Operation would block - request submitted, caller should block on waker.
+    WouldBlock,
 }
 
 /// Interface for random-access block data.
@@ -45,6 +51,12 @@ pub trait Block: Send + Sync {
 ///
 /// Implemented by device drivers (virtio-blk, AHCI, NVMe).
 /// Use [`BlockDeviceWrapper`] to get a byte-level [`Block`] interface.
+///
+/// # Synchronous vs Asynchronous Operations
+///
+/// The basic `read_sectors`/`write_sectors` methods are synchronous (may busy-wait).
+/// For async I/O that blocks the calling process, use the `*_async` methods which
+/// return `WouldBlock` when the request is submitted but not yet complete.
 pub trait BlockDevice: Send + Sync {
     /// Read sectors starting at `start_sector` into `buf`.
     ///
@@ -65,6 +77,83 @@ pub trait BlockDevice: Send + Sync {
     /// Flush any cached writes to storage.
     fn flush(&self) -> Result<(), BlockError> {
         Ok(())
+    }
+
+    // =========================================================================
+    // Async I/O methods - optional, default returns error if not implemented
+    // =========================================================================
+
+    /// Submit an async read request.
+    ///
+    /// Returns `Ok(())` if completed immediately, or `Err(WouldBlock)` if the
+    /// request was submitted and the caller should block on the waker.
+    /// The waker will be signaled when the request completes.
+    ///
+    /// After being woken, call `complete_pending_read` to get the data.
+    ///
+    /// Default implementation returns `Err(IoError)` - devices must override
+    /// this method to support async I/O.
+    fn read_sectors_async(
+        &self,
+        _start_sector: u64,
+        _buf: &mut [u8],
+        _process_id: ProcessId,
+        _waker: Arc<Waker>,
+    ) -> Result<(), BlockError> {
+        Err(BlockError::IoError)
+    }
+
+    /// Submit an async write request.
+    ///
+    /// Returns `Ok(())` if completed immediately, or `Err(WouldBlock)` if the
+    /// request was submitted and the caller should block on the waker.
+    ///
+    /// Default implementation returns `Err(IoError)` - devices must override
+    /// this method to support async I/O.
+    fn write_sectors_async(
+        &self,
+        _start_sector: u64,
+        _buf: &[u8],
+        _process_id: ProcessId,
+        _waker: Arc<Waker>,
+    ) -> Result<(), BlockError> {
+        Err(BlockError::IoError)
+    }
+
+    /// Complete a pending read operation.
+    ///
+    /// Called after being woken from `read_sectors_async`. Copies the data
+    /// from the DMA buffer to the user buffer.
+    ///
+    /// Returns `Ok(Some(()))` if completed, `Ok(None)` if still pending or
+    /// no pending request found for this process.
+    ///
+    /// Default implementation returns `Err(IoError)` - devices must override
+    /// this method to support async I/O.
+    fn complete_pending_read(
+        &self,
+        _process_id: ProcessId,
+        _buf: &mut [u8],
+    ) -> Result<Option<()>, BlockError> {
+        Err(BlockError::IoError)
+    }
+
+    /// Complete a pending write operation.
+    ///
+    /// Called after being woken from `write_sectors_async`.
+    ///
+    /// Returns `Ok(Some(()))` if completed, `Ok(None)` if still pending or
+    /// no pending request found for this process.
+    ///
+    /// Default implementation returns `Err(IoError)` - devices must override
+    /// this method to support async I/O.
+    fn complete_pending_write(&self, _process_id: ProcessId) -> Result<Option<()>, BlockError> {
+        Err(BlockError::IoError)
+    }
+
+    /// Check if this device supports async I/O.
+    fn supports_async(&self) -> bool {
+        false
     }
 }
 
