@@ -15,7 +15,8 @@ use log::debug;
 use x86_64::{PhysAddr, VirtAddr};
 
 use super::address_space::MMIO_REGION_BASE;
-use super::{MemoryMappingOptions, map};
+use super::paging::map_external;
+use super::{Mapping, MemoryMappingOptions};
 
 /// Next available virtual address in the MMIO region.
 /// This is a simple bump allocator - MMIO mappings are typically not freed.
@@ -50,6 +51,9 @@ fn allocate_mmio_vaddr(size: usize) -> VirtAddr {
 pub struct MmioMapping {
     virt_addr: VirtAddr,
     size: usize,
+    // The underlying Mapping handles the page table entries.
+    // We leak it on drop since MMIO regions typically persist.
+    _mapping: Mapping,
 }
 
 impl MmioMapping {
@@ -71,8 +75,8 @@ impl MmioMapping {
         // Allocate virtual address space in the MMIO region
         let aligned_virt = allocate_mmio_vaddr(aligned_size);
 
-        // Map the region with appropriate flags for device memory
-        map(
+        // Create the mapping using map_external (returns Mapping with Mmio backing)
+        let mapping = map_external(
             aligned_phys,
             aligned_virt,
             aligned_size,
@@ -93,7 +97,11 @@ impl MmioMapping {
             size
         );
 
-        Self { virt_addr, size }
+        Self {
+            virt_addr,
+            size,
+            _mapping: mapping,
+        }
     }
 
     /// Get the virtual address of the mapping.
@@ -173,8 +181,6 @@ impl MmioMapping {
     }
 }
 
-// Note: We intentionally don't implement Drop to unmap the region.
-// MMIO mappings typically persist for the lifetime of the device driver,
-// and the bump allocator doesn't support deallocation. If needed in the
-// future, we can add a more sophisticated allocator that tracks free regions
-// in kernel heap memory.
+// MmioMapping stores the Mapping, so when MmioMapping is dropped, the Mapping
+// is dropped too and the region is unmapped. If you need the mapping to persist,
+// use core::mem::forget(mmio_mapping).

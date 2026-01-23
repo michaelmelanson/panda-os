@@ -29,13 +29,14 @@ pub use frame::Frame;
 pub use mapping::{Mapping, MappingBacking};
 pub use mmio::MmioMapping;
 pub use paging::{
-    allocate_and_map, create_user_page_table, current_page_table_phys, free_region, map,
-    map_external, switch_page_table, try_handle_heap_page_fault, try_handle_stack_page_fault,
-    unmap_page, unmap_region, update_permissions, without_write_protection,
+    allocate_and_map, create_user_page_table, current_page_table_phys, free_region, map_external,
+    switch_page_table, try_handle_heap_page_fault, try_handle_stack_page_fault, unmap_page,
+    unmap_region, update_permissions, without_write_protection,
 };
 pub use phys::{PhysicalMapping, PhysicalSlice};
 
 /// Mapping options for memory regions.
+#[derive(Clone, Copy)]
 pub struct MemoryMappingOptions {
     pub user: bool,
     pub executable: bool,

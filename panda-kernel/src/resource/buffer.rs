@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use x86_64::VirtAddr;
 
-use crate::memory::{self, Frame, MemoryMappingOptions, map, unmap_page};
+use crate::memory::{self, Frame, Mapping, MappingBacking, MemoryMappingOptions, map_external};
 use crate::process::Process;
 
 use super::Resource;
@@ -56,8 +56,9 @@ pub struct SharedBuffer {
     logical_size: AtomicUsize,
     /// Base virtual address for userspace mapping.
     user_vaddr: VirtAddr,
-    /// Whether currently mapped into userspace.
-    is_mapped: bool,
+    /// The mapping for the userspace virtual address range.
+    /// When dropped, this unmaps the pages.
+    _mapping: Mapping,
     /// Weak self-reference for returning Arc<SharedBuffer> from trait methods.
     self_ref: Weak<SharedBuffer>,
 }
@@ -87,8 +88,8 @@ impl SharedBuffer {
             .alloc_buffer_vaddr(num_pages)
             .ok_or(BufferError::AllocationFailed)?;
 
-        // Map the pages into userspace
-        Self::map_frames(&frames, user_vaddr);
+        // Map all pages into userspace as a contiguous region
+        let mapping = Self::map_frames(&frames, user_vaddr);
 
         let mapped_addr = user_vaddr.as_u64() as usize;
 
@@ -96,7 +97,7 @@ impl SharedBuffer {
             frames,
             logical_size: AtomicUsize::new(size),
             user_vaddr,
-            is_mapped: true,
+            _mapping: mapping,
             self_ref: weak.clone(),
         });
 
@@ -104,21 +105,29 @@ impl SharedBuffer {
     }
 
     /// Map frames into userspace at the given virtual address.
-    fn map_frames(frames: &[Frame], vaddr: VirtAddr) {
-        let mut current_vaddr = vaddr;
+    /// Returns a Mapping that will unmap the region when dropped.
+    fn map_frames(frames: &[Frame], vaddr: VirtAddr) -> Mapping {
+        let options = MemoryMappingOptions {
+            user: true,
+            executable: false,
+            writable: true,
+        };
 
+        // Map each frame individually (they may not be physically contiguous)
+        let mut current_vaddr = vaddr;
         for frame in frames {
-            let options = MemoryMappingOptions {
-                user: true,
-                executable: false,
-                writable: true,
-            };
-            // Map each frame as a single page (using non-RAII map function)
-            map(frame.start_address(), current_vaddr, 4096, options);
+            // Use map_external for each page - it returns a Mapping but we'll
+            // create our own combined Mapping at the end
+            let page_mapping = map_external(frame.start_address(), current_vaddr, 4096, options);
+            // Leak individual page mappings - we'll track the whole region
+            core::mem::forget(page_mapping);
             current_vaddr += 4096u64;
         }
-    }
 
+        // Return a single Mapping covering the entire region
+        // Using Mmio backing since frames are owned separately
+        Mapping::new(vaddr, frames.len() * 4096, MappingBacking::Mmio)
+    }
 }
 
 impl Buffer for SharedBuffer {
@@ -177,16 +186,6 @@ impl Resource for SharedBuffer {
     }
 }
 
-impl Drop for SharedBuffer {
-    fn drop(&mut self) {
-        // Unmap pages from userspace
-        if self.is_mapped {
-            let mut current_vaddr = self.user_vaddr;
-            for _ in &self.frames {
-                unmap_page(current_vaddr);
-                current_vaddr += 4096u64;
-            }
-        }
-        // Frames are dropped automatically, releasing physical memory
-    }
-}
+// Drop is handled automatically:
+// - _mapping is dropped, which unmaps the pages
+// - frames are dropped, which deallocates physical memory

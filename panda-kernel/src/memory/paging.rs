@@ -88,19 +88,6 @@ pub fn without_write_protection(f: impl FnOnce()) {
     }
 }
 
-/// Map physical memory to virtual address.
-///
-/// Note: This does not return an RAII guard. For managed mappings, use
-/// `allocate_and_map` or `map_external` instead.
-pub fn map(
-    base_phys_addr: PhysAddr,
-    base_virt_addr: VirtAddr,
-    size_bytes: usize,
-    options: MemoryMappingOptions,
-) {
-    map_inner(base_phys_addr, base_virt_addr, size_bytes, &options);
-}
-
 /// Update permissions for already-mapped pages.
 /// This is used when ELF segments overlap and need merged permissions.
 pub fn update_permissions(
@@ -542,7 +529,7 @@ pub fn try_handle_heap_page_fault(fault_addr: VirtAddr, brk: VirtAddr) -> bool {
     let phys_addr = PhysAddr::new(frame.phys_frame().start_address().as_u64());
 
     // Map it to the faulting address (user, writable, no-execute)
-    map(
+    let mapping = map_external(
         phys_addr,
         page_addr,
         4096,
@@ -558,9 +545,10 @@ pub fn try_handle_heap_page_fault(fault_addr: VirtAddr, brk: VirtAddr) -> bool {
         core::ptr::write_bytes(page_addr.as_u64() as *mut u8, 0, 4096);
     }
 
-    // Intentionally leak the frame - it's now owned by the page tables
+    // Intentionally leak the frame and mapping - they're now owned by the page tables
     // and will be freed when the heap shrinks or process exits via free_region()
     core::mem::forget(frame);
+    core::mem::forget(mapping);
 
     true
 }
@@ -585,7 +573,7 @@ pub fn try_handle_stack_page_fault(fault_addr: VirtAddr) -> bool {
     let phys_addr = PhysAddr::new(frame.phys_frame().start_address().as_u64());
 
     // Map it to the faulting address (user, writable, no-execute)
-    map(
+    let mapping = map_external(
         phys_addr,
         page_addr,
         4096,
@@ -601,9 +589,10 @@ pub fn try_handle_stack_page_fault(fault_addr: VirtAddr) -> bool {
         core::ptr::write_bytes(page_addr.as_u64() as *mut u8, 0, 4096);
     }
 
-    // Intentionally leak the frame - it's now owned by the page tables
+    // Intentionally leak the frame and mapping - they're now owned by the page tables
     // and will be freed when the process exits via free_region()
     core::mem::forget(frame);
+    core::mem::forget(mapping);
 
     true
 }
