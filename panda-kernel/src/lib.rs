@@ -53,7 +53,7 @@ pub fn init() {
     let uefi_info = uefi::exit_boot_services();
 
     unsafe {
-        memory::init_from_uefi(&uefi_info.memory_map);
+        memory::init_from_uefi(&uefi_info);
     }
 
     acpi::init(uefi_info.acpi2_rsdp.expect("No ACPI2 RSDP"));

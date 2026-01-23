@@ -4,6 +4,7 @@ use uefi::{
     CStr16,
     boot::{self, AllocateType, MemoryType},
     mem::memory_map::MemoryMapOwned,
+    proto::loaded_image::LoadedImage,
     proto::media::file::{File, FileAttribute, FileInfo, FileMode},
 };
 use x86_64::PhysAddr;
@@ -11,6 +12,28 @@ use x86_64::PhysAddr;
 pub struct UefiInfo {
     pub acpi2_rsdp: Option<PhysAddr>,
     pub memory_map: MemoryMapOwned,
+    pub kernel_image: KernelImageInfo,
+}
+
+/// Information about the loaded kernel image.
+#[derive(Debug, Clone, Copy)]
+pub struct KernelImageInfo {
+    /// Base address where the kernel was loaded (identity-mapped).
+    pub image_base: *const u8,
+    /// Size of the kernel image in bytes.
+    pub image_size: u64,
+}
+
+/// Get information about the loaded kernel image.
+/// Must be called before exit_boot_services.
+pub fn get_kernel_image_info() -> KernelImageInfo {
+    let loaded_image = boot::open_protocol_exclusive::<LoadedImage>(boot::image_handle())
+        .expect("failed to open LoadedImage protocol");
+    let (base, size) = loaded_image.info();
+    KernelImageInfo {
+        image_base: base.cast(),
+        image_size: size,
+    }
 }
 
 /// Initialize UEFI helpers. Call this before using other UEFI functions.
@@ -26,6 +49,9 @@ pub fn load_initrd() -> *const [u8] {
 
 /// Exit UEFI boot services and return system info. After this, UEFI boot services are unavailable.
 pub fn exit_boot_services() -> UefiInfo {
+    // Get kernel image info BEFORE exiting boot services (requires UEFI protocols)
+    let kernel_image = get_kernel_image_info();
+
     let system_table = ::uefi::table::system_table_raw().expect("No UEFI system table");
     let system_table = unsafe { system_table.as_ref() };
 
@@ -52,6 +78,7 @@ pub fn exit_boot_services() -> UefiInfo {
     UefiInfo {
         acpi2_rsdp,
         memory_map,
+        kernel_image,
     }
 }
 

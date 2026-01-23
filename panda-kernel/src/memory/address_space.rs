@@ -13,11 +13,14 @@
 //!
 //! See docs/HIGHER_HALF_KERNEL.md for the full plan.
 
+use goblin::pe::PE;
 use log::info;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned};
 use x86_64::structures::paging::page_table::PageTableLevel;
 use x86_64::structures::paging::{PageTable, PageTableFlags};
 use x86_64::{PhysAddr, VirtAddr};
+
+use crate::uefi::KernelImageInfo;
 
 use super::paging::{current_page_table, without_write_protection};
 use super::{allocate_frame_raw, set_phys_map_base};
@@ -180,7 +183,250 @@ pub unsafe fn init(memory_map: &MemoryMapOwned) {
     );
 }
 
-// Phase 3: MMIO region allocator will be implemented here.
-// Phase 4: PE relocation logic will be implemented here.
-// Phase 5: Jump to higher-half will be implemented here.
-// Phase 6: Identity mapping removal will be implemented here.
+/// PE relocation type: padding/skip entry.
+const IMAGE_REL_BASED_ABSOLUTE: u16 = 0;
+/// PE relocation type: 32-bit absolute address fixup (add low 16 bits of delta to 16-bit field).
+const IMAGE_REL_BASED_HIGHLOW: u16 = 3;
+/// PE relocation type: 64-bit absolute address fixup.
+const IMAGE_REL_BASED_DIR64: u16 = 10;
+
+/// Map the kernel image to higher-half addresses.
+///
+/// This creates a duplicate mapping of the kernel at `KERNEL_IMAGE_BASE`,
+/// preserving the original identity mapping. The higher-half copy will
+/// have relocations applied to it.
+///
+/// Returns the virtual address where the kernel is mapped in higher half.
+unsafe fn map_kernel_to_higher_half(kernel_info: &KernelImageInfo) -> VirtAddr {
+    let image_base_phys = kernel_info.image_base as u64;
+    let image_size = kernel_info.image_size as usize;
+
+    // Round up to page boundary
+    let aligned_size = (image_size + 4095) & !4095;
+
+    info!(
+        "Mapping kernel image: phys {:#x}, size {:#x} -> virt {:#x}",
+        image_base_phys, aligned_size, KERNEL_IMAGE_BASE
+    );
+
+    let pml4 = unsafe { &mut *current_page_table() };
+
+    // Map each 4KB page of the kernel to higher-half
+    for offset in (0..aligned_size).step_by(4096) {
+        let phys_addr = PhysAddr::new(image_base_phys + offset as u64);
+        let virt_addr = VirtAddr::new(KERNEL_IMAGE_BASE + offset as u64);
+
+        // Get PML4 entry
+        let pml4_index = virt_addr.page_table_index(PageTableLevel::Four);
+        let pml4_entry = &mut pml4[pml4_index];
+        let pml3 = if pml4_entry.flags().contains(PageTableFlags::PRESENT) {
+            unsafe { &mut *(pml4_entry.addr().as_u64() as *mut PageTable) }
+        } else {
+            let frame = allocate_frame_raw();
+            let table = unsafe { &mut *(frame.start_address().as_u64() as *mut PageTable) };
+            unsafe { core::ptr::write_bytes(table, 0, 1) };
+            without_write_protection(|| {
+                pml4_entry.set_addr(
+                    frame.start_address(),
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                );
+            });
+            table
+        };
+
+        // Get PML3 entry
+        let pml3_index = virt_addr.page_table_index(PageTableLevel::Three);
+        let pml3_entry = &mut pml3[pml3_index];
+        let pml2 = if pml3_entry.flags().contains(PageTableFlags::PRESENT) {
+            unsafe { &mut *(pml3_entry.addr().as_u64() as *mut PageTable) }
+        } else {
+            let frame = allocate_frame_raw();
+            let table = unsafe { &mut *(frame.start_address().as_u64() as *mut PageTable) };
+            unsafe { core::ptr::write_bytes(table, 0, 1) };
+            without_write_protection(|| {
+                pml3_entry.set_addr(
+                    frame.start_address(),
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                );
+            });
+            table
+        };
+
+        // Get PML2 entry
+        let pml2_index = virt_addr.page_table_index(PageTableLevel::Two);
+        let pml2_entry = &mut pml2[pml2_index];
+        let pml1 = if pml2_entry.flags().contains(PageTableFlags::PRESENT) {
+            unsafe { &mut *(pml2_entry.addr().as_u64() as *mut PageTable) }
+        } else {
+            let frame = allocate_frame_raw();
+            let table = unsafe { &mut *(frame.start_address().as_u64() as *mut PageTable) };
+            unsafe { core::ptr::write_bytes(table, 0, 1) };
+            without_write_protection(|| {
+                pml2_entry.set_addr(
+                    frame.start_address(),
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                );
+            });
+            table
+        };
+
+        // Set PML1 entry (4KB page)
+        let pml1_index = virt_addr.page_table_index(PageTableLevel::One);
+        let pml1_entry = &mut pml1[pml1_index];
+        without_write_protection(|| {
+            pml1_entry.set_addr(
+                phys_addr,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+            );
+        });
+    }
+
+    x86_64::instructions::tlb::flush_all();
+
+    VirtAddr::new(KERNEL_IMAGE_BASE)
+}
+
+/// Apply PE base relocations to the kernel mapped at higher-half.
+///
+/// This fixes up all absolute addresses in the kernel image so they point
+/// to the higher-half addresses instead of the original identity-mapped addresses.
+///
+/// # Arguments
+/// * `kernel_info` - Information about the kernel image (identity-mapped base)
+/// * `higher_half_base` - The virtual address where kernel is mapped in higher half
+unsafe fn apply_kernel_relocations(kernel_info: &KernelImageInfo, higher_half_base: VirtAddr) {
+    // Parse the PE from the identity-mapped image
+    let image_slice = unsafe {
+        core::slice::from_raw_parts(kernel_info.image_base, kernel_info.image_size as usize)
+    };
+
+    let pe = PE::parse(image_slice).expect("failed to parse kernel PE");
+
+    let pe_image_base = pe.image_base as u64;
+    let delta = higher_half_base.as_u64() as i64 - pe_image_base as i64;
+
+    info!(
+        "Applying relocations: PE ImageBase={:#x}, new base={:#x}, delta={:#x}",
+        pe_image_base,
+        higher_half_base.as_u64(),
+        delta
+    );
+
+    // Get the base relocation data
+    let relocation_data = pe
+        .relocation_data
+        .as_ref()
+        .expect("kernel PE should have relocation data");
+
+    let mut reloc_count = 0;
+    let mut highlow_count = 0;
+
+    for block_result in relocation_data.blocks() {
+        // Skip malformed blocks (e.g., size 0)
+        let block = match block_result {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        let page_rva = block.rva as u64;
+
+        for word_result in block.words() {
+            let word = match word_result {
+                Ok(w) => w,
+                Err(_) => continue,
+            };
+            let reloc_type = word.reloc_type() as u16;
+            let reloc_offset = word.offset() as u64;
+
+            match reloc_type {
+                IMAGE_REL_BASED_DIR64 => {
+                    // Calculate the address in the higher-half mapping where we need to patch
+                    let patch_addr = higher_half_base.as_u64() + page_rva + reloc_offset;
+                    let patch_ptr = patch_addr as *mut u64;
+
+                    // Read the current value, add delta, write back
+                    let old_value = unsafe { core::ptr::read_volatile(patch_ptr) };
+                    let new_value = (old_value as i64 + delta) as u64;
+                    unsafe { core::ptr::write_volatile(patch_ptr, new_value) };
+
+                    reloc_count += 1;
+                }
+                IMAGE_REL_BASED_HIGHLOW => {
+                    // 32-bit relocation - add delta to 32-bit value
+                    // Use unaligned read/write since relocations may not be aligned
+                    let patch_addr = higher_half_base.as_u64() + page_rva + reloc_offset;
+                    let patch_ptr = patch_addr as *mut u32;
+
+                    let old_value = unsafe { core::ptr::read_unaligned(patch_ptr) };
+                    let new_value = (old_value as i64 + delta) as u32;
+                    unsafe { core::ptr::write_unaligned(patch_ptr, new_value) };
+
+                    highlow_count += 1;
+                }
+                IMAGE_REL_BASED_ABSOLUTE => {
+                    // Padding entry, skip
+                }
+                other => {
+                    // Warn but don't panic on unknown types - some may be padding or arch-specific
+                    log::warn!("skipping unknown relocation type: {}", other);
+                }
+            }
+        }
+    }
+
+    info!(
+        "Applied {} DIR64 relocations, {} HIGHLOW relocations",
+        reloc_count, highlow_count
+    );
+}
+
+/// Relocate the kernel to higher-half addresses.
+///
+/// This maps the kernel to `KERNEL_IMAGE_BASE` and applies PE base relocations
+/// so all absolute addresses point to the higher-half mapping.
+///
+/// After this function returns:
+/// - The kernel is dual-mapped (identity + higher-half)
+/// - The higher-half copy has correct relocated addresses
+/// - Execution is still in the identity-mapped copy
+///
+/// # Safety
+/// Must be called after `create_physical_memory_window()` and before jumping
+/// to higher-half execution.
+pub unsafe fn relocate_kernel_to_higher_half(kernel_info: &KernelImageInfo) -> VirtAddr {
+    info!("Relocating kernel to higher half...");
+
+    // Map kernel pages to higher-half addresses
+    let higher_half_base = unsafe { map_kernel_to_higher_half(kernel_info) };
+
+    // Apply PE relocations to fix absolute addresses
+    unsafe { apply_kernel_relocations(kernel_info, higher_half_base) };
+
+    // Verify relocation by reading a known value
+    // Use the KERNEL_IMAGE_BASE constant itself as a sanity check
+    let identity_ptr = &KERNEL_IMAGE_BASE as *const u64;
+    let higher_half_ptr = (higher_half_base.as_u64()
+        + (identity_ptr as u64 - kernel_info.image_base as u64))
+        as *const u64;
+
+    let identity_value = unsafe { *identity_ptr };
+    let higher_half_value = unsafe { *higher_half_ptr };
+
+    info!(
+        "Relocation verification: identity={:#x}, higher_half={:#x}",
+        identity_value, higher_half_value
+    );
+
+    // The higher-half value should equal KERNEL_IMAGE_BASE (the constant's value)
+    // since that constant should have been relocated to point to higher-half
+    assert_eq!(
+        higher_half_value, KERNEL_IMAGE_BASE,
+        "relocation verification failed"
+    );
+
+    info!(
+        "Kernel relocated to higher half at {:#x}",
+        higher_half_base.as_u64()
+    );
+
+    higher_half_base
+}

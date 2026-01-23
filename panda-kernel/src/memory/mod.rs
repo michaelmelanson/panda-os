@@ -24,7 +24,10 @@ pub use address::{
     get_phys_map_base, inspect_virtual_address, physical_address_to_virtual, set_phys_map_base,
     virtual_address_to_physical,
 };
-pub use address_space::{KERNEL_HEAP_BASE, KERNEL_IMAGE_BASE, MMIO_REGION_BASE, PHYS_WINDOW_BASE};
+pub use address_space::{
+    KERNEL_HEAP_BASE, KERNEL_IMAGE_BASE, MMIO_REGION_BASE, PHYS_WINDOW_BASE,
+    relocate_kernel_to_higher_half,
+};
 pub use frame::Frame;
 pub use mapping::{Mapping, MappingBacking};
 pub use mmio::MmioMapping;
@@ -43,19 +46,21 @@ pub struct MemoryMappingOptions {
     pub writable: bool,
 }
 
-/// Initialize memory subsystem from UEFI memory map.
+/// Initialize memory subsystem from UEFI info.
 ///
 /// # Safety
 /// Must be called exactly once during kernel initialization.
-pub unsafe fn init_from_uefi(memory_map: &uefi::mem::memory_map::MemoryMapOwned) {
-    let (heap_phys_base, heap_size) = heap_allocator::init_from_uefi(memory_map);
+pub unsafe fn init_from_uefi(uefi_info: &crate::uefi::UefiInfo) {
+    let (heap_phys_base, heap_size) = heap_allocator::init_from_uefi(&uefi_info.memory_map);
     unsafe {
         global_alloc::init(heap_phys_base, heap_size);
         x86_64::registers::control::Efer::update(|efer| {
             efer.insert(x86_64::registers::control::EferFlags::NO_EXECUTE_ENABLE)
         });
         // Create the physical memory window in higher-half address space
-        address_space::init(memory_map);
+        address_space::init(&uefi_info.memory_map);
+        // Relocate kernel to higher-half (Phase 4)
+        address_space::relocate_kernel_to_higher_half(&uefi_info.kernel_image);
     }
 }
 
