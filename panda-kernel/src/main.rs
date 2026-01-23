@@ -55,10 +55,17 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
     let acpi2_rsdp = x86_64::PhysAddr::new(ACPI2_RSDP.load(Ordering::SeqCst));
     panda_kernel::init_after_higher_half_jump(acpi2_rsdp);
 
-    // Reconstruct initrd pointer
-    let initrd_ptr = INITRD_DATA.load(Ordering::SeqCst) as *const u8;
+    // Reconstruct initrd pointer - translate from identity-mapped to physical window
+    // The identity-mapped address IS the physical address, so we can use it directly
+    let initrd_phys = INITRD_DATA.load(Ordering::SeqCst);
     let initrd_len = INITRD_LEN.load(Ordering::SeqCst) as usize;
-    let initrd_data: *const [u8] = core::ptr::slice_from_raw_parts(initrd_ptr, initrd_len);
+    let initrd_virt = memory::physical_address_to_virtual(x86_64::PhysAddr::new(initrd_phys));
+    let initrd_data: *const [u8] =
+        core::ptr::slice_from_raw_parts(initrd_virt.as_ptr(), initrd_len);
+
+    // Remove identity mapping now that we're running in higher-half
+    // and all pointers have been translated to use the physical window
+    unsafe { memory::remove_identity_mapping() };
 
     initrd::init(initrd_data);
 

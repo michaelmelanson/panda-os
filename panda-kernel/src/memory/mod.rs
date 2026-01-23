@@ -27,7 +27,7 @@ pub use address::{
 pub use address_space::{
     KERNEL_HEAP_BASE, KERNEL_IMAGE_BASE, MMIO_REGION_BASE, PHYS_WINDOW_BASE,
     get_kernel_image_phys_base, identity_to_higher_half, jump_to_higher_half,
-    relocate_kernel_to_higher_half,
+    relocate_kernel_to_higher_half, remove_identity_mapping,
 };
 pub use frame::Frame;
 pub use mapping::{Mapping, MappingBacking};
@@ -54,12 +54,26 @@ pub struct MemoryMappingOptions {
 pub unsafe fn init_from_uefi(uefi_info: &crate::uefi::UefiInfo) {
     let (heap_phys_base, heap_size) = heap_allocator::init_from_uefi(&uefi_info.memory_map);
     unsafe {
-        global_alloc::init(heap_phys_base, heap_size);
         x86_64::registers::control::Efer::update(|efer| {
             efer.insert(x86_64::registers::control::EferFlags::NO_EXECUTE_ENABLE)
         });
+
+        // Store heap physical base for address translation
+        address::set_heap_phys_base(heap_phys_base as u64);
+
+        // Map heap to KERNEL_HEAP_BASE before initializing the allocator.
+        // This way the heap uses higher-half addresses from the start.
+        // Reserve 2MB at the end for early page table allocations.
+        const EARLY_RESERVE: usize = 2 * 1024 * 1024;
+        address_space::map_heap_region(heap_phys_base as u64, heap_size as u64);
+        global_alloc::init(
+            address_space::KERNEL_HEAP_BASE as usize,
+            heap_size - EARLY_RESERVE,
+        );
+
         // Create the physical memory window in higher-half address space
         address_space::init(&uefi_info.memory_map);
+
         // Relocate kernel to higher-half (Phase 4)
         address_space::relocate_kernel_to_higher_half(&uefi_info.kernel_image);
     }
@@ -74,16 +88,16 @@ pub fn allocate_frame() -> Frame {
 /// Allocate physical memory with RAII guard.
 pub fn allocate_physical(layout: Layout) -> Frame {
     let virt_addr = global_alloc::allocate(layout);
-    let phys_addr = PhysAddr::new(virt_addr.as_u64());
+    let phys_addr = virtual_address_to_physical(virt_addr);
     let frame = PhysFrame::from_start_address(phys_addr).unwrap();
-    unsafe { Frame::new(frame, layout) }
+    unsafe { Frame::new(frame, virt_addr, layout) }
 }
 
 /// Allocate a raw frame without RAII (for page table internals).
 fn allocate_frame_raw() -> PhysFrame {
     let layout = Layout::from_size_align(4096, 4096).unwrap();
     let virt_addr = global_alloc::allocate(layout);
-    let phys_addr = PhysAddr::new(virt_addr.as_u64());
+    let phys_addr = virtual_address_to_physical(virt_addr);
     PhysFrame::from_start_address(phys_addr).unwrap()
 }
 
@@ -93,7 +107,8 @@ fn allocate_frame_raw() -> PhysFrame {
 /// The frame must have been allocated with allocate_frame_raw().
 unsafe fn deallocate_frame_raw(frame: PhysFrame) {
     let layout = Layout::from_size_align(4096, 4096).unwrap();
-    let ptr = physical_address_to_virtual(frame.start_address()).as_mut_ptr();
+    // Must use the heap virtual address, not the physical window address
+    let ptr = address::heap_phys_to_virt(frame.start_address()).as_mut_ptr();
     unsafe {
         alloc::alloc::dealloc(ptr, layout);
     }

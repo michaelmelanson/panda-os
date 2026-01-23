@@ -14,12 +14,13 @@
 //! See docs/HIGHER_HALF_KERNEL.md for the full plan.
 
 use core::arch::asm;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use goblin::pe::PE;
 use log::info;
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned};
 use x86_64::structures::paging::page_table::PageTableLevel;
-use x86_64::structures::paging::{PageTable, PageTableFlags};
+use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::uefi::KernelImageInfo;
@@ -27,7 +28,36 @@ use crate::uefi::KernelImageInfo;
 use super::paging::{current_page_table, without_write_protection};
 use super::{allocate_frame_raw, set_phys_map_base};
 
-use core::sync::atomic::{AtomicU64, Ordering};
+/// Early boot frame allocator - uses a bump allocator from the end of the heap region.
+/// This is used before the heap is initialized to allocate page tables for mapping the heap.
+static EARLY_FRAME_ALLOC_PTR: AtomicU64 = AtomicU64::new(0);
+static EARLY_FRAME_ALLOC_END: AtomicU64 = AtomicU64::new(0);
+
+/// Initialize the early boot frame allocator.
+/// Reserves space at the end of the heap physical region for early page tables.
+fn init_early_frame_allocator(heap_phys_end: u64) {
+    // Reserve 2MB (512 frames) at the end of the heap for early page tables.
+    // This is enough for ~470 page table pages needed to map a 931MB heap with 4KB pages.
+    const EARLY_RESERVE: u64 = 2 * 1024 * 1024;
+    let start = heap_phys_end - EARLY_RESERVE;
+    EARLY_FRAME_ALLOC_PTR.store(start, Ordering::SeqCst);
+    EARLY_FRAME_ALLOC_END.store(heap_phys_end, Ordering::SeqCst);
+}
+
+/// Allocate a frame during early boot (before heap is available).
+/// Returns the physical address of a zeroed 4KB frame.
+fn allocate_early_frame() -> PhysFrame {
+    let ptr = EARLY_FRAME_ALLOC_PTR.fetch_add(4096, Ordering::SeqCst);
+    let end = EARLY_FRAME_ALLOC_END.load(Ordering::SeqCst);
+    assert!(ptr + 4096 <= end, "early frame allocator exhausted");
+
+    // Zero the frame (using identity mapping which is still active)
+    unsafe {
+        core::ptr::write_bytes(ptr as *mut u8, 0, 4096);
+    }
+
+    PhysFrame::from_start_address(PhysAddr::new(ptr)).unwrap()
+}
 
 /// Stored kernel image physical base address for address translation.
 static KERNEL_IMAGE_BASE_PHYS: AtomicU64 = AtomicU64::new(0);
@@ -176,6 +206,88 @@ pub unsafe fn create_physical_memory_window(memory_map: &MemoryMapOwned) {
     x86_64::instructions::tlb::flush_all();
 
     info!("Physical memory window created successfully");
+}
+
+/// Map the kernel heap region at KERNEL_HEAP_BASE.
+///
+/// This maps the given physical memory to virtual addresses starting at `KERNEL_HEAP_BASE`,
+/// using 2MB huge pages where possible for efficiency.
+///
+/// # Safety
+/// Must be called exactly once during early kernel initialization, before
+/// the heap allocator is initialized.
+pub unsafe fn map_heap_region(phys_base: u64, size: u64) {
+    // Initialize early frame allocator - reserve space at end of heap for page tables
+    init_early_frame_allocator(phys_base + size);
+
+    without_write_protection(|| {
+        let pml4 = unsafe { &mut *current_page_table() };
+
+        // Map heap memory in 4KB pages (heap physical base may not be 2MB aligned)
+        let mut offset = 0u64;
+        while offset < size {
+            let virt_addr = VirtAddr::new(KERNEL_HEAP_BASE + offset);
+            let phys_addr = phys_base + offset;
+
+            // Get PML4 entry
+            let pml4_index = virt_addr.page_table_index(PageTableLevel::Four);
+            let pml4_entry = &mut pml4[pml4_index];
+            let pml3 = if pml4_entry.flags().contains(PageTableFlags::PRESENT) {
+                unsafe { &mut *(pml4_entry.addr().as_u64() as *mut PageTable) }
+            } else {
+                let frame = allocate_early_frame();
+                let table = frame.start_address().as_u64() as *mut PageTable;
+                pml4_entry.set_addr(
+                    frame.start_address(),
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                );
+                unsafe { &mut *table }
+            };
+
+            // Get PML3 entry
+            let pml3_index = virt_addr.page_table_index(PageTableLevel::Three);
+            let pml3_entry = &mut pml3[pml3_index];
+            let pml2 = if pml3_entry.flags().contains(PageTableFlags::PRESENT) {
+                unsafe { &mut *(pml3_entry.addr().as_u64() as *mut PageTable) }
+            } else {
+                let frame = allocate_early_frame();
+                let table = frame.start_address().as_u64() as *mut PageTable;
+                pml3_entry.set_addr(
+                    frame.start_address(),
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                );
+                unsafe { &mut *table }
+            };
+
+            // Get PML2 entry
+            let pml2_index = virt_addr.page_table_index(PageTableLevel::Two);
+            let pml2_entry = &mut pml2[pml2_index];
+            let pml1 = if pml2_entry.flags().contains(PageTableFlags::PRESENT) {
+                unsafe { &mut *(pml2_entry.addr().as_u64() as *mut PageTable) }
+            } else {
+                let frame = allocate_early_frame();
+                let table = frame.start_address().as_u64() as *mut PageTable;
+                pml2_entry.set_addr(
+                    frame.start_address(),
+                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+                );
+                unsafe { &mut *table }
+            };
+
+            // Map 4KB page at PML1 level
+            let pml1_index = virt_addr.page_table_index(PageTableLevel::One);
+            let pml1_entry = &mut pml1[pml1_index];
+            pml1_entry.set_addr(
+                PhysAddr::new(phys_addr),
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
+            );
+
+            offset += 4096;
+        }
+
+        // Flush TLB
+        x86_64::instructions::tlb::flush_all();
+    });
 }
 
 /// Initialize the higher-half address space.
@@ -529,4 +641,28 @@ pub unsafe fn jump_to_higher_half(
             options(noreturn)
         );
     }
+}
+
+/// Remove identity mappings from the kernel page table.
+///
+/// After this function returns, only higher-half addresses (0xffff_8000_0000_0000+)
+/// are valid for kernel use. The entire lower half (PML4 entries 0-255) is cleared.
+///
+/// # Safety
+/// - Must only be called after `jump_to_higher_half` has been executed
+/// - All code must be running from higher-half addresses
+/// - No references to identity-mapped addresses may exist
+pub unsafe fn remove_identity_mapping() {
+    let pml4 = unsafe { &mut *current_page_table() };
+
+    // Clear all lower-half entries (0-255)
+    // These contain the UEFI identity mappings that we no longer need
+    for i in 0..256 {
+        pml4[i].set_unused();
+    }
+
+    // Flush TLB to ensure stale mappings are removed
+    x86_64::instructions::tlb::flush_all();
+
+    info!("Identity mapping removed, kernel running entirely in higher half");
 }

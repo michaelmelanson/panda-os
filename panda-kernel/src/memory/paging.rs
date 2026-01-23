@@ -41,20 +41,22 @@ pub unsafe fn switch_page_table(pml4_phys: PhysAddr) {
 /// Create a new PML4 page table with kernel mappings copied from the current one.
 /// Returns the physical address of the new page table.
 ///
-/// Copies kernel identity mappings from the current page table, but NOT the
-/// userspace mappings. This ensures each process has its own userspace
-/// address space while sharing kernel mappings.
+/// Copies only the higher-half kernel mappings (PML4 entries 256-511) from the
+/// current page table. The entire lower half (entries 0-255) is left empty for
+/// userspace to use.
+///
+/// Higher-half entries include:
+/// - Physical memory window (0xffff_8000...)
+/// - MMIO region (0xffff_9000...)
+/// - Kernel heap (0xffff_a000...)
+/// - Kernel image (0xffff_c000...)
 pub fn create_user_page_table() -> PhysAddr {
     let frame = allocate_frame_raw();
     let new_pml4 =
         super::physical_address_to_virtual(frame.start_address()).as_mut_ptr::<PageTable>();
 
-    // PML4 entry indices for userspace virtual addresses:
-    // 0xa0000000000 >> 39 = 20 (0x14)
-    // 0xb0000000000 >> 39 = 22 (0x16)
-    // We skip these entries to give each process its own userspace mappings.
-    const USERSPACE_PML4_START: usize = 20;
-    const USERSPACE_PML4_END: usize = 23; // exclusive
+    // Higher-half starts at PML4 index 256 (0xffff_8000_0000_0000 >> 39 = 256)
+    const HIGHER_HALF_START: usize = 256;
 
     let current_pml4 = current_page_table();
     unsafe {
@@ -64,11 +66,9 @@ pub fn create_user_page_table() -> PhysAddr {
         // Zero the entire table first
         core::ptr::write_bytes(dst_table, 0, 1);
 
-        // Copy only kernel entries (skip userspace range)
-        for i in 0..512 {
-            if i >= USERSPACE_PML4_START && i < USERSPACE_PML4_END {
-                continue; // Skip userspace entries
-            }
+        // Copy only higher-half kernel entries (256-511)
+        // Lower half (0-255) is left empty for userspace
+        for i in HIGHER_HALF_START..512 {
             dst_table[i] = src_table[i].clone();
         }
     }

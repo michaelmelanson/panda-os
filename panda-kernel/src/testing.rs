@@ -51,10 +51,17 @@ unsafe extern "C" fn test_continuation() -> ! {
     let acpi2_rsdp = x86_64::PhysAddr::new(ACPI2_RSDP.load(Ordering::SeqCst));
     init_after_higher_half_jump(acpi2_rsdp);
 
-    // Reconstruct tests slice
-    let tests_ptr = TESTS_PTR.load(Ordering::SeqCst) as *const &'static dyn Testable;
+    // Reconstruct tests slice - translate from identity-mapped to higher-half
+    // The tests slice is in the kernel image which is now at higher-half
+    let tests_ptr_identity = TESTS_PTR.load(Ordering::SeqCst);
+    let tests_ptr_hh = unsafe { memory::identity_to_higher_half(tests_ptr_identity) };
+    let tests_ptr = tests_ptr_hh as *const &'static dyn Testable;
     let tests_len = TESTS_LEN.load(Ordering::SeqCst) as usize;
     let tests = unsafe { core::slice::from_raw_parts(tests_ptr, tests_len) };
+
+    // Remove identity mapping now that we're running in higher-half
+    // and all pointers have been translated
+    unsafe { memory::remove_identity_mapping() };
 
     run_tests(tests);
 }

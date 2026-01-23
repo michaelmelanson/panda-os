@@ -1,17 +1,18 @@
 use alloc::sync::Arc;
 use core::alloc::Layout;
-use x86_64::{PhysAddr, structures::paging::PhysFrame};
-
-use super::physical_address_to_virtual;
+use x86_64::{PhysAddr, VirtAddr, structures::paging::PhysFrame};
 
 struct FrameInner {
     frame: PhysFrame,
+    /// The virtual address where the frame was allocated.
+    /// We must deallocate using this exact address, not one derived from physical address.
+    virt_addr: VirtAddr,
     layout: Layout,
 }
 
 impl Drop for FrameInner {
     fn drop(&mut self) {
-        let ptr = physical_address_to_virtual(self.frame.start_address()).as_mut_ptr();
+        let ptr = self.virt_addr.as_mut_ptr();
         unsafe {
             alloc::alloc::dealloc(ptr, self.layout);
         }
@@ -31,10 +32,14 @@ impl Frame {
     /// Create a new Frame guard.
     ///
     /// # Safety
-    /// The frame must have been allocated with the given layout.
-    pub(crate) unsafe fn new(frame: PhysFrame, layout: Layout) -> Self {
+    /// The frame must have been allocated with the given layout at the given virtual address.
+    pub(crate) unsafe fn new(frame: PhysFrame, virt_addr: VirtAddr, layout: Layout) -> Self {
         Self {
-            inner: Arc::new(FrameInner { frame, layout }),
+            inner: Arc::new(FrameInner {
+                frame,
+                virt_addr,
+                layout,
+            }),
         }
     }
 
