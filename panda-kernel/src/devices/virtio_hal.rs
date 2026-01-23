@@ -5,7 +5,7 @@ use core::{alloc::Layout, ptr::NonNull};
 use virtio_drivers::Hal;
 use x86_64::PhysAddr;
 
-use crate::memory::{global_alloc, map_mmio};
+use crate::memory::{MmioMapping, global_alloc};
 
 pub struct VirtioHal;
 
@@ -33,9 +33,11 @@ unsafe impl Hal for VirtioHal {
     }
 
     unsafe fn mmio_phys_to_virt(paddr: virtio_drivers::PhysAddr, size: usize) -> NonNull<u8> {
-        // Map MMIO region with identity mapping (virt = phys)
-        let virt_addr = map_mmio(PhysAddr::new(paddr), size);
-        let ptr: *mut u8 = virt_addr.as_mut_ptr();
+        // Map MMIO region to higher-half MMIO region
+        let mmio = MmioMapping::new(PhysAddr::new(paddr), size);
+        let ptr: *mut u8 = mmio.virt_addr().as_mut_ptr();
+        // Leak the mapping - virtio expects it to persist
+        core::mem::forget(mmio);
         NonNull::new(ptr).expect("could not get MMIO virtual address")
     }
 

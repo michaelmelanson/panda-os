@@ -3,7 +3,7 @@ use core::fmt::UpperHex;
 use log::{debug, trace};
 use x86_64::{PhysAddr, VirtAddr};
 
-use crate::memory::map_mmio;
+use crate::memory::MmioMapping;
 use crate::pci::PciSegmentGroup;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -291,8 +291,11 @@ impl VirtioCommonConfig {
                     let bar_addr = device.bar_address(bar_index);
                     let config_phys = PhysAddr::new(bar_addr + offset as u64);
 
-                    // Map MMIO region with identity mapping
-                    let base_vaddr = map_mmio(config_phys, length as usize);
+                    // Map MMIO region to higher-half
+                    let mmio = MmioMapping::new(config_phys, length as usize);
+                    let base_vaddr = mmio.virt_addr();
+                    // Leak the mapping - config persists for device lifetime
+                    core::mem::forget(mmio);
 
                     debug!(
                         "PCI {}: Found virtio common config in BAR{} at offset {:#x}, bar_addr={:#x}, vaddr={:#x}",
@@ -412,8 +415,11 @@ impl MsixCapability {
         // Each MSI-X entry is 16 bytes (addr_lo, addr_hi, data, ctrl)
         let table_bytes = (table_size as usize) * 16;
 
-        // Map MMIO region with identity mapping
-        let table_vaddr = map_mmio(table_phys, table_bytes);
+        // Map MMIO region to higher-half
+        let mmio = MmioMapping::new(table_phys, table_bytes);
+        let table_vaddr = mmio.virt_addr();
+        // Leak the mapping - MSI-X table persists for device lifetime
+        core::mem::forget(mmio);
 
         debug!(
             "MSI-X table: BAR{} addr={:#x}, offset={:#x}, phys={:#x}, vaddr={:#x}",
