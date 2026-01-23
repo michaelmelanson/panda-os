@@ -5,29 +5,33 @@ use panda_kernel::memory;
 use x86_64::PhysAddr;
 
 panda_kernel::test_harness!(
-    physical_to_virtual_identity_mapping,
+    physical_to_virtual_uses_phys_window,
     physical_to_virtual_zero,
     physical_to_virtual_high_address,
     allocate_frame_is_page_aligned,
     allocate_multiple_frames_are_distinct
 );
 
-fn physical_to_virtual_identity_mapping() {
+fn physical_to_virtual_uses_phys_window() {
     let phys = PhysAddr::new(0x1000);
     let virt = memory::physical_address_to_virtual(phys);
-    assert_eq!(virt.as_u64(), phys.as_u64());
+    // With physical window at PHYS_WINDOW_BASE, virt = PHYS_WINDOW_BASE + phys
+    let expected = memory::PHYS_WINDOW_BASE + phys.as_u64();
+    assert_eq!(virt.as_u64(), expected);
 }
 
 fn physical_to_virtual_zero() {
     let phys = PhysAddr::new(0);
     let virt = memory::physical_address_to_virtual(phys);
-    assert_eq!(virt.as_u64(), 0);
+    // Physical address 0 maps to PHYS_WINDOW_BASE
+    assert_eq!(virt.as_u64(), memory::PHYS_WINDOW_BASE);
 }
 
 fn physical_to_virtual_high_address() {
     let phys = PhysAddr::new(0x1_0000_0000); // 4GB
     let virt = memory::physical_address_to_virtual(phys);
-    assert_eq!(virt.as_u64(), 0x1_0000_0000);
+    let expected = memory::PHYS_WINDOW_BASE + 0x1_0000_0000;
+    assert_eq!(virt.as_u64(), expected);
 }
 
 fn allocate_frame_is_page_aligned() {

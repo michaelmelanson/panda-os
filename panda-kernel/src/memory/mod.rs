@@ -53,6 +53,8 @@ pub unsafe fn init_from_uefi(memory_map: &uefi::mem::memory_map::MemoryMapOwned)
         x86_64::registers::control::Efer::update(|efer| {
             efer.insert(x86_64::registers::control::EferFlags::NO_EXECUTE_ENABLE)
         });
+        // Create the physical memory window in higher-half address space
+        address_space::init(memory_map);
     }
 }
 
