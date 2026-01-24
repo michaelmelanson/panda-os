@@ -49,7 +49,7 @@ static LOGGER: Logger = Logger;
 pub fn init() -> x86_64::PhysAddr {
     LOGGER.init();
     log::set_logger(&LOGGER).unwrap();
-    log::set_max_level(log::LevelFilter::Debug);
+    log::set_max_level(log::LevelFilter::Info);
 
     let uefi_info = uefi::exit_boot_services();
 
