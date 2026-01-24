@@ -526,8 +526,6 @@ pub fn try_handle_heap_page_fault(fault_addr: VirtAddr, brk: VirtAddr) -> bool {
     // Page-align the fault address
     let page_addr = VirtAddr::new(fault_addr.as_u64() & !0xFFF);
 
-    log::debug!("Demand paging heap page at {:#x}", page_addr.as_u64());
-
     // Allocate a physical frame (already zeroed by alloc_zeroed)
     let frame = super::allocate_frame();
     let phys_addr = PhysAddr::new(frame.phys_frame().start_address().as_u64());

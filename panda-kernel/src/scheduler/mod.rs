@@ -182,12 +182,21 @@ impl Scheduler {
             .retain(|(_, other_entity)| *other_entity != entity);
     }
 
-    fn state_map(&mut self, state: ProcessState) -> &mut BinaryHeap<(Reverse<RTC>, SchedulableEntity)> {
+    fn state_map(
+        &mut self,
+        state: ProcessState,
+    ) -> &mut BinaryHeap<(Reverse<RTC>, SchedulableEntity)> {
         self.states.entry(state).or_default()
     }
 
-    fn add_to_state(&mut self, state: ProcessState, entity: SchedulableEntity, last_scheduled: RTC) {
-        self.state_map(state).push((Reverse(last_scheduled), entity));
+    fn add_to_state(
+        &mut self,
+        state: ProcessState,
+        entity: SchedulableEntity,
+        last_scheduled: RTC,
+    ) {
+        self.state_map(state)
+            .push((Reverse(last_scheduled), entity));
     }
 
     fn new(init_process: Process) -> Self {
@@ -223,10 +232,18 @@ impl Scheduler {
     /// Change the state of a kernel task.
     pub fn change_kernel_task_state(&mut self, task_id: executor::TaskId, state: ProcessState) {
         let entity = SchedulableEntity::KernelTask(task_id);
-        let rtc = self.kernel_task_rtc.get(&task_id).copied().unwrap_or_else(RTC::now);
+        let rtc = self
+            .kernel_task_rtc
+            .get(&task_id)
+            .copied()
+            .unwrap_or_else(RTC::now);
 
         // Remove from all states
-        for s in [ProcessState::Runnable, ProcessState::Running, ProcessState::Blocked] {
+        for s in [
+            ProcessState::Runnable,
+            ProcessState::Running,
+            ProcessState::Blocked,
+        ] {
             self.remove_from_state(s, entity);
         }
 
@@ -239,7 +256,11 @@ impl Scheduler {
         let entity = SchedulableEntity::KernelTask(task_id);
 
         // Remove from all states
-        for state in [ProcessState::Runnable, ProcessState::Running, ProcessState::Blocked] {
+        for state in [
+            ProcessState::Runnable,
+            ProcessState::Running,
+            ProcessState::Blocked,
+        ] {
             self.remove_from_state(state, entity);
         }
 
@@ -268,7 +289,7 @@ impl Scheduler {
                 tasks_to_wake.extend(tasks.iter().copied());
                 expired_deadlines.push(deadline);
             } else {
-                break;  // BTreeMap is sorted, no more expired deadlines
+                break; // BTreeMap is sorted, no more expired deadlines
             }
         }
 
@@ -327,7 +348,7 @@ pub(super) fn start_timer_with_deadline() {
         if let Some(deadline) = scheduler.next_deadline() {
             // Wake up when deadline arrives or time slice expires, whichever is first
             let time_until_deadline = deadline.saturating_sub(now);
-            let duration = time_until_deadline.min(TIME_SLICE_MS as u64).max(1);  // At least 1ms
+            let duration = time_until_deadline.min(TIME_SLICE_MS as u64).max(1); // At least 1ms
             duration as u32
         } else {
             TIME_SLICE_MS
@@ -397,10 +418,7 @@ pub unsafe fn exec_next_runnable() -> ! {
                     }
                     executor::PollResult::Pending => {
                         // Task blocked, mark as blocked
-                        scheduler.change_kernel_task_state(
-                            task_id,
-                            ProcessState::Blocked,
-                        );
+                        scheduler.change_kernel_task_state(task_id, ProcessState::Blocked);
                     }
                     executor::PollResult::NotFound => {
                         // Task was removed, nothing to do

@@ -95,13 +95,13 @@ unsafe impl GlobalAlloc for BumpAllocator {
             }
 
             // Try to claim this region
-            match self.next.compare_exchange(
-                current,
-                end,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return aligned as *mut u8,
+            match self
+                .next
+                .compare_exchange(current, end, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => {
+                    return aligned as *mut u8;
+                }
                 Err(_) => continue, // Retry
             }
         }

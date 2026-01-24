@@ -55,10 +55,8 @@ pub unsafe fn exec_userspace(ip: VirtAddr, sp: VirtAddr, saved_state: Option<Sav
 /// Restores ALL registers from SavedState including rcx, r11, rip, rsp, and rflags.
 /// Used for both syscall restart and preemption resume.
 ///
-/// Note: Does NOT do swapgs because:
-/// - For preemption resume: interrupt from userspace never did swapgs
-/// - For syscall restart: we're jumping to userspace to re-execute the syscall,
-///   not returning from the syscall handler (which has its own swapgs+sysretq)
+/// Uses iretq instead of sysretq because sysretq clobbers RCX (uses it for RIP),
+/// which breaks resumption of instructions like `rep movsq` that use RCX as a counter.
 #[unsafe(naked)]
 unsafe extern "sysv64" fn exec_userspace_with_state(_state: *const SavedState) -> ! {
     // SavedState layout (offsets in bytes):
@@ -70,32 +68,43 @@ unsafe extern "sysv64" fn exec_userspace_with_state(_state: *const SavedState) -
     naked_asm!(
         // rdi = state pointer, save it to a callee-saved reg temporarily
         "mov r15, rdi",
-        // Restore most registers from state
+        // Build iretq stack frame (in reverse order, since stack grows down):
+        // [rsp+32] SS
+        // [rsp+24] RSP
+        // [rsp+16] RFLAGS
+        // [rsp+8]  CS
+        // [rsp+0]  RIP
+
+        // Push SS (user data segment selector = 0x2b = (5 << 3) | 3)
+        "push 0x2b",
+        // Push user RSP
+        "push [r15 + 0x80]",
+        // Push RFLAGS
+        "push [r15 + 0x88]",
+        // Push CS (user code segment selector = 0x33 = (6 << 3) | 3)
+        "push 0x33",
+        // Push RIP
+        "push [r15 + 0x78]",
+        // Now restore all GPRs (including rcx and r11, which sysretq would clobber)
         "mov rax, [r15 + 0x00]",
         "mov rbx, [r15 + 0x08]",
-        // rcx restored later (needed for sysretq)
+        "mov rcx, [r15 + 0x10]", // Now we can restore the real rcx!
         "mov rdx, [r15 + 0x18]",
         "mov rsi, [r15 + 0x20]",
-        // rdi restored later
+        // rdi restored later (need r15 first)
         "mov rbp, [r15 + 0x30]",
         "mov r8,  [r15 + 0x38]",
         "mov r9,  [r15 + 0x40]",
         "mov r10, [r15 + 0x48]",
-        // r11 restored later (needed for sysretq)
+        "mov r11, [r15 + 0x50]", // Now we can restore the real r11!
         "mov r12, [r15 + 0x58]",
         "mov r13, [r15 + 0x60]",
         "mov r14, [r15 + 0x68]",
-        // Set up sysretq: rcx = rip, r11 = rflags
-        "mov rcx, [r15 + 0x78]", // rcx = saved rip (return address)
-        "mov r11, [r15 + 0x88]", // r11 = saved rflags
-        // Push user rsp so we can restore it last
-        "push [r15 + 0x80]",
-        // Restore rdi (was our temp pointer)
+        // Restore rdi before clobbering r15
         "mov rdi, [r15 + 0x28]",
-        // Restore r15 (we were using it as temp)
+        // Restore r15 last (we were using it as temp)
         "mov r15, [r15 + 0x70]",
-        // Set user stack pointer and return to userspace
-        "pop rsp",
-        "sysretq",
+        // Return to userspace - iretq pops RIP, CS, RFLAGS, RSP, SS
+        "iretq",
     )
 }

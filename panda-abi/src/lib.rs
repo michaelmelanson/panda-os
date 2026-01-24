@@ -68,7 +68,8 @@ pub const BUFFER_MAX_SIZE: usize = 0x1_0000_0000;
 /// Base address of the userspace stack region.
 /// Stack grows downward from STACK_BASE + STACK_MAX_SIZE.
 /// Located near top of lower canonical half (0x7fff_ffff_ffff is max).
-pub const STACK_BASE: usize = 0x0000_7fff_ff00_0000;
+/// Stack top must be below 0x8000_0000_0000 (start of non-canonical hole).
+pub const STACK_BASE: usize = 0x0000_7fff_fef0_0000;
 /// Maximum size of the userspace stack (16 MB virtual address space).
 /// Actual physical memory is allocated on demand via page faults.
 pub const STACK_MAX_SIZE: usize = 0x100_0000;
