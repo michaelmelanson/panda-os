@@ -14,7 +14,7 @@ mod state;
 pub mod waker;
 
 pub use context::Context;
-pub use exec::exec_userspace;
+pub use exec::{return_from_interrupt, return_from_syscall};
 pub use info::ProcessInfo;
 pub use state::{InterruptFrame, SavedGprs, SavedState};
 pub use waker::Waker;
@@ -261,7 +261,8 @@ impl Process {
             // Partial fit, add back the remaining range
             let remaining_addr = VirtAddr::new(free_addr.as_u64() + (num_pages as u64 * 4096));
             let remaining_pages = free_pages - num_pages;
-            self.buffer_free_ranges.insert(remaining_addr, remaining_pages);
+            self.buffer_free_ranges
+                .insert(remaining_addr, remaining_pages);
         }
 
         Some(free_addr)
@@ -273,31 +274,29 @@ impl Process {
         let end_addr = VirtAddr::new(vaddr.as_u64() + (num_pages as u64 * 4096));
 
         // Check if we can merge with the previous range (one that ends where this starts)
-        let prev_merge = self
-            .buffer_free_ranges
-            .range(..vaddr)
-            .next_back()
-            .and_then(|(&prev_addr, &prev_pages)| {
+        let prev_merge = self.buffer_free_ranges.range(..vaddr).next_back().and_then(
+            |(&prev_addr, &prev_pages)| {
                 let prev_end = VirtAddr::new(prev_addr.as_u64() + (prev_pages as u64 * 4096));
                 if prev_end == vaddr {
                     Some((prev_addr, prev_pages))
                 } else {
                     None
                 }
-            });
+            },
+        );
 
         // Check if we can merge with the next range (one that starts where this ends)
-        let next_merge = self
-            .buffer_free_ranges
-            .range(vaddr..)
-            .next()
-            .and_then(|(&next_addr, &next_pages)| {
-                if next_addr == end_addr {
-                    Some((next_addr, next_pages))
-                } else {
-                    None
-                }
-            });
+        let next_merge =
+            self.buffer_free_ranges
+                .range(vaddr..)
+                .next()
+                .and_then(|(&next_addr, &next_pages)| {
+                    if next_addr == end_addr {
+                        Some((next_addr, next_pages))
+                    } else {
+                        None
+                    }
+                });
 
         match (prev_merge, next_merge) {
             (Some((prev_addr, prev_pages)), Some((next_addr, next_pages))) => {

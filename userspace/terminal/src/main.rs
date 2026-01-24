@@ -106,7 +106,7 @@ impl Terminal {
                 let alpha = bitmap[src_idx];
 
                 // Write BGRA (little-endian ARGB)
-                pixels[dst_idx] = 0xFF;     // B
+                pixels[dst_idx] = 0xFF; // B
                 pixels[dst_idx + 1] = 0xFF; // G
                 pixels[dst_idx + 2] = 0xFF; // R
                 pixels[dst_idx + 3] = alpha; // A
@@ -115,7 +115,8 @@ impl Terminal {
 
         // Calculate position
         let glyph_x = self.cursor_x + metrics.xmin as u32;
-        let glyph_y = self.cursor_y + (FONT_SIZE as i32 - metrics.height as i32 - metrics.ymin) as u32;
+        let glyph_y =
+            self.cursor_y + (FONT_SIZE as i32 - metrics.height as i32 - metrics.ymin) as u32;
 
         // Blit to surface
         let blit_params = BlitParams {
@@ -256,7 +257,7 @@ fn keycode_to_char(code: u16, shift: bool) -> Option<char> {
         10 => Some(if shift { ')' } else { '0' }),
 
         // Symbols
-        57 => Some(' '),  // Space
+        57 => Some(' '), // Space
         12 => Some(if shift { '_' } else { '-' }),
         13 => Some(if shift { '+' } else { '=' }),
         26 => Some(if shift { '{' } else { '[' }),
@@ -320,18 +321,23 @@ libpanda::main! {
     environment::log("terminal: Ready - type to see characters echoed");
 
     // Main event loop
-    let mut event_buf = [0u8; 8];
+    let mut event: InputEvent = InputEvent { event_type: 0, code: 0, value: 0 };
     let mut shift_pressed = false;
 
     loop {
-        // Read keyboard event (blocking)
-        let n = file::read(keyboard, &mut event_buf);
+        // Read keyboard event (blocking) - use properly aligned InputEvent buffer
+        let event_bytes = unsafe {
+            core::slice::from_raw_parts_mut(
+                &mut event as *mut InputEvent as *mut u8,
+                core::mem::size_of::<InputEvent>(),
+            )
+        };
+        let n = file::read(keyboard, event_bytes);
         if n < 0 {
             continue;
         }
 
         if n as usize >= core::mem::size_of::<InputEvent>() {
-            let event = unsafe { &*(event_buf.as_ptr() as *const InputEvent) };
 
             if event.event_type == EV_KEY && event.value == 1 {
                 // Key pressed (value=1), ignore release (value=0) and repeat (value=2)

@@ -27,7 +27,7 @@ When a syscall blocks (returns `WouldBlock`), the normal return path is bypassed
 1. Full register state saved in `SavedState` struct
 2. Process marked as `Blocked`
 3. Scheduler switches to another process
-4. On resume, `exec_userspace_with_state` restores all registers and re-executes syscall
+4. On resume, `return_from_interrupt` restores all registers and re-executes syscall
 
 ## Process states
 
@@ -62,5 +62,5 @@ waker.wake();  // Moves process to Runnable
 
 - `syscall.rs` - Syscall entry/exit, handler dispatch
 - `scheduler.rs` - Process scheduling, blocking, waking
-- `process.rs` - Process struct, SavedState, exec_userspace
+- `process.rs` - Process struct, SavedState, return_from_syscall/return_from_interrupt
 - `waker.rs` - Waker abstraction for blocking I/O

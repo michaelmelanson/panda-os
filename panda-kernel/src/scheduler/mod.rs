@@ -14,7 +14,10 @@ use spinning_top::RwSpinlock;
 use crate::apic;
 use crate::executor;
 use crate::interrupts;
-use crate::process::{Process, ProcessId, ProcessState, SavedState, exec_userspace, waker::Waker};
+use crate::process::{
+    Process, ProcessId, ProcessState, SavedState, return_from_interrupt, return_from_syscall,
+    waker::Waker,
+};
 
 pub use rtc::RTC;
 
@@ -400,7 +403,13 @@ pub unsafe fn exec_next_runnable() -> ! {
                     crate::memory::switch_page_table(page_table);
                 }
                 start_timer_with_deadline();
-                unsafe { exec_userspace(ip, sp, saved_state) }
+                if let Some(state) = saved_state {
+                    // Resuming from preemption or blocked syscall - restore full state
+                    unsafe { return_from_interrupt(&state) }
+                } else {
+                    // Fresh start or yield - use fast sysretq path
+                    unsafe { return_from_syscall(ip, sp, 0) }
+                }
             }
 
             Some(SchedulableEntity::KernelTask(task_id)) => {
