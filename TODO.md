@@ -4,6 +4,7 @@
 
 Working:
 - UEFI boot, memory management, page tables, demand-paged stack/heap
+- Higher-half kernel with physical memory window and MMIO region
 - Preemptive multitasking with full context switching
 - Syscall ABI with callee-saved register preservation
 - VFS with tarfs (initrd), resource scheme system
@@ -17,15 +18,6 @@ Not yet implemented:
 - ACPI handler read/write methods (27 todo!() macros)
 
 ## Next steps
-
-- **Improve virtual address space layout** (see [docs/HIGHER_HALF_KERNEL.md](docs/HIGHER_HALF_KERNEL.md)):
-  - [ ] Phase 1: Add RAII wrappers (`PhysicalMapping<T>`, `MmioMapping`) and `phys_to_virt()`/`virt_to_phys()` functions
-  - [ ] Phase 2: Create physical memory window at `0xffff_8000_0000_0000`, migrate physical memory access
-  - [ ] Phase 3: Create MMIO region at `0xffff_9000_0000_0000`, migrate device drivers to use `MmioMapping`
-  - [ ] Phase 4: Parse PE `.reloc` section, map kernel to higher-half, apply relocations
-  - [ ] Phase 5: Switch stack to static kernel stack, jump to higher-half, reinitialize GDT/TSS
-  - [ ] Phase 6: Remove kernel identity mapping, update `create_user_page_table()`
-  - [ ] Phase 7: Move userspace to lower half (update `panda-abi` constants and linker script)
 
 - **Add simple filesystem (FAT or ext2-readonly)**: Mount a disk image. Start with read-only access.
 
