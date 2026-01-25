@@ -45,7 +45,7 @@ Not yet implemented:
 
 #### Phase 3: Startup message protocol
 - [x] Add StartupMessageHeader to panda-abi
-- [ ] Add libpanda startup module (encode/decode args)
+- [x] Add libpanda startup module (encode/decode args)
 
 #### Phase 4: Userspace API
 - [ ] Add spawn_with_args() to libpanda

@@ -12,6 +12,7 @@ pub mod heap;
 pub mod mailbox;
 pub mod print;
 pub mod process;
+pub mod startup;
 pub mod syscall;
 
 // Re-export alloc types for convenience
