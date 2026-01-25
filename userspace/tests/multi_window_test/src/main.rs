@@ -13,7 +13,7 @@ libpanda::main! {
     environment::log("Multi-window test starting");
 
     // Create window 1 - Red window at (50, 50), size 300x200
-    let Ok(window1) = environment::open("surface:/window", 0) else {
+    let Ok(window1) = environment::open("surface:/window", 0, 0) else {
         environment::log("FAIL: Could not open window 1");
         return 1;
     };
@@ -84,7 +84,7 @@ libpanda::main! {
     environment::log("PASS: Created and rendered red window at (50, 50)");
 
     // Create window 2 - Blue window at (150, 100), size 300x200 (overlaps window 1)
-    let Ok(window2) = environment::open("surface:/window", 0) else {
+    let Ok(window2) = environment::open("surface:/window", 0, 0) else {
         environment::log("FAIL: Could not open window 2");
         return 1;
     };

@@ -95,6 +95,26 @@ impl Handle {
     pub fn as_window(&self) -> Option<Arc<spinning_top::Spinlock<crate::compositor::Window>>> {
         self.resource.as_window()
     }
+
+    /// Get this handle's resource as a Channel (for message-based IPC).
+    pub fn as_channel(&self) -> Option<&crate::resource::ChannelEndpoint> {
+        self.resource.as_channel()
+    }
+
+    /// Get this handle's resource as a Mailbox (for event aggregation).
+    pub fn as_mailbox(&self) -> Option<&crate::resource::Mailbox> {
+        self.resource.as_mailbox()
+    }
+
+    /// Get supported events for this resource.
+    pub fn supported_events(&self) -> u32 {
+        self.resource.supported_events()
+    }
+
+    /// Get current pending events for this resource.
+    pub fn poll_events(&self) -> u32 {
+        self.resource.poll_events()
+    }
 }
 
 /// Per-process handle table mapping handle IDs to resources.
@@ -108,8 +128,14 @@ impl HandleTable {
     pub fn new() -> Self {
         Self {
             handles: BTreeMap::new(),
-            next_id: 3, // 0, 1, 2 reserved for stdin/stdout/stderr
+            next_id: 4, // 0-3 reserved for well-known handles (self, env, mailbox, parent)
         }
+    }
+
+    /// Insert a resource at a specific handle ID.
+    /// Used for well-known handles like HANDLE_MAILBOX and HANDLE_PARENT.
+    pub fn insert_at(&mut self, id: HandleId, resource: Arc<dyn Resource>) {
+        self.handles.insert(id, Handle::new(resource));
     }
 
     /// Insert a resource and return its handle ID.

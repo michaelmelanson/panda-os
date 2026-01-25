@@ -8,7 +8,7 @@ libpanda::main! {
     environment::log("VFS test starting");
 
     // Test: Open a file from initrd using file: scheme
-    let Ok(handle) = environment::open("file:/initrd/hello.txt", 0) else {
+    let Ok(handle) = environment::open("file:/initrd/hello.txt", 0, 0) else {
         environment::log("FAIL: Could not open file:/initrd/hello.txt");
         return 1;
     };

@@ -282,7 +282,7 @@ libpanda::main! {
         .expect("Failed to load font");
 
     // Open a window surface
-    let Ok(surface) = environment::open("surface:/window", 0) else {
+    let Ok(surface) = environment::open("surface:/window", 0, 0) else {
         environment::log("terminal: Failed to open window");
         return 1;
     };
@@ -309,7 +309,7 @@ libpanda::main! {
     );
 
     // Open keyboard
-    let Ok(keyboard) = environment::open("keyboard:/pci/00:03.0", 0) else {
+    let Ok(keyboard) = environment::open("keyboard:/pci/00:03.0", 0, 0) else {
         environment::log("terminal: Failed to open keyboard");
         return 1;
     };

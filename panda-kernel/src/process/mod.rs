@@ -174,6 +174,11 @@ impl Process {
         let buffer_pages = panda_abi::BUFFER_MAX_SIZE / 4096;
         buffer_free_ranges.insert(VirtAddr::new(panda_abi::BUFFER_BASE as u64), buffer_pages);
 
+        // Create handle table with default mailbox at HANDLE_MAILBOX
+        let mut handles = HandleTable::new();
+        let default_mailbox = crate::resource::Mailbox::new();
+        handles.insert_at(panda_abi::HANDLE_MAILBOX, default_mailbox);
+
         Ok(Process {
             id,
             state: ProcessState::Runnable,
@@ -182,7 +187,7 @@ impl Process {
             sp: stack_pointer,
             ip: VirtAddr::new(elf_parsed.entry),
             mappings,
-            handles: HandleTable::new(),
+            handles,
             saved_state: None,
             stack,
             heap,

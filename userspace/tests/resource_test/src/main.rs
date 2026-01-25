@@ -9,7 +9,7 @@ libpanda::main! {
 
     // Test 1: Open a file using file: scheme
     environment::log("Test 1: file: scheme");
-    let handle = if let Ok(h) = environment::open("file:/initrd/hello.txt", 0) {
+    let handle = if let Ok(h) = environment::open("file:/initrd/hello.txt", 0, 0) {
         h
     } else {
         environment::log("FAIL: Could not open file:/initrd/hello.txt");
@@ -28,7 +28,7 @@ libpanda::main! {
 
     // Test 2: Open console using console: scheme
     environment::log("Test 2: console: scheme");
-    let console = if let Ok(h) = environment::open("console:/serial/0", 0) {
+    let console = if let Ok(h) = environment::open("console:/serial/0", 0, 0) {
         h
     } else {
         environment::log("FAIL: Could not open console:/serial/0");
@@ -47,7 +47,7 @@ libpanda::main! {
 
     // Test 3: Invalid scheme should fail
     environment::log("Test 3: invalid scheme");
-    if let Ok(_) = environment::open("badscheme:/foo", 0) {
+    if let Ok(_) = environment::open("badscheme:/foo", 0, 0) {
         environment::log("FAIL: Invalid scheme should return error");
         return 1;
     }
@@ -55,7 +55,7 @@ libpanda::main! {
 
     // Test 4: Invalid path within scheme should fail
     environment::log("Test 4: invalid path");
-    if let Ok(_) = environment::open("console:/invalid/path", 0) {
+    if let Ok(_) = environment::open("console:/invalid/path", 0, 0) {
         environment::log("FAIL: Invalid path should return error");
         return 1;
     }

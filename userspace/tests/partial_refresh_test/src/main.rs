@@ -13,7 +13,7 @@ libpanda::main! {
     environment::log("Partial refresh test starting");
 
     // Create a 400x400 window at (100, 50)
-    let Ok(window) = environment::open("surface:/window", 0) else {
+    let Ok(window) = environment::open("surface:/window", 0, 0) else {
         environment::log("FAIL: Could not open window");
         return 1;
     };

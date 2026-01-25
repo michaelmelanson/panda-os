@@ -7,10 +7,12 @@
 //! - Dispatch to operation-specific handlers
 
 mod buffer;
+mod channel;
 mod entry;
 mod environment;
 mod file;
 pub mod gdt;
+mod mailbox;
 mod process;
 mod surface;
 
@@ -215,8 +217,8 @@ fn handle_send(
         OP_PROCESS_BRK => process::handle_brk(arg0),
 
         // Environment operations (open/spawn/opendir/mount are async and don't return)
-        OP_ENVIRONMENT_OPEN => environment::handle_open(ctx, arg0, arg1),
-        OP_ENVIRONMENT_SPAWN => environment::handle_spawn(ctx, arg0, arg1),
+        OP_ENVIRONMENT_OPEN => environment::handle_open(ctx, arg0, arg1, arg2, arg3),
+        OP_ENVIRONMENT_SPAWN => environment::handle_spawn(ctx, arg0, arg1, arg2, arg3),
         OP_ENVIRONMENT_LOG => environment::handle_log(arg0, arg1),
         OP_ENVIRONMENT_TIME => environment::handle_time(),
         OP_ENVIRONMENT_OPENDIR => environment::handle_opendir(ctx, arg0, arg1),
@@ -237,6 +239,15 @@ fn handle_send(
         OP_SURFACE_FILL => surface::handle_fill(handle, arg0),
         OP_SURFACE_FLUSH => surface::handle_flush(handle, arg0),
         OP_SURFACE_UPDATE_PARAMS => surface::handle_update_params(handle, arg0),
+
+        // Mailbox operations
+        OP_MAILBOX_CREATE => mailbox::handle_create(),
+        OP_MAILBOX_WAIT => mailbox::handle_wait(ctx, handle),
+        OP_MAILBOX_POLL => mailbox::handle_poll(handle),
+
+        // Channel operations
+        OP_CHANNEL_SEND => channel::handle_send(ctx, handle, arg0, arg1, arg2),
+        OP_CHANNEL_RECV => channel::handle_recv(ctx, handle, arg0, arg1, arg2),
 
         _ => {
             error!("Unknown operation: {:#x}", operation);

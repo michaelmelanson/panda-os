@@ -13,7 +13,7 @@ libpanda::main! {
     environment::log("Window move test starting");
 
     // Create a window
-    let Ok(window) = environment::open("surface:/window", 0) else {
+    let Ok(window) = environment::open("surface:/window", 0, 0) else {
         environment::log("FAIL: Could not open window");
         return 1;
     };

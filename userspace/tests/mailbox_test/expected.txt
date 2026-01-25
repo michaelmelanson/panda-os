@@ -1,0 +1,7 @@
+Mailbox test: starting
+Mailbox test: child spawned, waiting for events...
+Mailbox test: got ChannelReadable event!
+Mailbox test: message content correct
+Mailbox test: got ChannelClosed event!
+Mailbox test: all events received correctly
+PASS

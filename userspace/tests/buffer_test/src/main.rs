@@ -38,7 +38,7 @@ libpanda::main! {
     environment::log("PASS: Read back correct data");
 
     // Test 5: Read file into buffer
-    let Ok(file_handle) = environment::open("file:/initrd/hello.txt", 0) else {
+    let Ok(file_handle) = environment::open("file:/initrd/hello.txt", 0, 0) else {
         environment::log("FAIL: Could not open test file");
         return 1;
     };

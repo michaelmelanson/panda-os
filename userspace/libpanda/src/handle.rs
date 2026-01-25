@@ -27,6 +27,13 @@ impl Handle {
 
     /// Well-known handle to the system environment.
     pub const ENVIRONMENT: Handle = Handle(panda_abi::HANDLE_ENVIRONMENT);
+
+    /// Well-known handle to the process's default mailbox.
+    pub const MAILBOX: Handle = Handle(panda_abi::HANDLE_MAILBOX);
+
+    /// Well-known handle to the channel connected to the parent process.
+    /// Only valid if this process was spawned by another process.
+    pub const PARENT: Handle = Handle(panda_abi::HANDLE_PARENT);
 }
 
 impl From<Handle> for u32 {

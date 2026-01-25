@@ -12,6 +12,7 @@ Working:
 - Virtio GPU with Surface API (blit, fill, flush), virtio keyboard with blocking reads
 - Virtio block device driver with async I/O (interrupt-driven, non-blocking)
 - Process handles: spawn returns handle, OP_PROCESS_WAIT blocks until child exits
+- Message-passing IPC: channels (bidirectional, 1KB messages, 16 depth) and mailboxes (event aggregation)
 - Userspace: libpanda, init, terminal (with keyboard input and font rendering), 24 test suites
 - Unified device paths with class-based addressing (`keyboard:/pci/input/0`, `block:/pci/storage/0`)
 - Cross-scheme device discovery via `*:` prefix (`*:/pci/storage/0` lists supporting schemes)
@@ -19,18 +20,47 @@ Working:
 Not yet implemented:
 - `OP_PROCESS_SIGNAL`, `OP_ENVIRONMENT_TIME`
 - ACPI handler read/write methods (27 todo!() macros)
-- Message-passing IPC (channel.rs has stubs only)
 
 ## Next steps
 
-### 1. Usability (make the system interactive)
+### 1. Terminal command execution (see plans/TERMINAL_COMMANDS.md)
 
-- **Make terminal execute commands**: Currently terminal just echoes input. Parse command line, spawn programs (e.g., typing `hello` spawns `/mnt/hello`). Handle child process exit and return to prompt.
+#### Phase 1: Mailbox + Channel infrastructure
+- [x] Add mailbox/channel syscalls and constants to panda-abi
+- [x] Implement Mailbox resource in kernel (event aggregation, waker support)
+- [x] Implement ChannelEndpoint resource in kernel (message queues, 1KB max, 16 depth)
+- [x] Add Resource trait methods: `supported_events()`, `poll_events()`, `attach_mailbox()`
+- [x] Implement mailbox syscall handlers (create, wait, poll)
+- [x] Implement channel syscall handlers (send, recv with NONBLOCK flag)
+- [x] Update open/spawn syscalls to take mailbox + event_mask parameters
+- [x] Create default mailbox (HANDLE_MAILBOX) on process creation
+- [x] Add libpanda mailbox module (Mailbox, Event enum, recv/try_recv)
+- [x] Update libpanda channel module (send/try_send, recv/try_recv)
+- [x] Update libpanda environment module (open/spawn with mailbox)
 
-- **Basic file utilities**: Create simple programs for file operations:
-  - `ls` - list directory contents
-  - `cat` - print file contents
-  - `echo` - print arguments
+#### Phase 2: Spawn creates channel
+- [x] Modify handle_spawn to create channel pair
+- [x] Child gets HANDLE_PARENT channel attached to its default mailbox
+- [x] Create SpawnHandle resource (channel + process info)
+
+#### Phase 3: Startup message protocol
+- [x] Add StartupMessageHeader to panda-abi
+- [ ] Add libpanda startup module (encode/decode args)
+
+#### Phase 4: Userspace API
+- [ ] Add spawn_with_args() to libpanda
+- [ ] Update main! macro to receive startup message and parse args
+
+#### Phase 5: Terminal rewrite
+- [ ] Rewrite terminal with mailbox event loop
+- [ ] Add command parsing and path resolution
+- [ ] Spawn child processes with args, wait for exit
+
+#### Phase 6: Basic utilities
+- [ ] Create `hello` program
+- [ ] Create `ls` program (with args support)
+- [ ] Create `cat` program (with args support)
+- [ ] Update Makefile to build and include in initrd
 
 ### 2. Missing syscalls
 
@@ -50,9 +80,13 @@ Not yet implemented:
 
 - **Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
 
-### 5. Future work
+### 5. Type safety improvements
 
-- **IPC/Pipes**: Implement pipe support for shell pipelines. The channel.rs module has stubs for message-passing but nothing is implemented yet.
+- **Convert panda-abi constants to enums**: The syscall opcodes, event flags, channel flags, and handle constants are all raw `u32`/`usize` values. Should use proper enums with `#[repr(u32)]` for type safety. This would catch misuse at compile time (e.g., passing an event flag where a syscall opcode is expected).
+
+### 6. Future work
+
+- **IPC/Pipes**: Implement pipe support for shell pipelines.
 
 - **Environment variables**: Support for PATH, HOME, etc. needed for proper shell operation.
 
@@ -73,3 +107,4 @@ Not yet implemented:
 ## Design documents
 
 - [plans/DEVICE_PATHS.md](plans/DEVICE_PATHS.md) - Unified device path scheme with human-friendly names
+- [plans/TERMINAL_COMMANDS.md](plans/TERMINAL_COMMANDS.md) - Terminal command execution with mailbox/channel IPC

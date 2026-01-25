@@ -51,7 +51,7 @@ libpanda::main! {
     environment::log("Keyboard test starting");
 
     // Open the keyboard device at PCI 00:03.0
-    let keyboard = if let Ok(h) = environment::open("keyboard:/pci/00:03.0", 0) {
+    let keyboard = if let Ok(h) = environment::open("keyboard:/pci/00:03.0", 0, 0) {
         h
     } else {
         environment::log("Could not open keyboard");

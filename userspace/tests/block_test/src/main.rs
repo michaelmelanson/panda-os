@@ -24,7 +24,7 @@ fn test_block_device(uri: &str, path_type: &str) {
 
     // Test 1: Open the block device
     environment::log("  Opening block device");
-    let Ok(handle) = environment::open(uri, 0) else {
+    let Ok(handle) = environment::open(uri, 0, 0) else {
         environment::log("  FAIL: Could not open block device");
         process::exit(1);
     };

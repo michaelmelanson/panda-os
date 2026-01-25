@@ -19,7 +19,7 @@ libpanda::main! {
 
     // Test 1: Open and read hello.txt from ext2
     environment::log("ext2_test: Test 1 - Reading hello.txt");
-    let Ok(handle) = environment::open("file:/mnt/hello.txt", 0) else {
+    let Ok(handle) = environment::open("file:/mnt/hello.txt", 0, 0) else {
         environment::log("FAIL: Could not open file:/mnt/hello.txt");
         return 1;
     };
@@ -43,7 +43,7 @@ libpanda::main! {
 
     // Test 2: Read nested file
     environment::log("ext2_test: Test 2 - Reading nested file");
-    let Ok(handle) = environment::open("file:/mnt/subdir/nested.txt", 0) else {
+    let Ok(handle) = environment::open("file:/mnt/subdir/nested.txt", 0, 0) else {
         environment::log("FAIL: Could not open file:/mnt/subdir/nested.txt");
         return 1;
     };
@@ -60,7 +60,7 @@ libpanda::main! {
 
     // Test 3: Read deeply nested file
     environment::log("ext2_test: Test 3 - Reading deep path");
-    let Ok(handle) = environment::open("file:/mnt/a/b/c/deep.txt", 0) else {
+    let Ok(handle) = environment::open("file:/mnt/a/b/c/deep.txt", 0, 0) else {
         environment::log("FAIL: Could not open file:/mnt/a/b/c/deep.txt");
         return 1;
     };
@@ -83,7 +83,7 @@ libpanda::main! {
 
     // Test 4: Read large file (multiple blocks)
     environment::log("ext2_test: Test 4 - Reading large file");
-    let Ok(handle) = environment::open("file:/mnt/large.bin", 0) else {
+    let Ok(handle) = environment::open("file:/mnt/large.bin", 0, 0) else {
         environment::log("FAIL: Could not open file:/mnt/large.bin");
         return 1;
     };

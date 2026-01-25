@@ -1,0 +1,6 @@
+Channel test: starting
+Channel test: child spawned, sending ping...
+Channel test: ping sent, waiting for pong...
+Channel test: received pong!
+Channel test: child exited successfully
+PASS

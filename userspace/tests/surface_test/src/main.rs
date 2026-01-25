@@ -8,7 +8,7 @@ libpanda::main! {
     environment::log("Surface test starting");
 
     // Open the framebuffer surface
-    let Ok(surface) = environment::open("surface:/fb0", 0) else {
+    let Ok(surface) = environment::open("surface:/fb0", 0, 0) else {
         environment::log("FAIL: Could not open framebuffer");
         return 1;
     };

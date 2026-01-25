@@ -19,7 +19,7 @@ libpanda::main! {
     // Create three overlapping windows with semi-transparent colors
 
     // Window 1: Red with 60% alpha at (50, 50)
-    let Ok(window1) = environment::open("surface:/window", 0) else {
+    let Ok(window1) = environment::open("surface:/window", 0, 0) else {
         environment::log("FAIL: Could not open window 1");
         return 1;
     };
@@ -75,7 +75,7 @@ libpanda::main! {
     environment::log("PASS: Created red window with 60% alpha");
 
     // Window 2: Green with 60% alpha at (180, 90)
-    let Ok(window2) = environment::open("surface:/window", 0) else {
+    let Ok(window2) = environment::open("surface:/window", 0, 0) else {
         environment::log("FAIL: Could not open window 2");
         return 1;
     };
@@ -131,7 +131,7 @@ libpanda::main! {
     environment::log("PASS: Created green window with 60% alpha");
 
     // Window 3: Blue with 60% alpha at (115, 170)
-    let Ok(window3) = environment::open("surface:/window", 0) else {
+    let Ok(window3) = environment::open("surface:/window", 0, 0) else {
         environment::log("FAIL: Could not open window 3");
         return 1;
     };

@@ -10,8 +10,7 @@ use log::{debug, error, info};
 
 use crate::{
     process::{PendingSyscall, Process, context::Context},
-    resource::{self, ProcessResource},
-    scheduler,
+    resource, scheduler,
 };
 
 use super::SyscallContext;
@@ -21,7 +20,20 @@ use super::SyscallContext;
 /// This syscall is async - if the underlying filesystem needs to do I/O,
 /// the process will be blocked until the operation completes.
 /// This function does not return - it yields to the scheduler.
-pub fn handle_open(ctx: &SyscallContext, uri_ptr: usize, uri_len: usize) -> isize {
+///
+/// Arguments:
+/// - uri_ptr, uri_len: URI of resource to open
+/// - mailbox_handle: Handle of mailbox to attach to (0 = don't attach, use HANDLE_MAILBOX for default)
+/// - event_mask: Events to listen for (0 = no events)
+pub fn handle_open(
+    ctx: &SyscallContext,
+    uri_ptr: usize,
+    uri_len: usize,
+    mailbox_handle: usize,
+    event_mask: usize,
+) -> isize {
+    let mailbox_handle = mailbox_handle as u32;
+    let event_mask = event_mask as u32;
     let uri_ptr = uri_ptr as *const u8;
     let uri = unsafe { slice::from_raw_parts(uri_ptr, uri_len) };
     let uri = match str::from_utf8(uri) {
@@ -29,7 +41,10 @@ pub fn handle_open(ctx: &SyscallContext, uri_ptr: usize, uri_len: usize) -> isiz
         Err(_) => return -1,
     };
 
-    info!("handle_open: uri={}", uri);
+    info!(
+        "handle_open: uri={}, mailbox={}, event_mask={:#x}",
+        uri, mailbox_handle, event_mask
+    );
 
     // Create a future for the open operation
     let uri_owned = String::from(uri);
@@ -39,7 +54,18 @@ pub fn handle_open(ctx: &SyscallContext, uri_ptr: usize, uri_len: usize) -> isiz
             Some(resource) => {
                 info!("handle_open future: opened {} successfully", uri_owned);
                 let handle_id = scheduler::with_current_process(|proc| {
-                    proc.handles_mut().insert(Arc::from(resource)) as isize
+                    let handle_id = proc.handles_mut().insert(Arc::from(resource));
+
+                    // Attach to mailbox if requested
+                    if mailbox_handle != 0 && event_mask != 0 {
+                        if let Some(mailbox_h) = proc.handles().get(mailbox_handle) {
+                            if let Some(mailbox) = mailbox_h.as_mailbox() {
+                                mailbox.attach(handle_id, event_mask);
+                            }
+                        }
+                    }
+
+                    handle_id as isize
                 });
                 info!("handle_open future: returning handle_id={}", handle_id);
                 handle_id
@@ -132,8 +158,27 @@ pub fn handle_mount(
 ///
 /// This syscall is async - it needs to open and read the ELF file.
 /// This function does not return - it yields to the scheduler.
-pub fn handle_spawn(ctx: &SyscallContext, uri_ptr: usize, uri_len: usize) -> isize {
-    debug!("SPAWN: uri_ptr={:#x}, uri_len={}", uri_ptr, uri_len);
+///
+/// Arguments:
+/// - uri_ptr, uri_len: URI of executable to spawn
+/// - mailbox_handle: Handle of mailbox to attach spawn handle to (0 = don't attach)
+/// - event_mask: Events to listen for on the spawn handle
+///
+/// Creates a channel between parent and child. Child receives its endpoint at HANDLE_PARENT.
+/// Parent receives a SpawnHandle that combines channel + process info.
+pub fn handle_spawn(
+    ctx: &SyscallContext,
+    uri_ptr: usize,
+    uri_len: usize,
+    mailbox_handle: usize,
+    event_mask: usize,
+) -> isize {
+    let mailbox_handle = mailbox_handle as u32;
+    let event_mask = event_mask as u32;
+    debug!(
+        "SPAWN: uri_ptr={:#x}, uri_len={}, mailbox={}, event_mask={:#x}",
+        uri_ptr, uri_len, mailbox_handle, event_mask
+    );
     let uri_ptr = uri_ptr as *const u8;
     let uri = unsafe { slice::from_raw_parts(uri_ptr, uri_len) };
     debug!("SPAWN: created slice");
@@ -195,7 +240,7 @@ pub fn handle_spawn(ctx: &SyscallContext, uri_ptr: usize, uri_len: usize) -> isi
         let elf_data = elf_data.into_boxed_slice();
         let elf_ptr: *const [u8] = alloc::boxed::Box::leak(elf_data);
 
-        let process = match Process::from_elf_data(Context::new_user_context(), elf_ptr) {
+        let mut process = match Process::from_elf_data(Context::new_user_context(), elf_ptr) {
             Ok(p) => p,
             Err(e) => {
                 error!(
@@ -209,12 +254,43 @@ pub fn handle_spawn(ctx: &SyscallContext, uri_ptr: usize, uri_len: usize) -> isi
         let process_info = process.info().clone();
         debug!("SPAWN: created process {:?}", pid);
 
+        // Create channel pair for parent-child communication
+        let (parent_endpoint, child_endpoint) = resource::ChannelEndpoint::create_pair();
+
+        // Give child endpoint at HANDLE_PARENT
+        process
+            .handles_mut()
+            .insert_at(panda_abi::HANDLE_PARENT, Arc::new(child_endpoint));
+
         scheduler::add_process(process);
 
-        // Create a handle for the parent to track the child
-        let process_resource = ProcessResource::new(process_info);
+        // Create SpawnHandle combining channel and process info
+        let spawn_handle = resource::SpawnHandle::new(parent_endpoint, process_info);
+
         let handle_id = scheduler::with_current_process(|proc| {
-            proc.handles_mut().insert(Arc::new(process_resource))
+            // First, insert the handle to get its ID
+            let handle_id = proc.handles_mut().insert(Arc::new(spawn_handle));
+
+            // Attach to mailbox if requested
+            if mailbox_handle != 0 && event_mask != 0 {
+                if let Some(mailbox_h) = proc.handles().get(mailbox_handle) {
+                    if let Some(mailbox) = mailbox_h.as_mailbox() {
+                        // Attach handle to mailbox (tells mailbox which handles to track)
+                        mailbox.attach(handle_id, event_mask);
+
+                        // Also attach the mailbox to the channel (tells channel where to post events)
+                        // This is the critical step - without this, channel.send() won't notify the mailbox
+                        if let Some(spawn_h) = proc.handles().get(handle_id) {
+                            if let Some(channel) = spawn_h.as_channel() {
+                                let mailbox_ref = resource::MailboxRef::new(mailbox, handle_id);
+                                channel.attach_mailbox(mailbox_ref);
+                            }
+                        }
+                    }
+                }
+            }
+
+            handle_id
         });
         handle_id as isize
     });

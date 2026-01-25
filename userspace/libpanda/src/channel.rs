@@ -1,14 +1,17 @@
 //! Channel abstraction for message-passing.
 //!
-//! A Channel wraps a resource handle and provides request/response correlation
-//! for the future message-passing interface. For now, this module provides the
-//! infrastructure that will be used when send/recv syscalls replace the current
-//! operation-based interface.
+//! Channels provide message-based IPC between processes. Messages are atomic
+//! byte blocks up to MAX_MESSAGE_SIZE bytes.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use panda_abi::MessageHeader;
+use panda_abi::{
+    CHANNEL_NONBLOCK, MAX_MESSAGE_SIZE, MessageHeader, OP_CHANNEL_RECV, OP_CHANNEL_SEND,
+};
+
+use crate::handle::Handle;
+use crate::syscall::send as syscall_send;
 
 /// A unique identifier for a pending request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -150,3 +153,84 @@ impl StreamFile {
     // to send BlockMessage requests. For now, the existing file module
     // functions continue to use the operation-based syscalls.
 }
+
+// =============================================================================
+// Low-level channel send/recv functions
+// =============================================================================
+
+/// Send a message on a channel (blocking if queue full).
+///
+/// Returns Ok(()) on success, or error code on failure.
+#[inline(always)]
+pub fn send(handle: Handle, msg: &[u8]) -> Result<(), isize> {
+    let result = syscall_send(
+        handle,
+        OP_CHANNEL_SEND,
+        msg.as_ptr() as usize,
+        msg.len(),
+        0, // flags = 0, blocking
+        0,
+    );
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Send a message on a channel (non-blocking).
+///
+/// Returns Ok(()) on success, Err(-1) if queue is full, or other error code.
+#[inline(always)]
+pub fn try_send(handle: Handle, msg: &[u8]) -> Result<(), isize> {
+    let result = syscall_send(
+        handle,
+        OP_CHANNEL_SEND,
+        msg.as_ptr() as usize,
+        msg.len(),
+        CHANNEL_NONBLOCK as usize,
+        0,
+    );
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Receive a message from a channel (blocking if queue empty).
+///
+/// Returns the number of bytes received on success, or error code on failure.
+/// The buffer should be at least MAX_MESSAGE_SIZE bytes.
+#[inline(always)]
+pub fn recv(handle: Handle, buf: &mut [u8]) -> Result<usize, isize> {
+    let result = syscall_send(
+        handle,
+        OP_CHANNEL_RECV,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        0, // flags = 0, blocking
+        0,
+    );
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(result as usize)
+    }
+}
+
+/// Receive a message from a channel (non-blocking).
+///
+/// Returns the number of bytes received on success, Err(-1) if queue is empty,
+/// or other error code.
+#[inline(always)]
+pub fn try_recv(handle: Handle, buf: &mut [u8]) -> Result<usize, isize> {
+    let result = syscall_send(
+        handle,
+        OP_CHANNEL_RECV,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        CHANNEL_NONBLOCK as usize,
+        0,
+    );
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(result as usize)
+    }
+}
+
+/// Maximum size of a single channel message.
+pub const MESSAGE_SIZE_MAX: usize = MAX_MESSAGE_SIZE;

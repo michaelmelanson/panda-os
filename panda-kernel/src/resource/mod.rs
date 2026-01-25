@@ -5,26 +5,32 @@
 
 mod block;
 mod buffer;
+mod channel;
 mod char_output;
 mod directory;
 mod event_source;
+mod mailbox;
 mod process;
 mod process_resource;
 mod scheme;
+mod spawn_handle;
 mod surface;
 mod window;
 
 pub use block::{BlockDevice, BlockError};
 pub use buffer::{Buffer, BufferError, SharedBuffer};
+pub use channel::{ChannelEndpoint, ChannelError};
 pub use char_output::{CharOutError, CharacterOutput};
 pub use directory::{DirEntry, Directory};
 pub use event_source::{Event, EventSource, KeyEvent};
+pub use mailbox::{Mailbox, MailboxRef};
 pub use process::Process as ProcessInterface;
 pub use process_resource::ProcessResource;
 pub use scheme::{
     ConsoleScheme, DirectoryResource, FileScheme, KeyboardScheme, SchemeHandler,
     init as init_schemes, open, readdir, register_scheme,
 };
+pub use spawn_handle::SpawnHandle;
 pub use surface::{
     FramebufferSurface, PixelFormat, Rect, Surface, SurfaceError, SurfaceInfo, alpha_blend,
     get_framebuffer_surface, init_framebuffer,
@@ -107,5 +113,27 @@ pub trait Resource: Send + Sync {
     /// Get this resource as a VFS file (for async file operations).
     fn as_vfs_file(&self) -> Option<&dyn VfsFile> {
         None
+    }
+
+    /// Get this resource as a Channel (for message-based IPC).
+    fn as_channel(&self) -> Option<&ChannelEndpoint> {
+        None
+    }
+
+    /// Get this resource as a Mailbox (for event aggregation).
+    fn as_mailbox(&self) -> Option<&Mailbox> {
+        None
+    }
+
+    /// What events this resource type can generate.
+    /// Returns a bitmask of EVENT_* flags from panda_abi.
+    fn supported_events(&self) -> u32 {
+        0
+    }
+
+    /// Current pending events for this resource.
+    /// Returns a bitmask of EVENT_* flags that are currently active.
+    fn poll_events(&self) -> u32 {
+        0
     }
 }

@@ -7,18 +7,34 @@ use crate::handle::Handle;
 use crate::syscall::send;
 use panda_abi::*;
 
-/// Open a file by path
+/// Open a file by path.
 ///
-/// Returns a file handle on success, or error code
+/// Returns a file handle on success, or error code.
+///
+/// To attach the handle to a mailbox for event notifications, pass the
+/// mailbox handle and event mask. Pass `(0, 0)` for no mailbox attachment.
+///
+/// # Example
+/// ```
+/// // Simple open, no mailbox
+/// let file = environment::open("file:/initrd/hello.txt", 0, 0)?;
+///
+/// // Open with mailbox attachment
+/// let file = environment::open(
+///     "keyboard:/pci/00:03.0",
+///     mailbox.handle().as_raw(),
+///     EVENT_KEYBOARD_KEY,
+/// )?;
+/// ```
 #[inline(always)]
-pub fn open(path: &str, flags: u32) -> Result<Handle, isize> {
+pub fn open(path: &str, mailbox: u32, event_mask: u32) -> Result<Handle, isize> {
     let result = send(
         Handle::ENVIRONMENT,
         OP_ENVIRONMENT_OPEN,
         path.as_ptr() as usize,
         path.len(),
-        flags as usize,
-        0,
+        mailbox as usize,
+        event_mask as usize,
     );
     if result < 0 {
         Err(result)
@@ -27,18 +43,35 @@ pub fn open(path: &str, flags: u32) -> Result<Handle, isize> {
     }
 }
 
-/// Spawn a new process from an executable path
+/// Spawn a new process from an executable path.
 ///
-/// Returns a process handle on success, or error code
+/// Returns a spawn handle on success, or error code.
+/// The spawn handle provides both a channel to the child and process info.
+///
+/// To attach the handle to a mailbox for event notifications, pass the
+/// mailbox handle and event mask. Pass `(0, 0)` for no mailbox attachment.
+///
+/// # Example
+/// ```
+/// // Simple spawn, no mailbox
+/// let child = environment::spawn("file:/initrd/hello", 0, 0)?;
+///
+/// // Spawn with mailbox attachment
+/// let child = environment::spawn(
+///     "file:/initrd/worker",
+///     mailbox.handle().as_raw(),
+///     EVENT_CHANNEL_READABLE | EVENT_CHANNEL_CLOSED,
+/// )?;
+/// ```
 #[inline(always)]
-pub fn spawn(path: &str) -> Result<Handle, isize> {
+pub fn spawn(path: &str, mailbox: u32, event_mask: u32) -> Result<Handle, isize> {
     let result = send(
         Handle::ENVIRONMENT,
         OP_ENVIRONMENT_SPAWN,
         path.as_ptr() as usize,
         path.len(),
-        0,
-        0,
+        mailbox as usize,
+        event_mask as usize,
     );
     if result < 0 {
         Err(result)

@@ -22,6 +22,13 @@ pub const HANDLE_SELF: u32 = 0;
 /// Handle to the system environment (Environment resource)
 pub const HANDLE_ENVIRONMENT: u32 = 1;
 
+/// Handle to the process's default mailbox (Mailbox resource)
+pub const HANDLE_MAILBOX: u32 = 2;
+
+/// Handle to the channel connected to the parent process (ChannelEndpoint resource)
+/// Only valid if this process was spawned by another process.
+pub const HANDLE_PARENT: u32 = 3;
+
 // =============================================================================
 // Operation codes
 // =============================================================================
@@ -134,6 +141,20 @@ pub const OP_SURFACE_FLUSH: u32 = 0x6_0003;
 /// Update window parameters: (params_ptr) -> 0 or error
 pub const OP_SURFACE_UPDATE_PARAMS: u32 = 0x6_0004;
 
+// Mailbox operations (0x7_0000 - 0x7_0FFF)
+/// Create a new mailbox: () -> mailbox_handle
+pub const OP_MAILBOX_CREATE: u32 = 0x7_0000;
+/// Wait for an event on any attached handle (blocking): (mailbox) -> (handle, events)
+pub const OP_MAILBOX_WAIT: u32 = 0x7_0001;
+/// Poll for an event on any attached handle (non-blocking): (mailbox) -> (handle, events) or (0, 0)
+pub const OP_MAILBOX_POLL: u32 = 0x7_0002;
+
+// Channel operations (0x7_1000 - 0x7_1FFF)
+/// Send a message on a channel: (handle, buf_ptr, buf_len, flags) -> 0 or error
+pub const OP_CHANNEL_SEND: u32 = 0x7_1000;
+/// Receive a message from a channel: (handle, buf_ptr, buf_len, flags) -> msg_len or error
+pub const OP_CHANNEL_RECV: u32 = 0x7_1001;
+
 // =============================================================================
 // Constants
 // =============================================================================
@@ -142,6 +163,73 @@ pub const OP_SURFACE_UPDATE_PARAMS: u32 = 0x6_0004;
 pub const SEEK_SET: u32 = 0;
 pub const SEEK_CUR: u32 = 1;
 pub const SEEK_END: u32 = 2;
+
+// Channel constants
+/// Maximum size of a single channel message in bytes.
+/// Larger data should use shared memory / buffer handles.
+pub const MAX_MESSAGE_SIZE: usize = 1024;
+
+/// Default queue depth (number of messages per direction).
+pub const DEFAULT_QUEUE_CAPACITY: usize = 16;
+
+// Channel flags for send/recv operations
+/// Don't block if operation would wait; return error immediately instead.
+pub const CHANNEL_NONBLOCK: u32 = 1 << 0;
+
+// =============================================================================
+// Resource-specific event flags
+// =============================================================================
+
+// Event type flags (bits 0-7)
+// These indicate what kind of event occurred. Multiple flags can be set.
+
+// Channel events (bits 0-2)
+/// Message available to receive.
+pub const EVENT_CHANNEL_READABLE: u32 = 1 << 0;
+/// Space available in send queue.
+pub const EVENT_CHANNEL_WRITABLE: u32 = 1 << 1;
+/// Peer closed their endpoint.
+pub const EVENT_CHANNEL_CLOSED: u32 = 1 << 2;
+
+// Process events (bit 3)
+/// Child process has exited.
+pub const EVENT_PROCESS_EXITED: u32 = 1 << 3;
+
+// Keyboard events (bit 4)
+/// Key event available. Key data is packed in bits 8-25:
+/// - Bits 8-23: key code (16 bits)
+/// - Bits 24-25: key value (0=release, 1=press, 2=repeat)
+pub const EVENT_KEYBOARD_KEY: u32 = 1 << 4;
+
+// Keyboard event encoding helpers
+/// Shift for key code in event flags.
+pub const EVENT_KEY_CODE_SHIFT: u32 = 8;
+/// Mask for key code (16 bits).
+pub const EVENT_KEY_CODE_MASK: u32 = 0xFFFF;
+/// Shift for key value in event flags.
+pub const EVENT_KEY_VALUE_SHIFT: u32 = 24;
+/// Mask for key value (2 bits).
+pub const EVENT_KEY_VALUE_MASK: u32 = 0x3;
+
+/// Encode a keyboard event into event flags.
+#[inline]
+pub const fn encode_key_event(code: u16, value: u8) -> u32 {
+    EVENT_KEYBOARD_KEY
+        | ((code as u32) << EVENT_KEY_CODE_SHIFT)
+        | (((value as u32) & EVENT_KEY_VALUE_MASK) << EVENT_KEY_VALUE_SHIFT)
+}
+
+/// Decode key code from event flags.
+#[inline]
+pub const fn decode_key_code(flags: u32) -> u16 {
+    ((flags >> EVENT_KEY_CODE_SHIFT) & EVENT_KEY_CODE_MASK) as u16
+}
+
+/// Decode key value from event flags.
+#[inline]
+pub const fn decode_key_value(flags: u32) -> u8 {
+    ((flags >> EVENT_KEY_VALUE_SHIFT) & EVENT_KEY_VALUE_MASK) as u8
+}
 
 // =============================================================================
 // Shared types
@@ -176,6 +264,25 @@ impl DirEntry {
         // Safety: kernel only writes valid UTF-8
         unsafe { core::str::from_utf8_unchecked(&self.name[..self.name_len as usize]) }
     }
+}
+
+/// Header for startup messages sent from parent to child process.
+///
+/// The startup message is sent over HANDLE_PARENT immediately after spawn.
+/// Layout after header:
+/// - `[u16; arg_count]` - length of each argument string
+/// - packed argument strings (no null terminators, use lengths above)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct StartupMessageHeader {
+    /// Protocol version (currently 1).
+    pub version: u16,
+    /// Number of argument strings.
+    pub arg_count: u16,
+    /// Number of environment variables (reserved for future use).
+    pub env_count: u16,
+    /// Reserved flags.
+    pub flags: u16,
 }
 
 // =============================================================================
