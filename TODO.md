@@ -21,11 +21,9 @@ Not yet implemented:
 
 ## Next steps
 
-### 1. Robustness (highest priority)
+### 1. Robustness
 
 - **CI setup**: Add GitHub Actions to run `make test` on push/PR. Catch regressions early.
-
-- **Process exit during async I/O**: Ensure pending I/O futures are properly cancelled and resources cleaned up when a process exits.
 
 ### 2. Usability (make the system interactive)
 
