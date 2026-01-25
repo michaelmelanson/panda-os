@@ -91,6 +91,18 @@ enum Output {
     /// Text with embedded style spans (stateless - style per span)
     Styled(StyledText),
     
+    /// Table (terminal handles layout)
+    Table(Table),
+    
+    /// Key-value pairs (terminal can align, colorize)
+    KeyValue(Vec<(StyledText, StyledText)>),
+    
+    /// List items (terminal can bullet/number)
+    List(Vec<StyledText>),
+    
+    /// Tree structure (for file listings, etc.)
+    Tree(TreeNode),
+    
     /// Raw bytes (for binary data)
     Bytes(Vec<u8>),
     
@@ -100,11 +112,8 @@ enum Output {
     /// Hyperlink
     Link { text: String, url: String, style: Option<Style> },
     
-    /// Table (terminal handles layout)
-    Table(Table),
-    
-    /// Structured data (terminal can format as appropriate)
-    Data(StructuredData),
+    /// JSON (terminal can pretty-print, syntax highlight)
+    Json(String),
 }
 
 /// Image content
@@ -132,18 +141,6 @@ struct Table {
     headers: Option<Vec<StyledText>>,
     rows: Vec<Vec<StyledText>>,
     alignment: Vec<Alignment>,
-}
-
-/// Structured data that terminal can format
-enum StructuredData {
-    /// Key-value pairs (terminal can align, colorize)
-    KeyValue(Vec<(StyledText, StyledText)>),
-    /// List items (terminal can bullet/number)
-    List(Vec<StyledText>),
-    /// Tree structure (for file listings, etc.)
-    Tree(TreeNode),
-    /// JSON (terminal can pretty-print, syntax highlight)
-    Json(String),
 }
 
 /// Text with style information (stateless - each span carries its style)
@@ -423,26 +420,20 @@ This approach:
 
 ## Implementation Plan
 
-### Phase 1: Core Protocol
+### Phase 1: Core Protocol (current)
 1. Define message types in panda-abi
 2. Add TLV serialization (simple, no_std compatible)
 3. Implement terminal side: receive messages, render
 4. Implement libpanda::terminal module with print/println/input
+5. Add StyledText support with builder API
+6. Add Table rendering
 
-### Phase 2: Enhanced Output
-1. Add StyledText support with builder API
-2. Add Table rendering
-3. Add StructuredData formatting (KeyValue, List, Tree)
-
-### Phase 3: Rich Content
-1. Add Image support (inline rendering or alt text fallback)
-2. Add hyperlink support
-
-### Phase 4: Compatibility
-1. Implement AnsiWriter parser in libpanda
-2. Test with legacy code patterns
-
-### Phase 5: Advanced Features
-1. Raw key mode for interactive apps
-2. Query/response for capabilities
-3. Progress indicators
+### Future Work
+- KeyValue, List, Tree output types
+- Image support (inline rendering or alt text fallback)
+- Hyperlink support
+- Json pretty-printing
+- Raw key mode for interactive apps
+- Query/response for capabilities
+- Progress indicators
+- AnsiWriter compatibility layer
