@@ -1,9 +1,9 @@
 #![no_std]
 #![no_main]
 
-use libpanda::environment;
+use libpanda::terminal;
 
 libpanda::main! {
-    environment::log("Hello, world!");
+    terminal::println("Hello, world!");
     0
 }

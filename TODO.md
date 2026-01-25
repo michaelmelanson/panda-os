@@ -16,16 +16,14 @@ Working:
 - Userspace: libpanda, init, terminal (with command execution), hello/ls/cat utilities, 25 test suites
 - Unified device paths with class-based addressing (`keyboard:/pci/input/0`, `block:/pci/storage/0`)
 - Cross-scheme device discovery via `*:` prefix (`*:/pci/storage/0` lists supporting schemes)
-
-Not yet implemented:
-- `OP_PROCESS_SIGNAL`, `OP_ENVIRONMENT_TIME`
-- ACPI handler read/write methods (27 todo!() macros)
-
-## Technical debt
+  
+## Bugs / technical debt
 
 - **Add high-level wrappers around `panda-abi` primitives**: The API for operations in `panda-abi` should have well-designed, idiomatic Rust wrappers around the current low-level operations and system calls.
 
 - **`Event` structure should be organized around resources and their events**: e.g. `Key(KeyEvent)` -> `Input(InputEvent::Key(KeyEvent))`
+
+- **Framebuffer should recomposite dirty regions from scratch**: Currently it's painting over the existing content, rather than clearing it and repainting from scratch.
 
 ## Next steps
 

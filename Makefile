@@ -59,7 +59,7 @@ ext2-image: $(EXT2_IMAGE)
 $(EXT2_IMAGE): terminal hello ls cat
 	@echo "Creating ext2 test image..."
 	@mkdir -p build
-	dd if=/dev/zero of=$(EXT2_IMAGE) bs=1M count=10 2>/dev/null
+	dd if=/dev/zero of=$(EXT2_IMAGE) bs=1M count=32 2>/dev/null
 	mkfs.ext2 -F $(EXT2_IMAGE) >/dev/null 2>&1
 	@# Populate the image using debugfs (no root required)
 	@echo "Hello from ext2!" > build/hello.txt

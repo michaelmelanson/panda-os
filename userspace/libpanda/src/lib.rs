@@ -14,6 +14,7 @@ pub mod print;
 pub mod process;
 pub mod startup;
 pub mod syscall;
+pub mod terminal;
 
 // Re-export alloc types for convenience
 pub use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
