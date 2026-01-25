@@ -327,6 +327,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mailbox_keyboard_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "mailbox_test"
 version = "0.1.0"
 dependencies = [

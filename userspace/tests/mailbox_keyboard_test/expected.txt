@@ -1,0 +1,14 @@
+# Mailbox-based keyboard test (notification + non-blocking read)
+Mailbox keyboard test starting
+Keyboard opened with mailbox attachment
+Key 'a' pressed
+Key 'a' released
+Key 'b' pressed
+Key 'b' released
+Key 'c' pressed
+Key 'c' released
+Key 'd' pressed
+Key 'd' released
+Key 'e' pressed
+Key 'e' released
+Mailbox keyboard test passed

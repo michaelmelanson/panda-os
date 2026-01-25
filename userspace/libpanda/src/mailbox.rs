@@ -81,8 +81,8 @@ impl Mailbox {
 /// Events that can be received from handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
-    /// Key event available (for keyboard handles).
-    Key(KeyEvent),
+    /// Keyboard input available - read from keyboard handle to get key data.
+    KeyboardReady,
     /// Message available to receive (for channel handles).
     ChannelReadable,
     /// Space available to send (for channel handles).
@@ -115,45 +115,11 @@ impl Event {
         if flags & EVENT_PROCESS_EXITED != 0 {
             return Event::ProcessExited;
         }
-        // Check keyboard events - key data is packed in the flags
+        // Check keyboard events - just notification, read handle for actual data
         if flags & EVENT_KEYBOARD_KEY != 0 {
-            return Event::Key(KeyEvent {
-                code: panda_abi::decode_key_code(flags),
-                value: KeyValue::from(panda_abi::decode_key_value(flags) as u32),
-            });
+            return Event::KeyboardReady;
         }
         // Fallback for unknown events
         Event::Raw(flags)
-    }
-}
-
-/// A keyboard key event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KeyEvent {
-    /// Key code (Linux input event code).
-    pub code: u16,
-    /// Key state (press/release/repeat).
-    pub value: KeyValue,
-}
-
-/// Key event value (press/release/repeat).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyValue {
-    /// Key was released.
-    Release = 0,
-    /// Key was pressed.
-    Press = 1,
-    /// Key is being held (repeat).
-    Repeat = 2,
-}
-
-impl From<u32> for KeyValue {
-    fn from(v: u32) -> Self {
-        match v {
-            0 => KeyValue::Release,
-            1 => KeyValue::Press,
-            2 => KeyValue::Repeat,
-            _ => KeyValue::Press, // Default to press for unknown
-        }
     }
 }

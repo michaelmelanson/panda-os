@@ -150,11 +150,14 @@ impl MailboxRef {
         if let Some(inner) = self.inner.upgrade() {
             let mut inner = inner.lock();
 
-            // Check if handle is attached and filter by mask
+            // Check if handle is attached and filter by mask.
+            // The mask determines which event TYPES to accept (bits 0-7),
+            // but we deliver the full event including any encoded data (e.g., key codes).
             if let Some(&mask) = inner.attached.get(&self.handle_id) {
-                let masked = events & mask;
-                if masked != 0 {
-                    inner.pending.push_back((self.handle_id, masked));
+                // Check if any requested event type is present
+                if events & mask != 0 {
+                    // Deliver the full event, not the masked version
+                    inner.pending.push_back((self.handle_id, events));
                     inner.waker.wake();
                 }
             }

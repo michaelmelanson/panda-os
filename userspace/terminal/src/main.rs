@@ -9,8 +9,8 @@ use alloc::vec::Vec;
 use fontdue::{Font, FontSettings};
 use libpanda::{
     buffer::Buffer,
-    environment,
-    mailbox::{Event, KeyValue, Mailbox},
+    environment, file,
+    mailbox::{Event, Mailbox},
     process,
     syscall::send,
     Handle,
@@ -37,9 +37,29 @@ const KEY_RIGHTSHIFT: u16 = 54;
 const KEY_ENTER: u16 = 28;
 const KEY_BACKSPACE: u16 = 14;
 
+/// Key event value (press/release/repeat)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyValue {
+    Release,
+    Press,
+    Repeat,
+}
+
+impl KeyValue {
+    fn from_u32(value: u32) -> Self {
+        match value {
+            0 => KeyValue::Release,
+            1 => KeyValue::Press,
+            2 => KeyValue::Repeat,
+            _ => KeyValue::Release,
+        }
+    }
+}
+
 /// Terminal state
 struct Terminal {
     surface: Handle,
+    keyboard: Handle,
     mailbox: Mailbox,
     font: Font,
     width: u32,
@@ -52,9 +72,17 @@ struct Terminal {
 }
 
 impl Terminal {
-    fn new(surface: Handle, mailbox: Mailbox, font: Font, width: u32, height: u32) -> Self {
+    fn new(
+        surface: Handle,
+        keyboard: Handle,
+        mailbox: Mailbox,
+        font: Font,
+        width: u32,
+        height: u32,
+    ) -> Self {
         Self {
             surface,
+            keyboard,
             mailbox,
             font,
             width,
@@ -409,7 +437,15 @@ fn keycode_to_char(code: u16, shift: bool) -> Option<char> {
     }
 }
 
-/// Handle a key event from the mailbox
+/// Input event structure (matches kernel's InputEvent)
+#[repr(C)]
+struct InputEvent {
+    event_type: u16,
+    code: u16,
+    value: u32,
+}
+
+/// Handle a key event
 fn handle_key_event(term: &mut Terminal, code: u16, value: KeyValue, shift_pressed: &mut bool) {
     match value {
         KeyValue::Press | KeyValue::Repeat => {
@@ -436,6 +472,26 @@ fn handle_key_event(term: &mut Terminal, code: u16, value: KeyValue, shift_press
             if code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT {
                 *shift_pressed = false;
             }
+        }
+    }
+}
+
+/// Process any pending keyboard events
+fn process_keyboard_events(term: &mut Terminal, shift_pressed: &mut bool) {
+    let mut buf = [0u8; 8]; // InputEvent is 8 bytes
+
+    // Read all available keyboard events (non-blocking)
+    loop {
+        let n = file::try_read(term.keyboard, &mut buf);
+        if n <= 0 {
+            break;
+        }
+
+        if n >= 8 {
+            // Parse the InputEvent
+            let event = unsafe { &*(buf.as_ptr() as *const InputEvent) };
+            let value = KeyValue::from_u32(event.value);
+            handle_key_event(term, event.code, value, shift_pressed);
         }
     }
 }
@@ -478,7 +534,7 @@ libpanda::main! {
     );
 
     // Open keyboard with mailbox attachment for key events
-    let Ok(_keyboard) = environment::open(
+    let Ok(keyboard) = environment::open(
         "keyboard:/pci/00:03.0",
         mailbox.handle().as_raw(),
         EVENT_KEYBOARD_KEY,
@@ -487,8 +543,8 @@ libpanda::main! {
         return 1;
     };
 
-    // Create terminal state (keyboard handle not needed since events come via mailbox)
-    let mut term = Terminal::new(surface, mailbox, font, window_width, window_height);
+    // Create terminal state
+    let mut term = Terminal::new(surface, keyboard, mailbox, font, window_width, window_height);
     term.clear();
 
     // Print welcome message
@@ -503,9 +559,9 @@ libpanda::main! {
         let (handle, event) = term.mailbox.recv();
 
         match event {
-            Event::Key(key_event) => {
-                // Process key event directly from mailbox
-                handle_key_event(&mut term, key_event.code, key_event.value, &mut shift_pressed);
+            Event::KeyboardReady => {
+                // Keyboard has events ready - read them from the keyboard handle
+                process_keyboard_events(&mut term, &mut shift_pressed);
             }
             Event::ProcessExited => {
                 // Child process exited
