@@ -1,34 +1,18 @@
 # Async VFS and Ext2 Filesystem
 
-This document describes the design for making the VFS layer fully async and implementing a read-only ext2 filesystem driver.
+This document describes the async VFS layer and ext2 filesystem driver implementation.
 
 ## Design Principles
 
-1. **Everything is async** - All I/O operations are async fns. Synchronous implementations (like TarFs) simply return immediately-ready futures.
+1. **Everything is async** - All I/O operations are async fns. Synchronous implementations (like TarFs) return immediately-ready futures.
 
-2. **Use `async-trait`** - Allows writing `async fn` directly in traits without manual boxing boilerplate.
+2. **Use `async-trait`** - The `async_trait` crate allows writing `async fn` directly in traits.
 
 3. **Sync is just fast async** - No separate sync path. In-memory filesystems complete immediately; disk-backed ones yield until I/O completes.
-
-4. **Processes block on futures** - Syscalls that do async I/O store the future in the process and yield. The scheduler polls the future when the process is woken.
 
 ## Architecture
 
 ```
-                         Userspace
-    file::read(fd, buf) -> syscall
-                            |
-                            v
-                     Syscall Handler
-    Creates future, polls once, yields if pending
-                            |
-                            v
-                        Scheduler
-    Polls pending future when process is woken
-    On Ready: writes result to rax, returns to userspace
-    On Pending: process stays blocked
-                            |
-                            v
               VFS (all async via async-trait)
     async fn open/read/write/seek/stat/readdir
                  /                   \
@@ -39,122 +23,29 @@ This document describes the design for making the VFS layer fully async and impl
                                       v
                           BlockDevice (async)
                       async fn read_at/write_at
+                                      |
+                                      v
+                          VirtioBlockDevice
+                   (futures with DMA buffers, IRQ wakeup)
 ```
 
-## Process State Model
+## VFS Traits
+
+### File Trait
 
 ```rust
-struct Process {
-    state: ProcessState,
-    pending_syscall: Option<PendingSyscall>,
-    // ... existing fields
-}
-
-enum ProcessState {
-    Runnable,  // Ready to run (either return to userspace or poll future)
-    Running,   // Currently executing
-    Blocked,   // Waiting for waker (future returned Pending)
-}
-
-struct PendingSyscall {
-    future: Pin<Box<dyn Future<Output = isize> + Send>>,
-}
-```
-
-When a future returns `Pending`, it has registered a waker with some interrupt handler (e.g., virtio-blk IRQ). When that interrupt fires, the waker marks the process `Runnable`. The scheduler then polls the future again.
-
-## Async Syscall Flow
-
-### 1. Userspace calls syscall
-```
-User: syscall(READ, fd, buf, len)
-  -> Kernel entry via syscall instruction
-```
-
-### 2. Syscall handler creates future, polls once
-```rust
-fn handle_read_syscall(fd, buf_ptr, buf_len, ctx: &mut SyscallContext) {
-    let file = ctx.process.handles.get(fd);
-    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
-    
-    let mut future = Box::pin(async move {
-        file.read(buf).await.map(|n| n as isize).unwrap_or(-1)
-    });
-    
-    // OPTIMIZATION: Poll once immediately - sync ops complete here
-    let waker = create_process_waker(ctx.process.id);
-    let mut cx = Context::from_waker(&waker);
-    
-    match future.as_mut().poll(&mut cx) {
-        Poll::Ready(result) => {
-            // Completed immediately (e.g., TarFs)
-            return_to_userspace_with_result(result);
-        }
-        Poll::Pending => {
-            // Async I/O in progress
-            ctx.process.pending_syscall = Some(PendingSyscall { future });
-            ctx.process.state = Blocked;
-            scheduler::yield_current();
-        }
-    }
-}
-```
-
-### 3. Scheduler polls when process is woken
-```rust
-fn run_next_process() {
-    let process = pick_runnable_process();
-    
-    if let Some(ref mut pending) = process.pending_syscall {
-        let waker = create_process_waker(process.id);
-        let mut cx = Context::from_waker(&waker);
-        
-        match pending.future.as_mut().poll(&mut cx) {
-            Poll::Ready(result) => {
-                process.pending_syscall = None;
-                return_from_syscall(process.ip, process.sp, result as u64);
-            }
-            Poll::Pending => {
-                process.state = Blocked;
-                run_next_process();
-            }
-        }
-    } else {
-        return_from_syscall(process.ip, process.sp, process.saved_rax);
-    }
-}
-```
-
-### 4. IRQ wakes the process
-```rust
-fn virtio_blk_irq_handler() {
-    for completed_request in completed {
-        completed_request.waker.wake();
-    }
-}
-
-impl Wake for ProcessWaker {
-    fn wake(self: Arc<Self>) {
-        scheduler::mark_runnable(self.process_id);
-    }
-}
-```
-
-## Async VFS Traits
-
-```rust
-use async_trait::async_trait;
-
 #[async_trait]
 pub trait File: Send + Sync {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError>;
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, FsError> {
-        Err(FsError::NotWritable)
-    }
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, FsError>;
     async fn seek(&mut self, pos: SeekFrom) -> Result<u64, FsError>;
     async fn stat(&self) -> Result<FileStat, FsError>;
 }
+```
 
+### Filesystem Trait
+
+```rust
 #[async_trait]
 pub trait Filesystem: Send + Sync {
     async fn open(&self, path: &str) -> Result<Box<dyn File>, FsError>;
@@ -163,7 +54,7 @@ pub trait Filesystem: Send + Sync {
 }
 ```
 
-## Async BlockDevice Trait
+### BlockDevice Trait
 
 ```rust
 #[async_trait]
@@ -176,52 +67,90 @@ pub trait BlockDevice: Send + Sync {
 }
 ```
 
-## Virtio Block Driver Changes
+## Mount System
 
-The current driver stores pending requests in the device. The new design has futures own their DMA buffers:
+Filesystems are mounted at path prefixes. The VFS resolves paths by finding the longest matching mount point:
+
+```rust
+pub fn mount(path: &str, fs: Arc<dyn Filesystem>);
+pub async fn open(path: &str) -> Result<Box<dyn File>, FsError>;
+pub async fn stat(path: &str) -> Result<FileStat, FsError>;
+pub async fn readdir(path: &str) -> Result<Vec<DirEntry>, FsError>;
+```
+
+## Virtio Block Driver
+
+The virtio block driver uses custom futures that own their DMA buffers.
+
+### VirtioReadFuture / VirtioWriteFuture
+
+Each async I/O operation creates a future that:
+1. Allocates a DMA buffer
+2. Submits the request to the virtio queue
+3. Registers a waker with the device
+4. Returns `Pending` until the IRQ handler wakes it
+5. On completion, copies data from DMA buffer to user buffer
 
 ```rust
 struct VirtioReadFuture {
-    device: Arc<Spinlock<VirtioBlockDevice>>,
+    device: Arc<Spinlock<VirtioBlockDeviceInner>>,
     sector: u64,
     buf_ptr: *mut u8,
     buf_len: usize,
-    dma_buffer: Option<DmaBuffer>,  // Owned by future
-    token: Option<u16>,
-    state: ReadState,
+    dma_buffer: Option<DmaBuffer>,
+    request_header: BlockRequest,
+    response_status: BlockResponse,
+    state: AsyncReadState,
 }
 
-enum ReadState {
+enum AsyncReadState {
     NotSubmitted,
-    Submitted,
-    Completed,
+    Submitted { token: VirtioToken },
+    Completed { token: VirtioToken },
 }
 ```
 
-The device just tracks wakers by token:
+### Device State
+
+The device tracks wakers and completed tokens:
 
 ```rust
-pub struct VirtioBlockDevice {
-    // ... existing fields ...
-    waiting_wakers: BTreeMap<u16, Waker>,
-    completed_tokens: BTreeSet<u16>,
+struct VirtioBlockDeviceInner {
+    device: VirtIOBlk<VirtioHal, MsixPciTransport>,
+    async_wakers: BTreeMap<VirtioToken, TaskWaker>,
+    completed_tokens: BTreeSet<VirtioToken>,
+    // ...
 }
 ```
 
-IRQ handler marks tokens complete and wakes futures:
+### IRQ Handler
+
+The IRQ handler marks tokens as completed and wakes futures:
 
 ```rust
 pub fn process_completions(&mut self) {
-    while let Some(token) = self.device.peek_used() {
-        self.completed_tokens.insert(token);
-        if let Some(waker) = self.waiting_wakers.remove(&token) {
+    self.device.ack_interrupt();
+    
+    while let Some(token) = self.peek_completed_token() {
+        if let Some(waker) = self.async_wakers.remove(&token) {
+            self.completed_tokens.insert(token);
             waker.wake();
+            break;
         }
     }
 }
 ```
 
-## Ext2 On-Disk Structures
+### Unaligned I/O
+
+The `VirtioBlockDevice` wrapper handles byte-level access with automatic sector alignment:
+
+- **Aligned path**: Direct read/write of whole sectors
+- **Unaligned path**: Read-modify-write for partial sector access
+
+## Ext2 Filesystem
+
+### On-Disk Structures
 
 Key constants:
 - Magic number: `0xEF53`
@@ -234,7 +163,24 @@ Structures:
 - **Inode** (128+ bytes): Mode, size, block pointers (12 direct + 3 indirect levels)
 - **Directory Entry**: Inode number, record length, name length, file type, name
 
-## Ext2Fs Implementation
+### Block Indirection
+
+Inode block pointers:
+- 0-11: Direct blocks
+- 12: Single indirect (block of pointers)
+- 13: Double indirect (block of single indirect blocks)
+- 14: Triple indirect (block of double indirect blocks)
+
+```rust
+pub async fn get_block_number(
+    device: &dyn BlockDevice,
+    block_pointers: &[u32; 15],
+    block_size: u32,
+    file_block: u32,
+) -> Result<u32, FsError>;
+```
+
+### Ext2Fs
 
 ```rust
 pub struct Ext2Fs {
@@ -253,75 +199,52 @@ impl Ext2Fs {
 }
 ```
 
-## Demonstration
+### Ext2File
 
-To verify the async VFS and ext2 work end-to-end:
-1. The terminal binary is placed in the ext2 filesystem
-2. On boot, the ext2 filesystem is mounted
-3. The terminal is launched from the ext2 mount point
-4. A userspace test verifies files can be read from ext2
-
-## Implementation Phases
-
-### Phase A: Async Infrastructure
-1. Add `async-trait` to Cargo.toml
-2. Add `pending_syscall` to Process struct
-3. Update scheduler to poll pending futures
-4. Create process waker infrastructure
-
-### Phase B: Async Block Device
-5. Convert `BlockDevice` trait to async
-6. Implement async virtio-blk with `VirtioReadFuture`
-7. Update IRQ handler to wake futures
-
-### Phase C: Async VFS
-8. Convert `File` and `Filesystem` traits to async
-9. Update TarFs with async trait implementation
-10. Update resource scheme for async File
-
-### Phase D: Ext2 Filesystem
-11. Create ext2 on-disk structures
-12. Implement Ext2Fs with async mount/lookup/read
-13. Implement Ext2File with async read/seek
-
-### Phase E: Integration
-14. Update syscall handlers for async futures
-15. Add ext2 mount support at boot
-16. Move terminal to ext2, verify boot from ext2
-17. Run all tests to verify no regressions
-
-## Build System Changes
-
-Create ext2 test image:
-```makefile
-EXT2_IMAGE = build/test.ext2
-
-$(EXT2_IMAGE):
-    dd if=/dev/zero of=$(EXT2_IMAGE) bs=1M count=10
-    mkfs.ext2 -F $(EXT2_IMAGE)
-    # Mount and populate with test files
-    # Copy terminal binary into image
+```rust
+pub struct Ext2File {
+    device: Arc<dyn BlockDevice>,
+    inode: Inode,
+    block_size: u32,
+    size: u64,
+    pos: u64,
+}
 ```
 
-Add ext2 disk to QEMU:
-```makefile
--drive file=$(EXT2_IMAGE),format=raw,if=none,id=ext2disk \
--device virtio-blk-pci,drive=ext2disk
+Implements `File` trait with async read/seek/stat. Read handles:
+- Sparse holes (block number 0 returns zeros)
+- Multi-block reads across block boundaries
+- Indirect block lookups
+
+## BlockDeviceFile
+
+Wraps a `BlockDevice` as a `File` for raw block device access through the VFS:
+
+```rust
+pub struct BlockDeviceFile {
+    device: Arc<dyn BlockDevice>,
+    pos: u64,
+}
 ```
 
-## Testing
+## Synchronous Polling
 
-### Kernel Tests
-- Superblock magic validation
-- Mount ext2 filesystem
-- Read root directory
-- Read files (small, large, nested paths)
-- Seek operations
-- Error handling (not found)
+For testing or contexts without a scheduler, `poll_immediate` polls a future once:
 
-### Userspace Tests
-- Open and read files via VFS
-- Directory listing
-- Multi-block file reads
-- Seek operations
-- Terminal launch from ext2 mount
+```rust
+pub fn poll_immediate<T>(future: Pin<&mut impl Future<Output = T>>) -> Option<T>;
+```
+
+Returns `Some(result)` if the future completes immediately (e.g., TarFs), `None` if pending.
+
+## Files
+
+| File | Description |
+|------|-------------|
+| `vfs/mod.rs` | VFS traits, mount system, BlockDeviceFile |
+| `vfs/tarfs.rs` | In-memory tar filesystem |
+| `vfs/ext2/mod.rs` | Ext2 filesystem implementation |
+| `vfs/ext2/file.rs` | Ext2File implementation |
+| `vfs/ext2/structs.rs` | On-disk structures |
+| `resource/block.rs` | BlockDevice trait |
+| `devices/virtio_block.rs` | Virtio block driver with async futures |
