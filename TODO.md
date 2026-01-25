@@ -13,7 +13,7 @@ Working:
 - Virtio block device driver with async I/O (interrupt-driven, non-blocking)
 - Process handles: spawn returns handle, OP_PROCESS_WAIT blocks until child exits
 - Message-passing IPC: channels (bidirectional, 1KB messages, 16 depth) and mailboxes (event aggregation)
-- Userspace: libpanda, init, terminal (with keyboard input and font rendering), 24 test suites
+- Userspace: libpanda, init, terminal (with command execution), hello/ls/cat utilities, 25 test suites
 - Unified device paths with class-based addressing (`keyboard:/pci/input/0`, `block:/pci/storage/0`)
 - Cross-scheme device discovery via `*:` prefix (`*:/pci/storage/0` lists supporting schemes)
 
@@ -58,15 +58,15 @@ Not yet implemented:
 - [x] Update main! macro to receive startup message and parse args
 
 #### Phase 5: Terminal rewrite
-- [ ] Rewrite terminal with mailbox event loop
-- [ ] Add command parsing and path resolution
-- [ ] Spawn child processes with args, wait for exit
+- [x] Rewrite terminal with mailbox event loop
+- [x] Add command parsing and path resolution
+- [x] Spawn child processes with args, wait for exit
 
 #### Phase 6: Basic utilities
-- [ ] Create `hello` program
-- [ ] Create `ls` program (with args support)
-- [ ] Create `cat` program (with args support)
-- [ ] Update Makefile to build and include in initrd
+- [x] Create `hello` program
+- [x] Create `ls` program (with args support)
+- [x] Create `cat` program (with args support)
+- [x] Update Makefile to build and include in ext2 image
 
 ### 2. Missing syscalls
 

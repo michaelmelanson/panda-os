@@ -31,11 +31,6 @@ impl SpawnHandle {
             process_info,
         }
     }
-
-    /// Attach this handle's channel to a mailbox.
-    pub fn attach_mailbox(&self, mailbox_ref: MailboxRef) {
-        self.channel.attach_mailbox(mailbox_ref);
-    }
 }
 
 impl Resource for SpawnHandle {
@@ -69,6 +64,13 @@ impl Resource for SpawnHandle {
         }
 
         events
+    }
+
+    fn attach_mailbox(&self, mailbox_ref: MailboxRef) {
+        // Attach to channel for channel events
+        self.channel.attach_mailbox(mailbox_ref.clone());
+        // Register with process info to get notified on exit
+        self.process_info.add_exit_mailbox(mailbox_ref);
     }
 }
 

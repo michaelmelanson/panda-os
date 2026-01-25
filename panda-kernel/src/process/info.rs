@@ -4,9 +4,11 @@
 //! the process exits, allowing parents to retrieve exit codes via handles.
 
 use alloc::sync::Arc;
-use spinning_top::RwSpinlock;
+use alloc::vec::Vec;
+use spinning_top::{RwSpinlock, Spinlock};
 
 use crate::process::ProcessId;
+use crate::resource::MailboxRef;
 
 use super::waker::Waker;
 
@@ -23,6 +25,8 @@ pub struct ProcessInfo {
     exit_code: RwSpinlock<Option<i32>>,
     /// Waker to notify when process exits (for wait() syscall)
     waker: Arc<Waker>,
+    /// Mailboxes to notify when process exits
+    exit_mailboxes: Spinlock<Vec<MailboxRef>>,
 }
 
 impl ProcessInfo {
@@ -32,7 +36,13 @@ impl ProcessInfo {
             pid,
             exit_code: RwSpinlock::new(None),
             waker: Waker::new(),
+            exit_mailboxes: Spinlock::new(Vec::new()),
         }
+    }
+
+    /// Register a mailbox to be notified when this process exits.
+    pub fn add_exit_mailbox(&self, mailbox: MailboxRef) {
+        self.exit_mailboxes.lock().push(mailbox);
     }
 
     /// Get the process ID.
@@ -50,10 +60,15 @@ impl ProcessInfo {
         *self.exit_code.read()
     }
 
-    /// Set the exit code when process terminates. Wakes any waiters.
+    /// Set the exit code when process terminates. Wakes any waiters and notifies mailboxes.
     pub fn set_exit_code(&self, code: i32) {
         *self.exit_code.write() = Some(code);
         self.waker.wake();
+
+        // Notify all registered mailboxes
+        for mailbox in self.exit_mailboxes.lock().iter() {
+            mailbox.post_event(panda_abi::EVENT_PROCESS_EXITED);
+        }
     }
 
     /// Get the waker for blocking on process exit.

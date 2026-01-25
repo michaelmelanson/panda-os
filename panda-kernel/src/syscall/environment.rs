@@ -289,13 +289,10 @@ pub fn handle_spawn(
                         // Attach handle to mailbox (tells mailbox which handles to track)
                         mailbox.attach(handle_id, event_mask);
 
-                        // Also attach the mailbox to the channel (tells channel where to post events)
-                        // This is the critical step - without this, channel.send() won't notify the mailbox
+                        // Attach mailbox to resource (tells resource where to post events)
                         if let Some(spawn_h) = proc.handles().get(handle_id) {
-                            if let Some(channel) = spawn_h.as_channel() {
-                                let mailbox_ref = resource::MailboxRef::new(mailbox, handle_id);
-                                channel.attach_mailbox(mailbox_ref);
-                            }
+                            let mailbox_ref = resource::MailboxRef::new(mailbox, handle_id);
+                            spawn_h.attach_mailbox(mailbox_ref);
                         }
                     }
                 }

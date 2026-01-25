@@ -141,4 +141,10 @@ pub trait Resource: Send + Sync {
     fn poll_events(&self) -> u32 {
         0
     }
+
+    /// Attach a mailbox to receive events from this resource.
+    /// Resources that generate events should override this.
+    fn attach_mailbox(&self, _mailbox_ref: MailboxRef) {
+        // Default: do nothing
+    }
 }

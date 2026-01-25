@@ -120,6 +120,11 @@ impl Handle {
     pub fn poll_events(&self) -> u32 {
         self.resource.poll_events()
     }
+
+    /// Attach a mailbox to receive events from this resource.
+    pub fn attach_mailbox(&self, mailbox_ref: crate::resource::MailboxRef) {
+        self.resource.attach_mailbox(mailbox_ref)
+    }
 }
 
 /// Per-process handle table mapping handle IDs to resources.
