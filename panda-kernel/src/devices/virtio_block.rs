@@ -224,8 +224,10 @@ struct QueuedBlockRequest {
     dma_buffer: DmaBuffer,
 }
 
-/// A virtio block device with async I/O support.
-pub struct VirtioBlockDevice {
+/// Inner state for a virtio block device.
+///
+/// This is wrapped by `VirtioBlockDevice` which provides the public async API.
+struct VirtioBlockDeviceInner {
     device: VirtIOBlk<VirtioHal, MsixPciTransport>,
     address: DeviceAddress,
     capacity_sectors: u64,
@@ -244,7 +246,7 @@ pub struct VirtioBlockDevice {
     completed_tokens: BTreeSet<VirtioToken>,
 }
 
-impl VirtioBlockDevice {
+impl VirtioBlockDeviceInner {
     /// Get the device address.
     pub fn address(&self) -> &DeviceAddress {
         &self.address
@@ -268,22 +270,6 @@ impl VirtioBlockDevice {
     /// Enable device interrupts.
     pub fn enable_interrupts(&mut self) {
         self.device.enable_interrupts();
-    }
-
-    /// Read a single block synchronously (busy-wait).
-    /// The buffer must be exactly sector_size bytes.
-    pub fn read_block_sync(&mut self, sector: u64, buf: &mut [u8]) -> Result<(), ()> {
-        self.device
-            .read_blocks(sector as usize, buf)
-            .map_err(|_| ())
-    }
-
-    /// Write a single block synchronously (busy-wait).
-    /// The buffer must be exactly sector_size bytes.
-    pub fn write_block_sync(&mut self, sector: u64, buf: &[u8]) -> Result<(), ()> {
-        self.device
-            .write_blocks(sector as usize, buf)
-            .map_err(|_| ())
     }
 
     /// Try to submit a queued request to the device.
@@ -413,13 +399,8 @@ impl VirtioBlockDevice {
 }
 
 /// Global registry of block devices keyed by DeviceAddress.
-static BLOCK_DEVICES: RwSpinlock<BTreeMap<DeviceAddress, Arc<Spinlock<VirtioBlockDevice>>>> =
+static BLOCK_DEVICES: RwSpinlock<BTreeMap<DeviceAddress, Arc<Spinlock<VirtioBlockDeviceInner>>>> =
     RwSpinlock::new(BTreeMap::new());
-
-/// Get a block device by its device address.
-pub fn get_device(address: &DeviceAddress) -> Option<Arc<Spinlock<VirtioBlockDevice>>> {
-    BLOCK_DEVICES.read().get(address).cloned()
-}
 
 /// List all block device addresses.
 pub fn list_devices() -> Vec<DeviceAddress> {
@@ -477,7 +458,7 @@ enum AsyncReadState {
 /// When polled, it submits the request (if not yet submitted) and checks
 /// for completion. The IRQ handler wakes the future when I/O completes.
 struct VirtioReadFuture {
-    device: Arc<Spinlock<VirtioBlockDevice>>,
+    device: Arc<Spinlock<VirtioBlockDeviceInner>>,
     sector: u64,
     buf_ptr: *mut u8,
     buf_len: usize,
@@ -493,7 +474,7 @@ unsafe impl Send for VirtioReadFuture {}
 unsafe impl Sync for VirtioReadFuture {}
 
 impl VirtioReadFuture {
-    fn new(device: Arc<Spinlock<VirtioBlockDevice>>, sector: u64, buf: &mut [u8]) -> Self {
+    fn new(device: Arc<Spinlock<VirtioBlockDeviceInner>>, sector: u64, buf: &mut [u8]) -> Self {
         Self {
             device,
             sector,
@@ -604,7 +585,7 @@ enum AsyncWriteState {
 
 /// Future for an async block write operation.
 struct VirtioWriteFuture {
-    device: Arc<Spinlock<VirtioBlockDevice>>,
+    device: Arc<Spinlock<VirtioBlockDeviceInner>>,
     sector: u64,
     buf_len: usize,
     dma_buffer: Option<DmaBuffer>,
@@ -617,7 +598,7 @@ unsafe impl Send for VirtioWriteFuture {}
 unsafe impl Sync for VirtioWriteFuture {}
 
 impl VirtioWriteFuture {
-    fn new(device: Arc<Spinlock<VirtioBlockDevice>>, sector: u64, buf: &[u8]) -> Self {
+    fn new(device: Arc<Spinlock<VirtioBlockDeviceInner>>, sector: u64, buf: &[u8]) -> Self {
         // Allocate DMA buffer and copy data immediately
         let mut dma_buffer = DmaBuffer::new(buf.len());
         dma_buffer.as_mut_slice().copy_from_slice(buf);
@@ -706,29 +687,29 @@ impl Future for VirtioWriteFuture {
     }
 }
 
-/// Wrapper that implements AsyncBlockDevice for a virtio block device.
+/// A virtio block device with async I/O support.
 ///
 /// This provides byte-level async access with automatic sector alignment.
-pub struct AsyncVirtioBlockDevice {
-    device: Arc<Spinlock<VirtioBlockDevice>>,
+pub struct VirtioBlockDevice {
+    inner: Arc<Spinlock<VirtioBlockDeviceInner>>,
 }
 
-impl AsyncVirtioBlockDevice {
-    /// Create a new async wrapper around a virtio block device.
-    pub fn new(device: Arc<Spinlock<VirtioBlockDevice>>) -> Self {
-        Self { device }
+impl VirtioBlockDevice {
+    /// Create a new virtio block device wrapper.
+    fn new(inner: Arc<Spinlock<VirtioBlockDeviceInner>>) -> Self {
+        Self { inner }
     }
 }
 
 #[async_trait]
-impl BlockDevice for AsyncVirtioBlockDevice {
+impl BlockDevice for VirtioBlockDevice {
     async fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BlockError> {
         if buf.is_empty() {
             return Ok(0);
         }
 
         let (sector_size, total_size) = {
-            let dev = self.device.lock();
+            let dev = self.inner.lock();
             (
                 dev.sector_size as u64,
                 dev.capacity_sectors * dev.sector_size as u64,
@@ -750,13 +731,13 @@ impl BlockDevice for AsyncVirtioBlockDevice {
 
         // Fast path: aligned read
         if offset_in_sector == 0 && to_read % sector_size as usize == 0 {
-            VirtioReadFuture::new(self.device.clone(), start_sector, &mut buf[..to_read]).await?;
+            VirtioReadFuture::new(self.inner.clone(), start_sector, &mut buf[..to_read]).await?;
             return Ok(to_read);
         }
 
         // Slow path: unaligned read
         let mut sector_buf = vec![0u8; (num_sectors * sector_size) as usize];
-        VirtioReadFuture::new(self.device.clone(), start_sector, &mut sector_buf).await?;
+        VirtioReadFuture::new(self.inner.clone(), start_sector, &mut sector_buf).await?;
         buf[..to_read].copy_from_slice(&sector_buf[offset_in_sector..offset_in_sector + to_read]);
 
         Ok(to_read)
@@ -768,7 +749,7 @@ impl BlockDevice for AsyncVirtioBlockDevice {
         }
 
         let (sector_size, total_size) = {
-            let dev = self.device.lock();
+            let dev = self.inner.lock();
             (
                 dev.sector_size as u64,
                 dev.capacity_sectors * dev.sector_size as u64,
@@ -790,26 +771,26 @@ impl BlockDevice for AsyncVirtioBlockDevice {
 
         // Fast path: aligned write
         if offset_in_sector == 0 && to_write % sector_size as usize == 0 {
-            VirtioWriteFuture::new(self.device.clone(), start_sector, &buf[..to_write]).await?;
+            VirtioWriteFuture::new(self.inner.clone(), start_sector, &buf[..to_write]).await?;
             return Ok(to_write);
         }
 
         // Slow path: unaligned write (read-modify-write)
         let mut sector_buf = vec![0u8; (num_sectors * sector_size) as usize];
-        VirtioReadFuture::new(self.device.clone(), start_sector, &mut sector_buf).await?;
+        VirtioReadFuture::new(self.inner.clone(), start_sector, &mut sector_buf).await?;
         sector_buf[offset_in_sector..offset_in_sector + to_write].copy_from_slice(&buf[..to_write]);
-        VirtioWriteFuture::new(self.device.clone(), start_sector, &sector_buf).await?;
+        VirtioWriteFuture::new(self.inner.clone(), start_sector, &sector_buf).await?;
 
         Ok(to_write)
     }
 
     fn size(&self) -> u64 {
-        let dev = self.device.lock();
+        let dev = self.inner.lock();
         dev.capacity_sectors * dev.sector_size as u64
     }
 
     fn sector_size(&self) -> u32 {
-        self.device.lock().sector_size
+        self.inner.lock().sector_size
     }
 
     async fn sync(&self) -> Result<(), BlockError> {
@@ -817,9 +798,13 @@ impl BlockDevice for AsyncVirtioBlockDevice {
     }
 }
 
-/// Get an async block device wrapper by device address.
-pub fn get_async_device(address: &DeviceAddress) -> Option<AsyncVirtioBlockDevice> {
-    get_device(address).map(AsyncVirtioBlockDevice::new)
+/// Get a block device by its device address.
+pub fn get_device(address: &DeviceAddress) -> Option<VirtioBlockDevice> {
+    BLOCK_DEVICES
+        .read()
+        .get(address)
+        .cloned()
+        .map(VirtioBlockDevice::new)
 }
 
 /// The interrupt vector used for virtio block MSI-X interrupts.
@@ -903,7 +888,7 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
         capacity_sectors * sector_size as u64
     );
 
-    let block_device = VirtioBlockDevice {
+    let block_device = VirtioBlockDeviceInner {
         device,
         address: address.clone(),
         capacity_sectors,

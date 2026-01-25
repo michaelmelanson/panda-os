@@ -152,67 +152,45 @@ pub fn handle_spawn(ctx: &SyscallContext, uri_ptr: usize, uri_len: usize) -> isi
             return -1;
         };
 
-        // Try VFS file first (for async files like ext2), then Block (for sync like tarfs)
-        let elf_data: Vec<u8> = if let Some(vfs_file) = resource.as_vfs_file() {
-            // Async read path
-            let file_lock = vfs_file.file();
-            let mut file = file_lock.lock();
+        // Read the file via async VFS interface
+        let Some(vfs_file) = resource.as_vfs_file() else {
+            error!("SPAWN: {} is not a readable file", uri_owned);
+            return -1;
+        };
 
-            // Get file size via stat
-            let stat = match file.stat().await {
-                Ok(s) => s,
-                Err(e) => {
-                    error!("SPAWN: failed to stat {}: {:?}", uri_owned, e);
-                    return -1;
-                }
-            };
-            let size = stat.size as usize;
+        let file_lock = vfs_file.file();
+        let mut file = file_lock.lock();
 
-            let mut elf_data = Vec::new();
-            elf_data.resize(size, 0);
-
-            // Read the entire file
-            let mut total_read = 0;
-            while total_read < size {
-                match file.read(&mut elf_data[total_read..]).await {
-                    Ok(0) => break, // EOF
-                    Ok(n) => total_read += n,
-                    Err(e) => {
-                        error!("SPAWN: failed to read {}: {:?}", uri_owned, e);
-                        return -1;
-                    }
-                }
-            }
-
-            if total_read != size {
-                error!("SPAWN: incomplete read: {} of {} bytes", total_read, size);
+        // Get file size via stat
+        let stat = match file.stat().await {
+            Ok(s) => s,
+            Err(e) => {
+                error!("SPAWN: failed to stat {}: {:?}", uri_owned, e);
                 return -1;
             }
+        };
+        let size = stat.size as usize;
 
-            elf_data
-        } else if let Some(block) = resource.as_block() {
-            // Sync block read path (for tarfs, etc.)
-            let size = block.size() as usize;
-            let mut elf_data = Vec::new();
-            elf_data.resize(size, 0);
+        let mut elf_data = Vec::new();
+        elf_data.resize(size, 0);
 
-            match block.read_at(0, &mut elf_data) {
-                Ok(n) if n == size => {}
-                Ok(n) => {
-                    error!("SPAWN: incomplete read: {} of {} bytes", n, size);
-                    return -1;
-                }
+        // Read the entire file
+        let mut total_read = 0;
+        while total_read < size {
+            match file.read(&mut elf_data[total_read..]).await {
+                Ok(0) => break, // EOF
+                Ok(n) => total_read += n,
                 Err(e) => {
                     error!("SPAWN: failed to read {}: {:?}", uri_owned, e);
                     return -1;
                 }
             }
+        }
 
-            elf_data
-        } else {
-            error!("SPAWN: {} is not a readable file", uri_owned);
+        if total_read != size {
+            error!("SPAWN: incomplete read: {} of {} bytes", total_read, size);
             return -1;
-        };
+        }
 
         let elf_data = elf_data.into_boxed_slice();
         let elf_ptr: *const [u8] = alloc::boxed::Box::leak(elf_data);

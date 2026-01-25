@@ -54,25 +54,3 @@ pub trait BlockDevice: Send + Sync {
         Ok(())
     }
 }
-
-/// Synchronous block interface for random-access data.
-///
-/// Used by resources that need synchronous access (like VfsFileResource).
-/// For truly async operations, use [`BlockDevice`] directly.
-pub trait Block: Send + Sync {
-    /// Read data at the given offset.
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BlockError>;
-
-    /// Write data at the given offset.
-    fn write_at(&self, _offset: u64, _buf: &[u8]) -> Result<usize, BlockError> {
-        Err(BlockError::NotWritable)
-    }
-
-    /// Get the size of this block in bytes.
-    fn size(&self) -> u64;
-
-    /// Sync any buffered writes to backing storage.
-    fn sync(&self) -> Result<(), BlockError> {
-        Ok(())
-    }
-}

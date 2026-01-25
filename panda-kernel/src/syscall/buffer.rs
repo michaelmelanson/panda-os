@@ -1,9 +1,14 @@
 //! Buffer operation syscall handlers (OP_BUFFER_*).
 
-use crate::{
-    resource::{Buffer, SharedBuffer},
-    scheduler,
-};
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+
+use crate::process::PendingSyscall;
+use crate::resource::{Buffer, SharedBuffer, VfsFile};
+use crate::scheduler;
+use crate::vfs::SeekFrom;
+
+use super::SyscallContext;
 
 /// Handle buffer allocation.
 /// Returns handle_id on success, negative on error.
@@ -151,116 +156,149 @@ pub fn handle_free(handle_id: u32) -> isize {
     })
 }
 
-/// Handle reading from file into buffer.
-/// Returns bytes read on success, negative on error.
-pub fn handle_read_buffer(file_handle_id: u32, buffer_handle_id: u32) -> isize {
-    scheduler::with_current_process(|proc| {
-        // Get buffer size
-        let buffer_size = {
-            let Some(buffer_handle) = proc.handles().get(buffer_handle_id) else {
-                return -1;
-            };
-            let Some(buffer) = buffer_handle.as_buffer() else {
-                return -1;
-            };
-            buffer.size()
-        };
+/// Wrapper to allow holding an Arc<dyn Resource> as Arc<dyn VfsFile>
+struct VfsFileWrapper(Arc<dyn crate::resource::Resource>);
 
-        // Get file's block interface info and read data
-        let (data, file_offset) = {
-            let Some(file_handle) = proc.handles().get(file_handle_id) else {
-                return -1;
-            };
-            let Some(block) = file_handle.as_block() else {
-                return -1;
-            };
-            let file_offset = file_handle.offset();
-            let block_size = block.size();
-
-            // Calculate how much to read
-            let remaining = block_size.saturating_sub(file_offset) as usize;
-            let to_read = buffer_size.min(remaining);
-
-            if to_read == 0 {
-                return 0;
-            }
-
-            // Read into temporary buffer
-            let mut temp = alloc::vec![0u8; to_read];
-            match block.read_at(file_offset, &mut temp) {
-                Ok(n) => {
-                    temp.truncate(n);
-                    (temp, file_offset)
-                }
-                Err(_) => return -1,
-            }
-        };
-
-        let bytes_read = data.len();
-
-        // Copy data to the shared buffer
-        {
-            let Some(buffer_handle) = proc.handles().get(buffer_handle_id) else {
-                return -1;
-            };
-            let Some(buffer) = buffer_handle.as_buffer() else {
-                return -1;
-            };
-            buffer.as_mut_slice()[..bytes_read].copy_from_slice(&data);
-        }
-
-        // Update file offset
-        {
-            let Some(file_handle) = proc.handles_mut().get_mut(file_handle_id) else {
-                return -1;
-            };
-            file_handle.set_offset(file_offset + bytes_read as u64);
-        }
-
-        bytes_read as isize
-    })
+impl VfsFile for VfsFileWrapper {
+    fn file(&self) -> &spinning_top::Spinlock<Box<dyn crate::vfs::File>> {
+        self.0.as_vfs_file().unwrap().file()
+    }
 }
 
-/// Handle writing from buffer to file.
-/// Returns bytes written on success, negative on error.
-pub fn handle_write_buffer(file_handle_id: u32, buffer_handle_id: u32, len: usize) -> isize {
-    scheduler::with_current_process(|proc| {
-        // Get buffer data
-        let (buffer_data, write_len) = {
-            let Some(buffer_handle) = proc.handles().get(buffer_handle_id) else {
-                return -1;
-            };
-            let Some(buffer) = buffer_handle.as_buffer() else {
-                return -1;
-            };
-            let buf_slice = buffer.as_slice();
-            let write_len = len.min(buf_slice.len());
-            // Copy the data since we need to release the borrow
-            let mut data = alloc::vec![0u8; write_len];
-            data.copy_from_slice(&buf_slice[..write_len]);
-            (data, write_len)
-        };
+unsafe impl Send for VfsFileWrapper {}
+unsafe impl Sync for VfsFileWrapper {}
 
-        // Get file handle and write
-        let handles = proc.handles_mut();
-        let Some(file_handle) = handles.get_mut(file_handle_id) else {
-            return -1;
-        };
+/// Handle reading from file into buffer.
+/// Returns bytes read on success, negative on error.
+pub fn handle_read_buffer(
+    ctx: &SyscallContext,
+    file_handle_id: u32,
+    buffer_handle_id: u32,
+) -> isize {
+    // Get buffer info (shared buffer pointer and size)
+    let (buffer_arc, buffer_size) = match scheduler::with_current_process(|proc| {
+        let buffer_handle = proc.handles().get(buffer_handle_id)?;
+        let buffer = buffer_handle.resource_arc().as_shared_buffer()?;
+        Some((buffer.clone(), buffer.size()))
+    }) {
+        Some(info) => info,
+        None => return -1,
+    };
 
-        let file_offset = file_handle.offset();
+    // Get VFS file and current offset
+    let (vfs_file, file_offset) = match scheduler::with_current_process(|proc| {
+        let file_handle = proc.handles().get(file_handle_id)?;
+        let _ = file_handle.as_vfs_file()?;
+        let offset = file_handle.offset();
+        let resource_arc = file_handle.resource_arc();
+        Some((
+            Arc::new(VfsFileWrapper(resource_arc)) as Arc<dyn VfsFile>,
+            offset,
+        ))
+    }) {
+        Some(info) => info,
+        None => return -1,
+    };
 
-        let Some(block) = file_handle.as_block() else {
-            return -1;
-        };
+    // Create async future for the read
+    let future = Box::pin(async move {
+        let file_lock = vfs_file.file();
+        let mut file = file_lock.lock();
 
-        match block.write_at(file_offset, &buffer_data[..write_len]) {
+        // Seek to current offset
+        if file.seek(SeekFrom::Start(file_offset)).await.is_err() {
+            return -1isize;
+        }
+
+        // Read into buffer
+        let buf = buffer_arc.as_mut_slice();
+        let to_read = buf.len().min(buffer_size);
+        match file.read(&mut buf[..to_read]).await {
             Ok(n) => {
-                // Update file offset - need to get handle again
-                let file_handle = handles.get_mut(file_handle_id).unwrap();
-                file_handle.set_offset(file_offset + n as u64);
+                // Update file offset
+                scheduler::with_current_process(|proc| {
+                    if let Some(handle) = proc.handles_mut().get_mut(file_handle_id) {
+                        handle.set_offset(file_offset + n as u64);
+                    }
+                });
                 n as isize
             }
             Err(_) => -1,
         }
-    })
+    });
+
+    scheduler::with_current_process(|proc| {
+        proc.set_pending_syscall(PendingSyscall::new(future));
+    });
+
+    ctx.yield_for_async()
+}
+
+/// Handle writing from buffer to file.
+/// Returns bytes written on success, negative on error.
+pub fn handle_write_buffer(
+    ctx: &SyscallContext,
+    file_handle_id: u32,
+    buffer_handle_id: u32,
+    len: usize,
+) -> isize {
+    // Get buffer data (copy to owned Vec since we need it in async block)
+    let (buffer_data, write_len) = match scheduler::with_current_process(|proc| {
+        let buffer_handle = proc.handles().get(buffer_handle_id)?;
+        let buffer = buffer_handle.as_buffer()?;
+        let buf_slice = buffer.as_slice();
+        let write_len = len.min(buf_slice.len());
+        let mut data = alloc::vec![0u8; write_len];
+        data.copy_from_slice(&buf_slice[..write_len]);
+        Some((data, write_len))
+    }) {
+        Some(info) => info,
+        None => return -1,
+    };
+
+    // Get VFS file and current offset
+    let (vfs_file, file_offset) = match scheduler::with_current_process(|proc| {
+        let file_handle = proc.handles().get(file_handle_id)?;
+        let _ = file_handle.as_vfs_file()?;
+        let offset = file_handle.offset();
+        let resource_arc = file_handle.resource_arc();
+        Some((
+            Arc::new(VfsFileWrapper(resource_arc)) as Arc<dyn VfsFile>,
+            offset,
+        ))
+    }) {
+        Some(info) => info,
+        None => return -1,
+    };
+
+    // Create async future for the write
+    let future = Box::pin(async move {
+        let file_lock = vfs_file.file();
+        let mut file = file_lock.lock();
+
+        // Seek to current offset
+        if file.seek(SeekFrom::Start(file_offset)).await.is_err() {
+            return -1isize;
+        }
+
+        // Write from buffer
+        match file.write(&buffer_data[..write_len]).await {
+            Ok(n) => {
+                // Update file offset
+                scheduler::with_current_process(|proc| {
+                    if let Some(handle) = proc.handles_mut().get_mut(file_handle_id) {
+                        handle.set_offset(file_offset + n as u64);
+                    }
+                });
+                n as isize
+            }
+            Err(_) => -1,
+        }
+    });
+
+    scheduler::with_current_process(|proc| {
+        proc.set_pending_syscall(PendingSyscall::new(future));
+    });
+
+    ctx.yield_for_async()
 }

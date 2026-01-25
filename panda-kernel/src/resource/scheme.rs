@@ -16,13 +16,12 @@ use spinning_top::{RwSpinlock, Spinlock};
 use x86_64::instructions::port::Port;
 
 use crate::device_address::DeviceAddress;
-use crate::devices::virtio_block::{self, VirtioBlockDevice};
+use crate::devices::virtio_block;
 use crate::devices::virtio_keyboard::{self, VirtioKeyboard};
 use crate::process::waker::Waker;
 use crate::vfs;
 
 use super::Resource;
-use super::block::{Block, BlockError};
 use super::char_output::{CharOutError, CharacterOutput};
 use super::directory::{DirEntry, Directory};
 use super::event_source::{Event, EventSource, KeyEvent};
@@ -302,152 +301,34 @@ impl SchemeHandler for BlockScheme {
 
         // Try virtio-blk registry (future: try AHCI, NVMe registries too)
         let device = virtio_block::get_device(&address)?;
-        Some(Box::new(BlockDeviceResource { device }))
+        let device: Arc<dyn super::BlockDevice> = Arc::new(device);
+
+        // Wrap in a VFS file for async access
+        let file: Box<dyn vfs::File> = Box::new(vfs::BlockDeviceFile::new(device));
+        Some(Box::new(BlockDeviceResource {
+            file: Spinlock::new(file),
+        }))
     }
 
     // TODO: Implement readdir for block device discovery (see TODO.md)
 }
 
 /// Resource wrapper for a block device.
+///
+/// Block devices are exposed through the VFS file interface for async I/O.
 struct BlockDeviceResource {
-    device: Arc<Spinlock<VirtioBlockDevice>>,
+    file: Spinlock<Box<dyn vfs::File>>,
 }
 
 impl Resource for BlockDeviceResource {
-    fn as_block(&self) -> Option<&dyn Block> {
+    fn as_vfs_file(&self) -> Option<&dyn super::VfsFile> {
         Some(self)
     }
 }
 
-impl Block for BlockDeviceResource {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BlockError> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-
-        let mut device = self.device.lock();
-        let sector_size = device.sector_size() as u64;
-        let total_size = device.capacity_sectors() * sector_size;
-
-        if offset >= total_size {
-            return Ok(0);
-        }
-
-        let available = total_size - offset;
-        let to_read = (buf.len() as u64).min(available) as usize;
-
-        let start_sector = offset / sector_size;
-        let offset_in_sector = (offset % sector_size) as usize;
-        let end_offset = offset + to_read as u64;
-        let end_sector = (end_offset + sector_size - 1) / sector_size;
-        let num_sectors = end_sector - start_sector;
-
-        // Disable interrupts during sync I/O to avoid deadlock
-        device.disable_interrupts();
-
-        // Allocate sector-aligned buffer
-        let mut sector_buf = alloc::vec![0u8; (num_sectors * sector_size) as usize];
-
-        // Read sector by sector using sync busy-wait
-        for i in 0..num_sectors {
-            let sector = start_sector + i;
-            let buf_offset = (i * sector_size) as usize;
-            if device
-                .read_block_sync(
-                    sector,
-                    &mut sector_buf[buf_offset..buf_offset + sector_size as usize],
-                )
-                .is_err()
-            {
-                device.enable_interrupts();
-                return Err(BlockError::IoError);
-            }
-        }
-
-        device.enable_interrupts();
-
-        // Copy the requested portion
-        buf[..to_read].copy_from_slice(&sector_buf[offset_in_sector..offset_in_sector + to_read]);
-        Ok(to_read)
-    }
-
-    fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, BlockError> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-
-        let mut device = self.device.lock();
-        let sector_size = device.sector_size() as u64;
-        let total_size = device.capacity_sectors() * sector_size;
-
-        if offset >= total_size {
-            return Err(BlockError::InvalidOffset);
-        }
-
-        let available = total_size - offset;
-        let to_write = (buf.len() as u64).min(available) as usize;
-
-        let start_sector = offset / sector_size;
-        let offset_in_sector = (offset % sector_size) as usize;
-        let end_offset = offset + to_write as u64;
-        let end_sector = (end_offset + sector_size - 1) / sector_size;
-        let num_sectors = end_sector - start_sector;
-
-        // Disable interrupts during sync I/O to avoid deadlock
-        device.disable_interrupts();
-
-        // For unaligned writes, we need read-modify-write
-        let mut sector_buf = alloc::vec![0u8; (num_sectors * sector_size) as usize];
-
-        // If unaligned, read existing data first
-        if offset_in_sector != 0 || to_write % sector_size as usize != 0 {
-            for i in 0..num_sectors {
-                let sector = start_sector + i;
-                let buf_offset = (i * sector_size) as usize;
-                if device
-                    .read_block_sync(
-                        sector,
-                        &mut sector_buf[buf_offset..buf_offset + sector_size as usize],
-                    )
-                    .is_err()
-                {
-                    device.enable_interrupts();
-                    return Err(BlockError::IoError);
-                }
-            }
-        }
-
-        // Copy new data into sector buffer
-        sector_buf[offset_in_sector..offset_in_sector + to_write].copy_from_slice(&buf[..to_write]);
-
-        // Write sectors
-        for i in 0..num_sectors {
-            let sector = start_sector + i;
-            let buf_offset = (i * sector_size) as usize;
-            if device
-                .write_block_sync(
-                    sector,
-                    &sector_buf[buf_offset..buf_offset + sector_size as usize],
-                )
-                .is_err()
-            {
-                device.enable_interrupts();
-                return Err(BlockError::IoError);
-            }
-        }
-
-        device.enable_interrupts();
-        Ok(to_write)
-    }
-
-    fn size(&self) -> u64 {
-        let device = self.device.lock();
-        device.capacity_sectors() * device.sector_size() as u64
-    }
-
-    fn sync(&self) -> Result<(), BlockError> {
-        // virtio-blk is write-through
-        Ok(())
+impl super::VfsFile for BlockDeviceResource {
+    fn file(&self) -> &Spinlock<Box<dyn vfs::File>> {
+        &self.file
     }
 }
 

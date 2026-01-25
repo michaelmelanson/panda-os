@@ -113,27 +113,17 @@ impl VfsFile for VfsFileWrapper {
 unsafe impl Send for VfsFileWrapper {}
 unsafe impl Sync for VfsFileWrapper {}
 
-/// Synchronous read path for non-VFS resources.
+/// Synchronous read path for non-VFS resources (event sources, etc.).
 fn handle_read_sync(
     ctx: &SyscallContext,
     handle_id: u32,
     buf_ptr: *mut u8,
     buf_len: usize,
 ) -> isize {
-    let result = scheduler::with_current_process(|proc| {
+    let result: Option<isize> = scheduler::with_current_process(|proc| {
         let handle = proc.handles_mut().get_mut(handle_id)?;
 
-        if let Some(block) = handle.as_block() {
-            let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
-            let offset = handle.offset();
-            match block.read_at(offset, buf) {
-                Ok(n) => {
-                    handle.set_offset(offset + n as u64);
-                    Some(Ok(n as isize))
-                }
-                Err(e) => Some(Err(e)),
-            }
-        } else if let Some(event_source) = handle.as_event_source() {
+        if let Some(event_source) = handle.as_event_source() {
             if let Some(event) = event_source.poll() {
                 let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
                 let event_bytes = match event {
@@ -145,22 +135,21 @@ fn handle_read_sync(
                         bytes[4..8].copy_from_slice(&key.value.to_ne_bytes());
                         bytes
                     }
-                    _ => return Some(Ok(0)),
+                    _ => return Some(0),
                 };
                 let n = event_bytes.len().min(buf.len());
                 buf[..n].copy_from_slice(&event_bytes[..n]);
-                Some(Ok(n as isize))
+                Some(n as isize)
             } else {
                 None // No event available - need to block
             }
         } else {
-            Some(Ok(0))
+            Some(0)
         }
     });
 
     match result {
-        Some(Ok(n)) => n,
-        Some(Err(_)) => -1,
+        Some(n) => n,
         None => {
             let waker = scheduler::with_current_process(|proc| {
                 proc.handles().get(handle_id).and_then(|h| h.waker())
@@ -175,11 +164,80 @@ fn handle_read_sync(
 }
 
 /// Handle file write operation.
+///
+/// For VFS files, this is async and may yield to the scheduler if I/O is needed.
 pub fn handle_write(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_len: usize) -> isize {
-    let buf_ptr = buf_ptr as *const u8;
-    let _ = ctx; // Reserved for future async support
+    // Check if this is a VFS file (which needs async handling)
+    let vfs_file: Option<Arc<dyn VfsFile>> = scheduler::with_current_process(|proc| {
+        proc.handles()
+            .get(handle_id)
+            .and_then(|h| h.as_vfs_file())
+            .map(|_| proc.handles().get(handle_id).unwrap().resource_arc())
+    })
+    .and_then(|res| {
+        if res.as_vfs_file().is_some() {
+            Some(Arc::new(VfsFileWrapper(res)) as Arc<dyn VfsFile>)
+        } else {
+            None
+        }
+    });
 
-    // Sync path
+    if let Some(vfs_file) = vfs_file {
+        handle_write_vfs(ctx, handle_id, buf_ptr, buf_len, vfs_file)
+    } else {
+        // Sync path for non-VFS resources (char output, etc.)
+        handle_write_sync(handle_id, buf_ptr as *const u8, buf_len)
+    }
+}
+
+/// Async write path for VFS files.
+fn handle_write_vfs(
+    ctx: &SyscallContext,
+    handle_id: u32,
+    buf_ptr: usize,
+    buf_len: usize,
+    vfs_file: Arc<dyn VfsFile>,
+) -> isize {
+    let offset = scheduler::with_current_process(|proc| {
+        proc.handles()
+            .get(handle_id)
+            .map(|h| h.offset())
+            .unwrap_or(0)
+    });
+
+    let future = Box::pin(async move {
+        let file_lock = vfs_file.file();
+        let mut file = file_lock.lock();
+
+        // Seek to current offset
+        if file.seek(SeekFrom::Start(offset)).await.is_err() {
+            return -1isize;
+        }
+
+        // Write data
+        let buf = unsafe { slice::from_raw_parts(buf_ptr as *const u8, buf_len) };
+        match file.write(buf).await {
+            Ok(n) => {
+                scheduler::with_current_process(|proc| {
+                    if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
+                        handle.set_offset(offset + n as u64);
+                    }
+                });
+                n as isize
+            }
+            Err(_) => -1,
+        }
+    });
+
+    scheduler::with_current_process(|proc| {
+        proc.set_pending_syscall(PendingSyscall::new(future));
+    });
+
+    ctx.yield_for_async()
+}
+
+/// Synchronous write path for non-VFS resources.
+fn handle_write_sync(handle_id: u32, buf_ptr: *const u8, buf_len: usize) -> isize {
     scheduler::with_current_process(|proc| {
         let Some(handle) = proc.handles_mut().get_mut(handle_id) else {
             return -1;
@@ -187,16 +245,7 @@ pub fn handle_write(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_le
 
         let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len) };
 
-        if let Some(block) = handle.as_block() {
-            let offset = handle.offset();
-            match block.write_at(offset, buf) {
-                Ok(n) => {
-                    handle.set_offset(offset + n as u64);
-                    n as isize
-                }
-                Err(_) => -1,
-            }
-        } else if let Some(char_out) = handle.as_char_output() {
+        if let Some(char_out) = handle.as_char_output() {
             match char_out.write(buf) {
                 Ok(n) => n as isize,
                 Err(_) => -1,
@@ -208,69 +257,176 @@ pub fn handle_write(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_le
 }
 
 /// Handle file seek operation.
-pub fn handle_seek(handle_id: u32, offset_lo: usize, offset_hi: usize) -> isize {
+///
+/// For VFS files, this updates the handle offset and performs an async stat to get size.
+/// For simplicity, we manage the offset in the handle rather than seeking in the file.
+pub fn handle_seek(
+    ctx: &SyscallContext,
+    handle_id: u32,
+    offset_lo: usize,
+    offset_hi: usize,
+) -> isize {
     let offset = ((offset_hi as u64) << 32) | (offset_lo as u64);
     let whence = (offset_hi >> 32) as u32;
 
-    scheduler::with_current_process(|proc| {
-        let Some(handle) = proc.handles_mut().get_mut(handle_id) else {
-            return -1;
-        };
+    // Check if this is a VFS file
+    let vfs_file: Option<Arc<dyn VfsFile>> = scheduler::with_current_process(|proc| {
+        proc.handles()
+            .get(handle_id)
+            .and_then(|h| h.as_vfs_file())
+            .map(|_| proc.handles().get(handle_id).unwrap().resource_arc())
+    })
+    .and_then(|res| {
+        if res.as_vfs_file().is_some() {
+            Some(Arc::new(VfsFileWrapper(res)) as Arc<dyn VfsFile>)
+        } else {
+            None
+        }
+    });
 
-        // Only block resources support seeking
-        let Some(block) = handle.as_block() else {
-            return -1;
-        };
+    let Some(vfs_file) = vfs_file else {
+        return -1; // Only VFS files support seeking
+    };
 
-        let size = block.size();
-        let current = handle.offset();
+    // Get current offset
+    let current = scheduler::with_current_process(|proc| {
+        proc.handles()
+            .get(handle_id)
+            .map(|h| h.offset())
+            .unwrap_or(0)
+    });
 
-        let new_offset = match whence {
-            SEEK_SET => offset as i64,
-            SEEK_CUR => current as i64 + offset as i64,
-            SEEK_END => size as i64 + offset as i64,
-            _ => return -1,
-        };
-
+    // For SEEK_SET and SEEK_CUR, we can compute the new offset synchronously
+    if whence == SEEK_SET {
+        let new_offset = offset as i64;
         if new_offset < 0 {
             return -1;
         }
+        scheduler::with_current_process(|proc| {
+            if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
+                handle.set_offset(new_offset as u64);
+            }
+        });
+        return new_offset as isize;
+    }
 
-        handle.set_offset(new_offset as u64);
-        new_offset as isize
-    })
+    if whence == SEEK_CUR {
+        let new_offset = current as i64 + offset as i64;
+        if new_offset < 0 {
+            return -1;
+        }
+        scheduler::with_current_process(|proc| {
+            if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
+                handle.set_offset(new_offset as u64);
+            }
+        });
+        return new_offset as isize;
+    }
+
+    if whence == SEEK_END {
+        // Need to get file size via async stat
+        let future = Box::pin(async move {
+            let file_lock = vfs_file.file();
+            let file = file_lock.lock();
+            let stat = file.stat().await;
+            drop(file);
+
+            match stat {
+                Ok(s) => {
+                    let new_offset = s.size as i64 + offset as i64;
+                    if new_offset < 0 {
+                        return -1isize;
+                    }
+                    scheduler::with_current_process(|proc| {
+                        if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
+                            handle.set_offset(new_offset as u64);
+                        }
+                    });
+                    new_offset as isize
+                }
+                Err(_) => -1,
+            }
+        });
+
+        scheduler::with_current_process(|proc| {
+            proc.set_pending_syscall(PendingSyscall::new(future));
+        });
+
+        ctx.yield_for_async()
+    } else {
+        -1 // Invalid whence
+    }
 }
 
 /// Handle file stat operation.
-pub fn handle_stat(handle_id: u32, stat_ptr: usize) -> isize {
-    let stat_ptr = stat_ptr as *mut FileStat;
-
-    scheduler::with_current_process(|proc| {
-        let Some(handle) = proc.handles().get(handle_id) else {
-            return -1;
-        };
-
-        if let Some(block) = handle.as_block() {
-            unsafe {
-                (*stat_ptr).size = block.size();
-                (*stat_ptr).is_dir = false;
-            }
-            0
-        } else if handle.as_directory().is_some() {
-            unsafe {
-                (*stat_ptr).size = 0;
-                (*stat_ptr).is_dir = true;
-            }
-            0
-        } else {
-            // For other resource types, return minimal info
-            unsafe {
-                (*stat_ptr).size = 0;
-                (*stat_ptr).is_dir = false;
-            }
-            0
-        }
+///
+/// For VFS files, this performs an async stat operation.
+pub fn handle_stat(ctx: &SyscallContext, handle_id: u32, stat_ptr: usize) -> isize {
+    // Check if this is a VFS file
+    let vfs_file: Option<Arc<dyn VfsFile>> = scheduler::with_current_process(|proc| {
+        proc.handles()
+            .get(handle_id)
+            .and_then(|h| h.as_vfs_file())
+            .map(|_| proc.handles().get(handle_id).unwrap().resource_arc())
     })
+    .and_then(|res| {
+        if res.as_vfs_file().is_some() {
+            Some(Arc::new(VfsFileWrapper(res)) as Arc<dyn VfsFile>)
+        } else {
+            None
+        }
+    });
+
+    if let Some(vfs_file) = vfs_file {
+        // Async stat for VFS files
+        let future = Box::pin(async move {
+            let file_lock = vfs_file.file();
+            let file = file_lock.lock();
+            let stat = file.stat().await;
+            drop(file);
+
+            match stat {
+                Ok(s) => {
+                    let stat_ptr = stat_ptr as *mut FileStat;
+                    unsafe {
+                        (*stat_ptr).size = s.size;
+                        (*stat_ptr).is_dir = s.is_dir;
+                    }
+                    0isize
+                }
+                Err(_) => -1,
+            }
+        });
+
+        scheduler::with_current_process(|proc| {
+            proc.set_pending_syscall(PendingSyscall::new(future));
+        });
+
+        ctx.yield_for_async()
+    } else {
+        // Sync path for non-VFS resources
+        let stat_ptr = stat_ptr as *mut FileStat;
+        scheduler::with_current_process(|proc| {
+            let Some(handle) = proc.handles().get(handle_id) else {
+                return -1;
+            };
+
+            if handle.as_directory().is_some() {
+                unsafe {
+                    (*stat_ptr).size = 0;
+                    (*stat_ptr).is_dir = true;
+                }
+                0
+            } else {
+                // For other resource types, return minimal info
+                unsafe {
+                    (*stat_ptr).size = 0;
+                    (*stat_ptr).is_dir = false;
+                }
+                0
+            }
+        })
+    }
 }
 
 /// Handle file close operation.

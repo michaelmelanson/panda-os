@@ -8,8 +8,7 @@ use alloc::sync::Arc;
 
 use crate::process::waker::Waker;
 use crate::resource::{
-    Block, Buffer, CharacterOutput, Directory, EventSource, ProcessInterface, Resource, Surface,
-    VfsFile,
+    Buffer, CharacterOutput, Directory, EventSource, ProcessInterface, Resource, Surface, VfsFile,
 };
 
 /// Handle identifier (similar to file descriptor but for any resource)
@@ -50,11 +49,6 @@ impl Handle {
     /// Get the underlying resource Arc (for sharing ownership).
     pub fn resource_arc(&self) -> Arc<dyn Resource> {
         self.resource.clone()
-    }
-
-    /// Get this handle's resource as a Block interface.
-    pub fn as_block(&self) -> Option<&dyn Block> {
-        self.resource.as_block()
     }
 
     /// Get this handle's resource as an EventSource interface.

@@ -201,8 +201,8 @@ fn handle_send(
         // File operations
         OP_FILE_READ => file::handle_read(ctx, handle, arg0, arg1),
         OP_FILE_WRITE => file::handle_write(ctx, handle, arg0, arg1),
-        OP_FILE_SEEK => file::handle_seek(handle, arg0, arg1),
-        OP_FILE_STAT => file::handle_stat(handle, arg0),
+        OP_FILE_SEEK => file::handle_seek(ctx, handle, arg0, arg1),
+        OP_FILE_STAT => file::handle_stat(ctx, handle, arg0),
         OP_FILE_CLOSE => file::handle_close(handle),
         OP_FILE_READDIR => file::handle_readdir(handle, arg0),
 
@@ -228,8 +228,8 @@ fn handle_send(
         OP_BUFFER_FREE => buffer::handle_free(handle),
 
         // Buffer-based file operations
-        OP_FILE_READ_BUFFER => buffer::handle_read_buffer(handle, arg0 as u32),
-        OP_FILE_WRITE_BUFFER => buffer::handle_write_buffer(handle, arg0 as u32, arg1),
+        OP_FILE_READ_BUFFER => buffer::handle_read_buffer(ctx, handle, arg0 as u32),
+        OP_FILE_WRITE_BUFFER => buffer::handle_write_buffer(ctx, handle, arg0 as u32, arg1),
 
         // Surface operations
         OP_SURFACE_INFO => surface::handle_info(handle, arg0),

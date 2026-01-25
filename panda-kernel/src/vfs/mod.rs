@@ -210,6 +210,71 @@ pub async fn readdir(path: &str) -> Result<Vec<DirEntry>, FsError> {
 }
 
 // =============================================================================
+// Block Device File Wrapper
+// =============================================================================
+
+use crate::resource::BlockDevice;
+
+/// A file wrapper around a block device.
+///
+/// This allows block devices to be accessed through the VFS file interface.
+pub struct BlockDeviceFile {
+    device: Arc<dyn BlockDevice>,
+    pos: u64,
+}
+
+impl BlockDeviceFile {
+    /// Create a new block device file.
+    pub fn new(device: Arc<dyn BlockDevice>) -> Self {
+        Self { device, pos: 0 }
+    }
+}
+
+#[async_trait]
+impl File for BlockDeviceFile {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {
+        let n = self
+            .device
+            .read_at(self.pos, buf)
+            .await
+            .map_err(|_| FsError::NotReadable)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+
+    async fn write(&mut self, buf: &[u8]) -> Result<usize, FsError> {
+        let n = self
+            .device
+            .write_at(self.pos, buf)
+            .await
+            .map_err(|_| FsError::NotWritable)?;
+        self.pos += n as u64;
+        Ok(n)
+    }
+
+    async fn seek(&mut self, pos: SeekFrom) -> Result<u64, FsError> {
+        let size = self.device.size();
+        let new_pos = match pos {
+            SeekFrom::Start(n) => n as i64,
+            SeekFrom::Current(n) => self.pos as i64 + n,
+            SeekFrom::End(n) => size as i64 + n,
+        };
+        if new_pos < 0 {
+            return Err(FsError::InvalidOffset);
+        }
+        self.pos = new_pos as u64;
+        Ok(self.pos)
+    }
+
+    async fn stat(&self) -> Result<FileStat, FsError> {
+        Ok(FileStat {
+            size: self.device.size(),
+            is_dir: false,
+        })
+    }
+}
+
+// =============================================================================
 // Ext2 mount
 // =============================================================================
 
@@ -230,8 +295,8 @@ pub async fn mount_ext2(mountpoint: &str) -> Result<(), &'static str> {
     let address = &devices[0];
     info!("Attempting to mount ext2 from block device {:?}", address);
 
-    // Get the async block device
-    let Some(device) = crate::devices::virtio_block::get_async_device(address) else {
+    // Get the block device
+    let Some(device) = crate::devices::virtio_block::get_device(address) else {
         return Err("Failed to get block device");
     };
     let device: Arc<dyn crate::resource::BlockDevice> = Arc::new(device);

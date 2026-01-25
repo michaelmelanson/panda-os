@@ -14,7 +14,7 @@ mod scheme;
 mod surface;
 mod window;
 
-pub use block::{Block, BlockDevice, BlockError};
+pub use block::{BlockDevice, BlockError};
 pub use buffer::{Buffer, BufferError, SharedBuffer};
 pub use char_output::{CharOutError, CharacterOutput};
 pub use directory::{DirEntry, Directory};
@@ -46,14 +46,9 @@ pub trait VfsFile: Send + Sync {
 
 /// A kernel resource that can be accessed via handles.
 ///
-/// Resources implement one or more focused interface traits (Block, EventSource, etc.).
+/// Resources implement one or more focused interface traits (EventSource, etc.).
 /// The `as_*` methods allow dynamic dispatch to the appropriate interface.
 pub trait Resource: Send + Sync {
-    /// Get this resource as a Block (for files, disks, memory regions).
-    fn as_block(&self) -> Option<&dyn Block> {
-        None
-    }
-
     /// Get this resource as an EventSource (for keyboard, mouse, timers).
     fn as_event_source(&self) -> Option<&dyn EventSource> {
         None

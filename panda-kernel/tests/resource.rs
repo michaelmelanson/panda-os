@@ -12,7 +12,7 @@ use alloc::vec;
 
 use panda_kernel::handle::HandleTable;
 use panda_kernel::resource::{
-    Block, BlockError, CharOutError, CharacterOutput, DirEntry, DirectoryResource, Resource,
+    CharOutError, CharacterOutput, DirEntry, DirectoryResource, Resource,
 };
 
 panda_kernel::test_harness!(
@@ -21,10 +21,6 @@ panda_kernel::test_harness!(
     directory_count,
     directory_entry_past_end,
     directory_empty,
-    mock_block_interface,
-    mock_block_read,
-    mock_block_read_partial,
-    mock_block_size,
     mock_char_output,
     resource_interface_dispatch,
     handle_table_insert_and_get,
@@ -37,44 +33,6 @@ panda_kernel::test_harness!(
     buffer_free_list_partial_reuse,
     buffer_free_list_multiple_free_ranges,
 );
-
-// =============================================================================
-// Mock Block resource for testing
-// =============================================================================
-
-/// A mock block resource with fixed content for testing.
-struct MockBlock {
-    data: &'static [u8],
-}
-
-impl MockBlock {
-    fn new(data: &'static [u8]) -> Self {
-        Self { data }
-    }
-}
-
-impl Resource for MockBlock {
-    fn as_block(&self) -> Option<&dyn Block> {
-        Some(self)
-    }
-}
-
-impl Block for MockBlock {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BlockError> {
-        let offset = offset as usize;
-        if offset >= self.data.len() {
-            return Ok(0);
-        }
-        let remaining = self.data.len() - offset;
-        let to_read = buf.len().min(remaining);
-        buf[..to_read].copy_from_slice(&self.data[offset..offset + to_read]);
-        Ok(to_read)
-    }
-
-    fn size(&self) -> u64 {
-        self.data.len() as u64
-    }
-}
 
 // =============================================================================
 // Mock CharacterOutput resource for testing
@@ -116,11 +74,6 @@ impl CharacterOutput for MockCharOutput {
 // Test fixtures
 // =============================================================================
 
-/// Create a test block resource
-fn create_test_block() -> Arc<dyn Resource> {
-    Arc::new(MockBlock::new(b"Hello from test data!"))
-}
-
 /// Create a test directory resource
 fn create_test_directory() -> Arc<dyn Resource> {
     let entries = vec![
@@ -149,10 +102,6 @@ fn directory_interface_available() {
     assert!(
         resource.as_directory().is_some(),
         "Directory resource should implement Directory"
-    );
-    assert!(
-        resource.as_block().is_none(),
-        "Directory resource should not implement Block"
     );
     assert!(
         resource.as_event_source().is_none(),
@@ -196,77 +145,17 @@ fn directory_entry_past_end() {
 }
 
 // =============================================================================
-// Block interface tests
-// =============================================================================
-
-fn mock_block_interface() {
-    let resource = create_test_block();
-    assert!(
-        resource.as_block().is_some(),
-        "Block resource should implement Block"
-    );
-    assert!(
-        resource.as_event_source().is_none(),
-        "Block resource should not implement EventSource"
-    );
-    assert!(
-        resource.as_directory().is_none(),
-        "Block resource should not implement Directory"
-    );
-}
-
-fn mock_block_read() {
-    let resource = create_test_block();
-    let block = resource.as_block().unwrap();
-
-    // Read from start
-    let mut buf = [0u8; 5];
-    let n = block.read_at(0, &mut buf).expect("Read should succeed");
-    assert_eq!(n, 5);
-    assert_eq!(&buf, b"Hello");
-
-    // Read from offset
-    let mut buf = [0u8; 4];
-    let n = block.read_at(6, &mut buf).expect("Read should succeed");
-    assert_eq!(n, 4);
-    assert_eq!(&buf, b"from");
-
-    // Read past EOF
-    let size = block.size();
-    let mut buf = [0u8; 10];
-    let n = block
-        .read_at(size, &mut buf)
-        .expect("Read at EOF should succeed");
-    assert_eq!(n, 0);
-}
-
-fn mock_block_size() {
-    let resource = create_test_block();
-    let block = resource.as_block().unwrap();
-
-    // "Hello from test data!" = 21 bytes
-    assert_eq!(block.size(), 21);
-}
-
-// =============================================================================
 // Resource dispatch tests
 // =============================================================================
 
 fn resource_interface_dispatch() {
-    let block = create_test_block();
     let dir = create_test_directory();
 
-    // Block: has Block, not Directory
-    assert!(block.as_block().is_some());
-    assert!(block.as_directory().is_none());
-
-    // Directory: has Directory, not Block
+    // Directory: has Directory
     assert!(dir.as_directory().is_some());
-    assert!(dir.as_block().is_none());
 
-    // Both can be treated as dyn Resource
+    // Can be treated as dyn Resource
     fn check_resource(_r: &dyn Resource) {}
-    check_resource(block.as_ref());
     check_resource(dir.as_ref());
 }
 
@@ -291,25 +180,6 @@ fn directory_empty() {
 }
 
 // =============================================================================
-// Additional block tests
-// =============================================================================
-
-fn mock_block_read_partial() {
-    let resource = create_test_block();
-    let block = resource.as_block().unwrap();
-
-    // Read with buffer larger than remaining data
-    // "Hello from test data!" = 21 bytes
-    //  0123456789...
-    let mut buf = [0u8; 100];
-    let n = block.read_at(16, &mut buf).expect("Read should succeed");
-
-    // offset 16 leaves 5 bytes: "data!"
-    assert_eq!(n, 5);
-    assert_eq!(&buf[..n], b"data!");
-}
-
-// =============================================================================
 // CharacterOutput tests
 // =============================================================================
 
@@ -318,7 +188,6 @@ fn mock_char_output() {
 
     // Verify interface dispatch
     assert!(output.as_char_output().is_some());
-    assert!(output.as_block().is_none());
     assert!(output.as_directory().is_none());
 
     // Write some data
@@ -340,8 +209,8 @@ fn mock_char_output() {
 fn handle_table_insert_and_get() {
     let mut table = HandleTable::new();
 
-    let resource1 = create_test_block();
-    let resource2 = create_test_directory();
+    let resource1 = create_test_directory();
+    let resource2 = Arc::new(MockCharOutput::new()) as Arc<dyn Resource>;
 
     let id1 = table.insert(resource1);
     let id2 = table.insert(resource2);
@@ -353,15 +222,15 @@ fn handle_table_insert_and_get() {
     assert!(table.get(id1).is_some());
     assert!(table.get(id2).is_some());
 
-    // First should be Block, second should be Directory
-    assert!(table.get(id1).unwrap().as_block().is_some());
-    assert!(table.get(id2).unwrap().as_directory().is_some());
+    // First should be Directory, second should be CharOutput
+    assert!(table.get(id1).unwrap().as_directory().is_some());
+    assert!(table.get(id2).unwrap().as_char_output().is_some());
 }
 
 fn handle_table_remove() {
     let mut table = HandleTable::new();
 
-    let resource = create_test_block();
+    let resource = create_test_directory();
     let id = table.insert(resource);
 
     // Should exist
@@ -381,7 +250,7 @@ fn handle_table_remove() {
 fn handle_table_offset_state() {
     let mut table = HandleTable::new();
 
-    let resource = create_test_block();
+    let resource = create_test_directory();
     let id = table.insert(resource);
 
     // Initial offset should be 0
