@@ -21,11 +21,7 @@ Not yet implemented:
 
 ## Next steps
 
-### 1. Robustness
-
-- **CI setup**: Add GitHub Actions to run `make test` on push/PR. Catch regressions early.
-
-### 2. Usability (make the system interactive)
+### 1. Usability (make the system interactive)
 
 - **Make terminal execute commands**: Currently terminal just echoes input. Parse command line, spawn programs (e.g., typing `hello` spawns `/mnt/hello`). Handle child process exit and return to prompt.
 
@@ -34,7 +30,7 @@ Not yet implemented:
   - `cat` - print file contents
   - `echo` - print arguments
 
-### 3. Device discovery (see plans/DEVICE_PATHS.md)
+### 2. Device discovery (see plans/DEVICE_PATHS.md)
 
 - **Unified device paths**: Implement human-friendly device paths using PCI class names:
   - `keyboard:/pci/input/0` instead of `keyboard:/pci/00:03.0`
@@ -50,17 +46,17 @@ Not yet implemented:
   - `readdir("*:/pci/storage")` lists storage devices
   - `readdir("*:/pci/storage/0")` lists schemes that support the device
 
-### 4. Missing syscalls
+### 3. Missing syscalls
 
 - **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes from terminal.
 
 - **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
 
-### 5. System services
+### 4. System services
 
 - **Implement system initialization tool**: Declarative service configurations, similar to `systemd` on Linux, to describe services to start at boot.
 
-### 6. Block I/O optimizations
+### 5. Block I/O optimizations
 
 - **Scatter-gather support**: Submit multiple non-contiguous sectors in one virtio request for better throughput.
 
@@ -68,7 +64,7 @@ Not yet implemented:
 
 - **Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
 
-### 7. Future work
+### 6. Future work
 
 - **IPC/Pipes**: Implement pipe support for shell pipelines. The channel.rs module has stubs for message-passing but nothing is implemented yet.
 
@@ -77,6 +73,8 @@ Not yet implemented:
 - **Ext2 write support**: Currently ext2 is read-only.
 
 - **Multi-CPU support**: APIC infrastructure exists but no SMP/IPI support.
+
+- **CI setup**: Add GitHub Actions to run `make test` on push/PR.
 
 ## Known issues
 
