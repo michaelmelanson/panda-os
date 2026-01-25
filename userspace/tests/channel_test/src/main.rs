@@ -7,7 +7,7 @@ libpanda::main! {
     environment::log("Channel test: starting");
 
     // Spawn a child process - this creates a channel between parent and child
-    let Ok(child_handle) = environment::spawn("file:/initrd/channel_child", 0, 0) else {
+    let Ok(child_handle) = environment::spawn("file:/initrd/channel_child", &[], 0, 0) else {
         environment::log("FAIL: spawn returned error");
         return 1;
     };

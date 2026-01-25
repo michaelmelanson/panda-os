@@ -48,7 +48,7 @@ Not yet implemented:
 - [x] Add libpanda startup module (encode/decode args)
 
 #### Phase 4: Userspace API
-- [ ] Add spawn_with_args() to libpanda
+- [ ] Update spawn() to take args slice, send startup message over channel
 - [ ] Update main! macro to receive startup message and parse args
 
 #### Phase 5: Terminal rewrite

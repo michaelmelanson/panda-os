@@ -18,6 +18,7 @@ libpanda::main! {
     // We listen for READABLE (message from child) and CLOSED (child exited and dropped channel)
     let Ok(child_handle) = environment::spawn(
         "file:/initrd/mailbox_child",
+        &[],
         mailbox.handle().as_raw(),
         EVENT_CHANNEL_READABLE | EVENT_CHANNEL_CLOSED,
     ) else {

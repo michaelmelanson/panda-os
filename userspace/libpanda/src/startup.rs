@@ -141,3 +141,25 @@ pub fn encoded_size(args: &[&str]) -> usize {
     let strings_size: usize = args.iter().map(|s| s.len()).sum();
     header_size + lengths_size + strings_size
 }
+
+/// Receive startup arguments from the parent process.
+///
+/// This should be called early in program startup to receive the
+/// arguments sent by the parent via the HANDLE_PARENT channel.
+///
+/// Blocks until the startup message is received.
+/// Returns an empty Vec if no parent channel exists or the message is invalid.
+pub fn receive_args() -> Vec<String> {
+    use crate::channel;
+    use crate::handle::Handle;
+    use panda_abi::HANDLE_PARENT;
+
+    let parent = Handle::from(HANDLE_PARENT);
+    let mut buf = [0u8; panda_abi::MAX_MESSAGE_SIZE];
+
+    // Block waiting for the startup message from parent
+    match channel::recv(parent, &mut buf) {
+        Ok(len) => decode(&buf[..len]).unwrap_or_default(),
+        Err(_) => Vec::new(),
+    }
+}

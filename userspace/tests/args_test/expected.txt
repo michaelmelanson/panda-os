@@ -1,0 +1,8 @@
+Args test: starting
+Args test: child spawned
+args_child
+hello
+world
+123
+Args test: child exited successfully
+PASS

@@ -12,7 +12,7 @@ libpanda::main! {
     environment::log("init: mounted ext2 at /mnt");
 
     // Spawn the terminal emulator from ext2 filesystem
-    let Ok(_terminal_handle) = environment::spawn("file:/mnt/terminal", 0, 0) else {
+    let Ok(_terminal_handle) = environment::spawn("file:/mnt/terminal", &[], 0, 0) else {
         environment::log("init: failed to spawn terminal");
         return 1;
     };

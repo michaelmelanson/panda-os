@@ -50,16 +50,17 @@ pub fn handle_send(
         handle, buf_len, flags
     );
 
-    // Get the channel Arc outside of with_current_process to avoid holding
-    // the scheduler lock while calling send() (which may call waker.wake()).
-    let Some(resource) = get_channel(handle) else {
-        return -1; // Invalid handle
-    };
-    let Some(channel) = resource.as_channel() else {
-        return -1; // Not a channel
-    };
+    // Scope the resource Arc so it's dropped before any potential block_on call.
+    // block_on never returns (it switches to another process), so stack locals
+    // aren't dropped - we must ensure the Arc is released before blocking.
+    let waker = {
+        let Some(resource) = get_channel(handle) else {
+            return -1; // Invalid handle
+        };
+        let Some(channel) = resource.as_channel() else {
+            return -1; // Not a channel
+        };
 
-    loop {
         match channel.send(buf) {
             Ok(()) => {
                 debug!("channel_send: sent successfully");
@@ -70,16 +71,16 @@ pub fn handle_send(
                     return -1; // Non-blocking mode: return error
                 }
                 debug!("channel_send: queue full, blocking...");
-                // Blocking mode: wait for space
-                let waker = channel.waker();
-                ctx.block_on(waker);
-                // block_on doesn't return - when resumed, syscall restarts from beginning
+                channel.waker()
             }
             Err(ChannelError::MessageTooLarge) => return -2,
             Err(ChannelError::PeerClosed) => return -3,
             Err(_) => return -4,
         }
-    }
+    };
+    // resource Arc is now dropped, safe to block
+    ctx.block_on(waker);
+    // block_on doesn't return - when resumed, syscall restarts from beginning
 }
 
 /// Handle channel recv operation.
@@ -107,16 +108,17 @@ pub fn handle_recv(
         handle, buf_len, flags
     );
 
-    // Get the channel Arc outside of with_current_process to avoid holding
-    // the scheduler lock while calling recv() (which may call waker.wake()).
-    let Some(resource) = get_channel(handle) else {
-        return -1; // Invalid handle
-    };
-    let Some(channel) = resource.as_channel() else {
-        return -1; // Not a channel
-    };
+    // Scope the resource Arc so it's dropped before any potential block_on call.
+    // block_on never returns (it switches to another process), so stack locals
+    // aren't dropped - we must ensure the Arc is released before blocking.
+    let waker = {
+        let Some(resource) = get_channel(handle) else {
+            return -1; // Invalid handle
+        };
+        let Some(channel) = resource.as_channel() else {
+            return -1; // Not a channel
+        };
 
-    loop {
         match channel.recv(buf) {
             Ok(len) => {
                 debug!("channel_recv: received {} bytes", len);
@@ -127,14 +129,14 @@ pub fn handle_recv(
                     return -1; // Non-blocking mode: return error
                 }
                 debug!("channel_recv: queue empty, blocking...");
-                // Blocking mode: wait for data
-                let waker = channel.waker();
-                ctx.block_on(waker);
-                // block_on doesn't return - when resumed, syscall restarts from beginning
+                channel.waker()
             }
             Err(ChannelError::BufferTooSmall) => return -2,
             Err(ChannelError::PeerClosed) => return -3,
             Err(_) => return -4,
         }
-    }
+    };
+    // resource Arc is now dropped, safe to block
+    ctx.block_on(waker);
+    // block_on doesn't return - when resumed, syscall restarts from beginning
 }

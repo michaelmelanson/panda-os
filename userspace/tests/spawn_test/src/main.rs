@@ -7,7 +7,7 @@ libpanda::main! {
     environment::log("Spawn test: starting");
 
     // Spawn a child process using file: scheme
-    let Ok(child_handle) = environment::spawn("file:/initrd/spawn_child", 0, 0) else {
+    let Ok(child_handle) = environment::spawn("file:/initrd/spawn_child", &[], 0, 0) else {
         environment::log("FAIL: spawn returned error");
         return 1;
     };

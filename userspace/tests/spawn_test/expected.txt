@@ -1,9 +1,9 @@
-# Spawn test expected log output
-# Parent spawns child, waits for it to exit, and verifies exit code.
-# Note: With async syscalls, child may run before parent's spawn returns.
+# @unordered
 Spawn test: starting
+# @barrier
+Spawn test: child spawned, waiting for exit...
 Child process running!
 Child process exiting with code 42
-Spawn test: child spawned, waiting for exit...
+# @barrier
 Spawn test: child exited with expected code 42
 PASS

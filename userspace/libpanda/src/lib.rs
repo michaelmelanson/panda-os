@@ -33,20 +33,45 @@ fn alloc_error_handler(_layout: core::alloc::Layout) -> ! {
 /// Entry point macro for userspace programs.
 ///
 /// Handles the `_start` symbol, panic handler, and program exit.
+/// Automatically receives startup arguments from the parent process.
+///
+/// Use `|args|` to access command-line arguments:
 ///
 /// # Example
 /// ```
+/// // Without args
 /// libpanda::main! {
-///     syscall_log("Hello from userspace");
-///     // return value becomes the exit code
+///     environment::log("Hello!");
+///     0
+/// }
+///
+/// // With args
+/// libpanda::main! { |args|
+///     for arg in &args {
+///         environment::log(arg);
+///     }
 ///     0
 /// }
 /// ```
 #[macro_export]
 macro_rules! main {
+    (|$args:ident| $($body:tt)*) => {
+        $crate::__main_impl!($args, $($body)*);
+    };
     ($($body:tt)*) => {
+        $crate::__main_impl!(_args, $($body)*);
+    };
+}
+
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __main_impl {
+    ($args:ident, $($body:tt)*) => {
         #[unsafe(no_mangle)]
         extern "C" fn _start() -> ! {
+            // Receive startup arguments from parent
+            #[allow(unused_variables)]
+            let $args: $crate::Vec<$crate::String> = $crate::startup::receive_args();
             let exit_code = (|| -> i32 { $($body)* })();
             $crate::process::exit(exit_code);
         }

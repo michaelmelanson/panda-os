@@ -144,7 +144,13 @@ impl Scheduler {
     }
 
     /// Remove a process from the scheduler and drop it (releasing resources).
-    pub fn remove_process(&mut self, pid: ProcessId) {
+    /// Remove a process from the scheduler, returning it for deferred dropping.
+    ///
+    /// IMPORTANT: The returned Process must be dropped OUTSIDE of any scheduler
+    /// lock to avoid deadlocks. When a Process is dropped, its channel handles
+    /// are closed, which may call `wake_process()` on peers, requiring the
+    /// scheduler lock.
+    pub fn remove_process(&mut self, pid: ProcessId) -> Option<Process> {
         let entity = SchedulableEntity::Process(pid);
 
         // Remove from state maps
@@ -159,8 +165,8 @@ impl Scheduler {
                 .retain(|(_, other_entity)| *other_entity != entity);
         }
 
-        // Remove and drop the process (this releases all resources)
-        self.processes.remove(&pid);
+        // Remove and return the process (caller must drop it outside the lock)
+        self.processes.remove(&pid)
     }
 
     /// Get the currently running process ID.
@@ -536,12 +542,20 @@ pub unsafe fn exec_next_runnable() -> ! {
 }
 
 /// Remove a process from the scheduler and drop it (releasing resources).
+///
+/// The process is dropped AFTER releasing the scheduler lock to avoid deadlocks.
+/// Dropping a process may trigger channel close notifications that wake other
+/// processes, which requires the scheduler lock.
 pub fn remove_process(pid: ProcessId) {
-    let mut scheduler = SCHEDULER.write();
-    let scheduler = scheduler
-        .as_mut()
-        .expect("Scheduler has not been initialized");
-    scheduler.remove_process(pid);
+    let process = {
+        let mut scheduler = SCHEDULER.write();
+        let scheduler = scheduler
+            .as_mut()
+            .expect("Scheduler has not been initialized");
+        scheduler.remove_process(pid)
+    };
+    // Process is dropped here, outside the lock
+    drop(process);
 }
 
 /// Get the currently running process ID.

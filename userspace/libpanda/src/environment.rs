@@ -48,23 +48,34 @@ pub fn open(path: &str, mailbox: u32, event_mask: u32) -> Result<Handle, isize> 
 /// Returns a spawn handle on success, or error code.
 /// The spawn handle provides both a channel to the child and process info.
 ///
+/// If `args` is non-empty, a startup message containing the arguments is
+/// sent over the channel to the child process. The first argument should
+/// typically be the program name.
+///
 /// To attach the handle to a mailbox for event notifications, pass the
 /// mailbox handle and event mask. Pass `(0, 0)` for no mailbox attachment.
 ///
 /// # Example
 /// ```
-/// // Simple spawn, no mailbox
-/// let child = environment::spawn("file:/initrd/hello", 0, 0)?;
+/// // Simple spawn, no args, no mailbox
+/// let child = environment::spawn("file:/initrd/hello", &[], 0, 0)?;
+///
+/// // Spawn with args
+/// let child = environment::spawn(
+///     "file:/initrd/cat",
+///     &["cat", "/mnt/file.txt"],
+///     0, 0,
+/// )?;
 ///
 /// // Spawn with mailbox attachment
 /// let child = environment::spawn(
 ///     "file:/initrd/worker",
+///     &["worker"],
 ///     mailbox.handle().as_raw(),
 ///     EVENT_CHANNEL_READABLE | EVENT_CHANNEL_CLOSED,
 /// )?;
 /// ```
-#[inline(always)]
-pub fn spawn(path: &str, mailbox: u32, event_mask: u32) -> Result<Handle, isize> {
+pub fn spawn(path: &str, args: &[&str], mailbox: u32, event_mask: u32) -> Result<Handle, isize> {
     let result = send(
         Handle::ENVIRONMENT,
         OP_ENVIRONMENT_SPAWN,
@@ -74,10 +85,19 @@ pub fn spawn(path: &str, mailbox: u32, event_mask: u32) -> Result<Handle, isize>
         event_mask as usize,
     );
     if result < 0 {
-        Err(result)
-    } else {
-        Ok(Handle::from(result as u32))
+        return Err(result);
     }
+
+    let handle = Handle::from(result as u32);
+
+    // Send startup message (always, even with empty args)
+    let mut buf = [0u8; MAX_MESSAGE_SIZE];
+    if let Ok(len) = crate::startup::encode(args, &mut buf) {
+        // Best effort - ignore send errors (child may not be ready or doesn't care)
+        let _ = crate::channel::send(handle, &buf[..len]);
+    }
+
+    Ok(handle)
 }
 
 /// Log a message to the system console
