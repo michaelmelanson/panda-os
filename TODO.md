@@ -21,7 +21,17 @@ Not yet implemented:
 
 ## Next steps
 
-### Usability (make the system interactive)
+### 1. Robustness (highest priority)
+
+- **ELF parse error handling**: `process/mod.rs` uses `expect()` on ELF parsing - a malformed binary crashes the kernel. Return error to spawn syscall instead.
+
+- **Graceful PID lookup failure**: `scheduler/mod.rs` panics on invalid PID. Return error instead of crashing.
+
+- **CI setup**: Add GitHub Actions to run `make test` on push/PR. Catch regressions early.
+
+- **Process exit during async I/O**: Ensure pending I/O futures are properly cancelled and resources cleaned up when a process exits.
+
+### 2. Usability (make the system interactive)
 
 - **Make terminal execute commands**: Currently terminal just echoes input. Parse command line, spawn programs (e.g., typing `hello` spawns `/mnt/hello`). Handle child process exit and return to prompt.
 
@@ -30,7 +40,7 @@ Not yet implemented:
   - `cat` - print file contents
   - `echo` - print arguments
 
-### Device discovery (see plans/DEVICE_PATHS.md)
+### 3. Device discovery (see plans/DEVICE_PATHS.md)
 
 - **Unified device paths**: Implement human-friendly device paths using PCI class names:
   - `keyboard:/pci/input/0` instead of `keyboard:/pci/00:03.0`
@@ -46,17 +56,17 @@ Not yet implemented:
   - `readdir("*:/pci/storage")` lists storage devices
   - `readdir("*:/pci/storage/0")` lists schemes that support the device
 
-### Missing syscalls
+### 4. Missing syscalls
 
 - **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes from terminal.
 
 - **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
 
-### System services
+### 5. System services
 
 - **Implement system initialization tool**: Declarative service configurations, similar to `systemd` on Linux, to describe services to start at boot.
 
-### Block I/O optimizations
+### 6. Block I/O optimizations
 
 - **Scatter-gather support**: Submit multiple non-contiguous sectors in one virtio request for better throughput.
 
@@ -64,7 +74,7 @@ Not yet implemented:
 
 - **Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
 
-### Future work
+### 7. Future work
 
 - **IPC/Pipes**: Implement pipe support for shell pipelines. The channel.rs module has stubs for message-passing but nothing is implemented yet.
 
