@@ -80,7 +80,8 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
 
     let init_data = initrd::get_init();
     let init_process =
-        unsafe { Process::from_elf_data(Context::from_current_page_table(), init_data) };
+        unsafe { Process::from_elf_data(Context::from_current_page_table(), init_data) }
+            .expect("Failed to load init process - cannot boot");
     scheduler::init(init_process);
 
     // Start compositor task now that scheduler is ready

@@ -195,7 +195,16 @@ pub fn handle_spawn(ctx: &SyscallContext, uri_ptr: usize, uri_len: usize) -> isi
         let elf_data = elf_data.into_boxed_slice();
         let elf_ptr: *const [u8] = alloc::boxed::Box::leak(elf_data);
 
-        let process = Process::from_elf_data(Context::new_user_context(), elf_ptr);
+        let process = match Process::from_elf_data(Context::new_user_context(), elf_ptr) {
+            Ok(p) => p,
+            Err(e) => {
+                error!(
+                    "SPAWN: failed to create process from {}: {:?}",
+                    uri_owned, e
+                );
+                return -1;
+            }
+        };
         let pid = process.id();
         let process_info = process.info().clone();
         debug!("SPAWN: created process {:?}", pid);

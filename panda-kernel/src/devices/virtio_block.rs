@@ -224,6 +224,22 @@ struct QueuedBlockRequest {
     dma_buffer: DmaBuffer,
 }
 
+/// A cancelled async request that still has in-flight I/O.
+///
+/// When a future is dropped while I/O is in flight, we move the DMA buffer
+/// here so it stays valid until the I/O completes. The IRQ handler will
+/// clean these up when the I/O finishes.
+struct CancelledRequest {
+    /// DMA buffer that must stay alive until I/O completes.
+    dma_buffer: DmaBuffer,
+    /// Virtio request header (needed for complete_*_blocks).
+    request_header: BlockRequest,
+    /// Virtio response status (needed for complete_*_blocks).
+    response_status: BlockResponse,
+    /// Whether this was a read or write (determines which complete function to call).
+    is_read: bool,
+}
+
 /// Inner state for a virtio block device.
 ///
 /// This is wrapped by `VirtioBlockDevice` which provides the public async API.
@@ -244,6 +260,9 @@ struct VirtioBlockDeviceInner {
     async_wakers: BTreeMap<VirtioToken, TaskWaker>,
     /// Tokens that have completed and are ready to be picked up by futures.
     completed_tokens: BTreeSet<VirtioToken>,
+    /// Cancelled requests with in-flight I/O. The DMA buffers are kept alive
+    /// here until the I/O completes, then cleaned up by the IRQ handler.
+    cancelled_requests: BTreeMap<VirtioToken, CancelledRequest>,
 }
 
 impl VirtioBlockDeviceInner {
@@ -270,6 +289,32 @@ impl VirtioBlockDeviceInner {
     /// Enable device interrupts.
     pub fn enable_interrupts(&mut self) {
         self.device.enable_interrupts();
+    }
+
+    /// Register a cancelled request. Called when a future is dropped while I/O is in flight.
+    /// The DMA buffer is stored here until the I/O completes.
+    pub fn register_cancelled(
+        &mut self,
+        token: VirtioToken,
+        dma_buffer: DmaBuffer,
+        request_header: BlockRequest,
+        response_status: BlockResponse,
+        is_read: bool,
+    ) {
+        // Remove from async_wakers since the future is gone
+        self.async_wakers.remove(&token);
+        // Remove from completed_tokens if it completed before we could clean up
+        self.completed_tokens.remove(&token);
+        // Store the cancelled request
+        self.cancelled_requests.insert(
+            token,
+            CancelledRequest {
+                dma_buffer,
+                request_header,
+                response_status,
+                is_read,
+            },
+        );
     }
 
     /// Try to submit a queued request to the device.
@@ -354,8 +399,38 @@ impl VirtioBlockDeviceInner {
                 break; // Only process one per call
             }
 
+            // Check cancelled requests (futures dropped mid-flight)
+            if let Some(mut cancelled) = self.cancelled_requests.remove(&token) {
+                debug!(
+                    "process_completions: cleaning up cancelled request for token {:?}",
+                    token
+                );
+                // Complete the virtio request to free the descriptor
+                let _ = if cancelled.is_read {
+                    unsafe {
+                        self.device.complete_read_blocks(
+                            token.raw(),
+                            &cancelled.request_header,
+                            cancelled.dma_buffer.as_mut_slice(),
+                            &mut cancelled.response_status,
+                        )
+                    }
+                } else {
+                    unsafe {
+                        self.device.complete_write_blocks(
+                            token.raw(),
+                            &cancelled.request_header,
+                            cancelled.dma_buffer.as_slice(),
+                            &mut cancelled.response_status,
+                        )
+                    }
+                };
+                // cancelled is dropped here, freeing the DMA buffer
+                break; // Only process one per call
+            }
+
             debug!(
-                "process_completions: token {:?} not in pending_requests or async_wakers",
+                "process_completions: token {:?} not in pending_requests, async_wakers, or cancelled_requests",
                 token
             );
             break;
@@ -576,6 +651,26 @@ impl Future for VirtioReadFuture {
     }
 }
 
+impl Drop for VirtioReadFuture {
+    fn drop(&mut self) {
+        // If we have a submitted request, we need to keep the DMA buffer alive
+        // until the I/O completes. Register it with the device.
+        if let AsyncReadState::Submitted { token } = self.state {
+            if let Some(dma_buffer) = self.dma_buffer.take() {
+                let mut device = self.device.lock();
+                device.register_cancelled(
+                    token,
+                    dma_buffer,
+                    core::mem::take(&mut self.request_header),
+                    core::mem::take(&mut self.response_status),
+                    true, // is_read
+                );
+            }
+        }
+        // For NotSubmitted or Completed states, normal drop is fine
+    }
+}
+
 /// State of an async write operation.
 enum AsyncWriteState {
     NotSubmitted,
@@ -684,6 +779,26 @@ impl Future for VirtioWriteFuture {
                 Poll::Ready(Ok(this.buf_len))
             }
         }
+    }
+}
+
+impl Drop for VirtioWriteFuture {
+    fn drop(&mut self) {
+        // If we have a submitted request, we need to keep the DMA buffer alive
+        // until the I/O completes. Register it with the device.
+        if let AsyncWriteState::Submitted { token } = self.state {
+            if let Some(dma_buffer) = self.dma_buffer.take() {
+                let mut device = self.device.lock();
+                device.register_cancelled(
+                    token,
+                    dma_buffer,
+                    core::mem::take(&mut self.request_header),
+                    core::mem::take(&mut self.response_status),
+                    false, // is_read
+                );
+            }
+        }
+        // For NotSubmitted or Completed states, normal drop is fine
     }
 }
 
@@ -897,6 +1012,7 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
         queued_requests: VecDeque::new(),
         async_wakers: BTreeMap::new(),
         completed_tokens: BTreeSet::new(),
+        cancelled_requests: BTreeMap::new(),
     };
 
     let block_device = Arc::new(Spinlock::new(block_device));

@@ -28,11 +28,21 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use goblin::elf::Elf;
+use log::error;
 use x86_64::VirtAddr;
 
 use crate::handle::HandleTable;
 use crate::memory::{self, Mapping, MappingBacking};
 use crate::scheduler::RTC;
+
+/// Errors that can occur when creating a process.
+#[derive(Debug)]
+pub enum ProcessError {
+    /// The ELF binary could not be parsed.
+    InvalidElf(&'static str),
+    /// The binary is 32-bit but only 64-bit is supported.
+    Not64Bit,
+}
 
 /// Unique process identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -111,10 +121,21 @@ impl Process {
     }
 
     /// Create a process from ELF data.
-    pub fn from_elf_data(context: Context, data: *const [u8]) -> Self {
+    ///
+    /// Returns an error if the ELF binary is malformed or unsupported.
+    pub fn from_elf_data(context: Context, data: *const [u8]) -> Result<Self, ProcessError> {
         let data = unsafe { data.as_ref().unwrap() };
-        let elf_parsed = Elf::parse(data).expect("failed to parse ELF binary");
-        assert!(elf_parsed.is_64, "32-bit binaries are not supported");
+        let elf_parsed = match Elf::parse(data) {
+            Ok(elf) => elf,
+            Err(e) => {
+                error!("Failed to parse ELF binary: {}", e);
+                return Err(ProcessError::InvalidElf("failed to parse ELF binary"));
+            }
+        };
+        if !elf_parsed.is_64 {
+            error!("32-bit binaries are not supported");
+            return Err(ProcessError::Not64Bit);
+        }
 
         // Save current page table and switch to the new context's page table
         let saved_page_table = memory::current_page_table_phys();
@@ -153,7 +174,7 @@ impl Process {
         let buffer_pages = panda_abi::BUFFER_MAX_SIZE / 4096;
         buffer_free_ranges.insert(VirtAddr::new(panda_abi::BUFFER_BASE as u64), buffer_pages);
 
-        Process {
+        Ok(Process {
             id,
             state: ProcessState::Runnable,
             last_scheduled: RTC::zero(),
@@ -168,7 +189,7 @@ impl Process {
             info: Arc::new(ProcessInfo::new(id)),
             buffer_free_ranges,
             pending_syscall: None,
-        }
+        })
     }
 
     /// Get the process info (for creating handles).

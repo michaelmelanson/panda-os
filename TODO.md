@@ -23,10 +23,6 @@ Not yet implemented:
 
 ### 1. Robustness (highest priority)
 
-- **ELF parse error handling**: `process/mod.rs` uses `expect()` on ELF parsing - a malformed binary crashes the kernel. Return error to spawn syscall instead.
-
-- **Graceful PID lookup failure**: `scheduler/mod.rs` panics on invalid PID. Return error instead of crashing.
-
 - **CI setup**: Add GitHub Actions to run `make test` on push/PR. Catch regressions early.
 
 - **Process exit during async I/O**: Ensure pending I/O futures are properly cancelled and resources cleaned up when a process exits.
