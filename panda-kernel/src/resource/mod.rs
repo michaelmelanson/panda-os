@@ -14,7 +14,7 @@ mod scheme;
 mod surface;
 mod window;
 
-pub use block::{Block, BlockDevice, BlockDeviceWrapper, BlockError};
+pub use block::{Block, BlockDevice, BlockError};
 pub use buffer::{Buffer, BufferError, SharedBuffer};
 pub use char_output::{CharOutError, CharacterOutput};
 pub use directory::{DirEntry, Directory};
@@ -31,10 +31,18 @@ pub use surface::{
 };
 pub use window::WindowResource;
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use spinning_top::Spinlock;
 
 use crate::process::waker::Waker;
+use crate::vfs;
+
+/// A VFS file that can be accessed asynchronously.
+pub trait VfsFile: Send + Sync {
+    /// Get a reference to the underlying async File.
+    fn file(&self) -> &Spinlock<Box<dyn vfs::File>>;
+}
 
 /// A kernel resource that can be accessed via handles.
 ///
@@ -43,11 +51,6 @@ use crate::process::waker::Waker;
 pub trait Resource: Send + Sync {
     /// Get this resource as a Block (for files, disks, memory regions).
     fn as_block(&self) -> Option<&dyn Block> {
-        None
-    }
-
-    /// Get this resource as a BlockDevice (for async sector-level I/O).
-    fn as_block_device(&self) -> Option<&dyn BlockDevice> {
         None
     }
 
@@ -103,6 +106,11 @@ pub trait Resource: Send + Sync {
 
     /// Get this resource as a SharedBuffer Arc (for sharing buffer ownership).
     fn as_shared_buffer(&self) -> Option<Arc<SharedBuffer>> {
+        None
+    }
+
+    /// Get this resource as a VFS file (for async file operations).
+    fn as_vfs_file(&self) -> Option<&dyn VfsFile> {
         None
     }
 }

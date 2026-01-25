@@ -1,18 +1,59 @@
 //! Virtual File System (VFS) abstraction.
 //!
 //! Provides a unified interface for mounting and accessing different backing stores.
+//!
+//! All VFS operations are async. Synchronous filesystems (like TarFs) simply
+//! return immediately-ready futures.
 
+pub mod ext2;
 mod tarfs;
 
+pub use ext2::Ext2Fs;
 pub use tarfs::TarFs;
 
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use async_trait::async_trait;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker as TaskWaker};
 use spinning_top::RwSpinlock;
 
-use crate::process::waker::Waker;
+// =============================================================================
+// Synchronous wrapper for immediate-completion futures
+// =============================================================================
+
+/// A no-op waker that does nothing when woken.
+/// Used for polling futures that are expected to complete immediately.
+fn noop_waker() -> TaskWaker {
+    fn noop_clone(_: *const ()) -> RawWaker {
+        RawWaker::new(core::ptr::null(), &NOOP_VTABLE)
+    }
+    fn noop(_: *const ()) {}
+
+    static NOOP_VTABLE: RawWakerVTable = RawWakerVTable::new(noop_clone, noop, noop, noop);
+
+    unsafe { TaskWaker::from_raw(RawWaker::new(core::ptr::null(), &NOOP_VTABLE)) }
+}
+
+/// Poll a future once, expecting it to complete immediately.
+///
+/// This is for use with synchronous filesystems like TarFs that always
+/// return immediately-ready futures. Panics if the future returns Pending.
+///
+/// For truly async operations (like ext2 disk I/O), use the process-level
+/// async infrastructure instead.
+pub fn poll_immediate<T>(mut future: Pin<&mut (impl Future<Output = T> + ?Sized)>) -> T {
+    let waker = noop_waker();
+    let mut cx = Context::from_waker(&waker);
+
+    match future.as_mut().poll(&mut cx) {
+        Poll::Ready(result) => result,
+        Poll::Pending => panic!("poll_immediate called on a future that returned Pending"),
+    }
+}
 
 /// How to reposition within a file
 pub enum SeekFrom {
@@ -25,6 +66,7 @@ pub enum SeekFrom {
 }
 
 /// Filesystem errors
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FsError {
     /// Path not found
     NotFound,
@@ -36,21 +78,6 @@ pub enum FsError {
     NotWritable,
     /// Resource is not seekable
     NotSeekable,
-    /// Operation would block - caller should block on the waker
-    WouldBlock(Arc<Waker>),
-}
-
-impl core::fmt::Debug for FsError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            FsError::NotFound => write!(f, "NotFound"),
-            FsError::InvalidOffset => write!(f, "InvalidOffset"),
-            FsError::NotReadable => write!(f, "NotReadable"),
-            FsError::NotWritable => write!(f, "NotWritable"),
-            FsError::NotSeekable => write!(f, "NotSeekable"),
-            FsError::WouldBlock(_) => write!(f, "WouldBlock"),
-        }
-    }
 }
 
 /// File metadata
@@ -71,33 +98,39 @@ pub struct DirEntry {
     pub is_dir: bool,
 }
 
-/// A filesystem that can be mounted
+/// A filesystem that can be mounted (async interface).
+///
+/// All operations are async. Synchronous filesystems return immediately-ready futures.
+#[async_trait]
 pub trait Filesystem: Send + Sync {
     /// Open a file at the given path (relative to mount point)
-    fn open(&self, path: &str) -> Option<Box<dyn File>>;
+    async fn open(&self, path: &str) -> Result<Box<dyn File>, FsError>;
 
     /// Get metadata for a path
-    fn stat(&self, path: &str) -> Option<FileStat>;
+    async fn stat(&self, path: &str) -> Result<FileStat, FsError>;
 
     /// List directory contents
-    fn readdir(&self, path: &str) -> Option<Vec<DirEntry>>;
+    async fn readdir(&self, path: &str) -> Result<Vec<DirEntry>, FsError>;
 }
 
-/// An open file
+/// An open file (async interface).
+///
+/// All I/O operations are async. In-memory files complete immediately.
+#[async_trait]
 pub trait File: Send + Sync {
     /// Read bytes into the buffer, returning bytes read
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError>;
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError>;
 
     /// Write bytes from the buffer, returning bytes written
-    fn write(&mut self, _buf: &[u8]) -> Result<usize, FsError> {
+    async fn write(&mut self, _buf: &[u8]) -> Result<usize, FsError> {
         Err(FsError::NotWritable)
     }
 
     /// Seek to a position in the file
-    fn seek(&mut self, pos: SeekFrom) -> Result<u64, FsError>;
+    async fn seek(&mut self, pos: SeekFrom) -> Result<u64, FsError>;
 
     /// Get file metadata
-    fn stat(&self) -> FileStat;
+    async fn stat(&self) -> Result<FileStat, FsError>;
 }
 
 /// A mounted filesystem
@@ -119,25 +152,23 @@ pub fn mount(path: &str, fs: Box<dyn Filesystem>) {
     });
 }
 
-/// Find the mount and relative path for an absolute path, executing a closure with the result.
-fn with_resolved_path<T, F>(path: &str, f: F) -> Option<T>
-where
-    F: FnOnce(&dyn Filesystem, &str) -> Option<T>,
-{
+/// Find the filesystem and relative path for an absolute path.
+/// Returns (filesystem_index, relative_path) or None if no mount matches.
+fn resolve_path(path: &str) -> Option<(usize, String)> {
     let mounts = MOUNTS.read();
 
     // Find the longest matching mount point
-    let mut best_match: Option<(usize, &Mount)> = None;
+    let mut best_match: Option<(usize, usize)> = None;
 
-    for mount in mounts.iter() {
+    for (index, mount) in mounts.iter().enumerate() {
         if path.starts_with(&mount.path) {
             let mount_len = mount.path.len();
             // Check it's a proper prefix (path continues with / or ends exactly)
             if path.len() == mount_len || path.as_bytes().get(mount_len) == Some(&b'/') {
                 match best_match {
-                    None => best_match = Some((mount_len, mount)),
+                    None => best_match = Some((mount_len, index)),
                     Some((best_len, _)) if mount_len > best_len => {
-                        best_match = Some((mount_len, mount))
+                        best_match = Some((mount_len, index))
                     }
                     _ => {}
                 }
@@ -145,29 +176,85 @@ where
         }
     }
 
-    best_match.and_then(|(mount_len, mount)| {
+    best_match.map(|(mount_len, index)| {
         // Get the relative path (skip mount point and leading slash)
         let relative = if path.len() > mount_len {
-            &path[mount_len + 1..] // Skip the '/' after mount point
+            String::from(&path[mount_len + 1..]) // Skip the '/' after mount point
         } else {
-            "" // Root of the mount
+            String::new() // Root of the mount
         };
-
-        f(mount.fs.as_ref(), relative)
+        (index, relative)
     })
 }
 
-/// Open a file at the given absolute path
-pub fn open(path: &str) -> Option<Box<dyn File>> {
-    with_resolved_path(path, |fs, relative| fs.open(relative))
+/// Open a file at the given absolute path (async).
+pub async fn open(path: &str) -> Result<Box<dyn File>, FsError> {
+    let (index, relative) = resolve_path(path).ok_or(FsError::NotFound)?;
+    let mounts = MOUNTS.read();
+    mounts[index].fs.open(&relative).await
 }
 
-/// Get metadata for an absolute path
-pub fn stat(path: &str) -> Option<FileStat> {
-    with_resolved_path(path, |fs, relative| fs.stat(relative))
+/// Get metadata for an absolute path (async).
+pub async fn stat(path: &str) -> Result<FileStat, FsError> {
+    let (index, relative) = resolve_path(path).ok_or(FsError::NotFound)?;
+    let mounts = MOUNTS.read();
+    mounts[index].fs.stat(&relative).await
 }
 
-/// List directory contents at an absolute path
-pub fn readdir(path: &str) -> Option<Vec<DirEntry>> {
-    with_resolved_path(path, |fs, relative| fs.readdir(relative))
+/// List directory contents at an absolute path (async).
+pub async fn readdir(path: &str) -> Result<Vec<DirEntry>, FsError> {
+    let (index, relative) = resolve_path(path).ok_or(FsError::NotFound)?;
+    let mounts = MOUNTS.read();
+    mounts[index].fs.readdir(&relative).await
+}
+
+// =============================================================================
+// Ext2 mount
+// =============================================================================
+
+/// Mount ext2 filesystem from the first block device at the given mountpoint.
+///
+/// This is called from the mount syscall handler.
+pub async fn mount_ext2(mountpoint: &str) -> Result<(), &'static str> {
+    use log::info;
+
+    // Get the list of block devices
+    let devices = crate::devices::virtio_block::list_devices();
+
+    if devices.is_empty() {
+        return Err("No block devices found");
+    }
+
+    // Use the first block device
+    let address = &devices[0];
+    info!("Attempting to mount ext2 from block device {:?}", address);
+
+    // Get the async block device
+    let Some(device) = crate::devices::virtio_block::get_async_device(address) else {
+        return Err("Failed to get block device");
+    };
+    let device: Arc<dyn crate::resource::BlockDevice> = Arc::new(device);
+
+    // Mount ext2
+    let fs = Ext2Fs::mount(device).await?;
+    mount(mountpoint, Box::new(Ext2FsWrapper(fs)));
+    Ok(())
+}
+
+/// Wrapper to convert Arc<Ext2Fs> to Box<dyn Filesystem>.
+struct Ext2FsWrapper(Arc<Ext2Fs>);
+
+#[async_trait]
+impl Filesystem for Ext2FsWrapper {
+    async fn open(&self, path: &str) -> Result<Box<dyn File>, FsError> {
+        self.0.open(path).await
+    }
+
+    async fn stat(&self, path: &str) -> Result<FileStat, FsError> {
+        self.0.stat(path).await
+    }
+
+    async fn readdir(&self, path: &str) -> Result<Vec<DirEntry>, FsError> {
+        self.0.readdir(path).await
+    }
 }

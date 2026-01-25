@@ -86,6 +86,8 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
     // Start compositor task now that scheduler is ready
     panda_kernel::compositor::spawn_compositor_task();
 
+    // Note: ext2 filesystem mounting is now done by init via the mount syscall
+
     unsafe { scheduler::exec_next_runnable() };
 }
 

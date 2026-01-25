@@ -99,3 +99,23 @@ pub fn opendir(path: &str) -> Result<Handle, isize> {
 pub fn screenshot_ready() {
     log("<<<SCREENSHOT_READY>>>");
 }
+
+/// Mount a filesystem
+///
+/// # Arguments
+/// * `fstype` - Filesystem type (e.g., "ext2")
+/// * `mountpoint` - Path where the filesystem should be mounted (e.g., "/mnt")
+///
+/// Returns 0 on success, or negative error code
+#[inline(always)]
+pub fn mount(fstype: &str, mountpoint: &str) -> Result<(), isize> {
+    let result = send(
+        Handle::ENVIRONMENT,
+        OP_ENVIRONMENT_MOUNT,
+        fstype.as_ptr() as usize,
+        fstype.len(),
+        mountpoint.as_ptr() as usize,
+        mountpoint.len(),
+    );
+    if result < 0 { Err(result) } else { Ok(()) }
+}

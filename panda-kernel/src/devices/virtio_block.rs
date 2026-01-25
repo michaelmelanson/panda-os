@@ -4,9 +4,15 @@
 //! (interrupt-driven) I/O. Async I/O allows the calling process to be
 //! blocked while other processes run.
 
-use alloc::collections::{BTreeMap, VecDeque};
+use alloc::boxed::Box;
+use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
+use async_trait::async_trait;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker as TaskWaker};
 use log::debug;
 use spinning_top::{RwSpinlock, Spinlock};
 use virtio_drivers::{
@@ -16,6 +22,25 @@ use virtio_drivers::{
     transport::{DeviceStatus, DeviceType, Transport},
 };
 use x86_64::structures::idt::InterruptStackFrame;
+
+/// A token representing a pending virtio request.
+///
+/// This wraps the raw `u16` token returned by virtio-drivers to provide
+/// type safety and prevent accidental misuse of token values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VirtioToken(u16);
+
+impl VirtioToken {
+    /// Create a new token from a raw virtio descriptor index.
+    fn new(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    /// Get the raw token value for passing to virtio-drivers.
+    fn raw(self) -> u16 {
+        self.0
+    }
+}
 
 use crate::apic;
 use crate::device_address::DeviceAddress;
@@ -167,7 +192,7 @@ pub enum BlockRequestOperation {
 struct PendingBlockRequest {
     /// Virtio descriptor token (stored for reference, used as map key).
     #[allow(dead_code)]
-    token: u16,
+    token: VirtioToken,
     /// Operation type.
     operation: BlockRequestOperation,
     /// Starting sector (stored for debugging/future use).
@@ -206,15 +231,59 @@ pub struct VirtioBlockDevice {
     capacity_sectors: u64,
     sector_size: u32,
     /// Active requests submitted to virtio, keyed by token.
-    pending_requests: BTreeMap<u16, PendingBlockRequest>,
+    pending_requests: BTreeMap<VirtioToken, PendingBlockRequest>,
     /// Queued requests waiting for virtio queue space (FIFO).
     queued_requests: VecDeque<QueuedBlockRequest>,
+    // =========================================================================
+    // Async future-based I/O state (new model)
+    // =========================================================================
+    /// Wakers for futures waiting on I/O completion, keyed by virtio token.
+    /// The future owns its DMA buffer; the device just needs to wake it.
+    async_wakers: BTreeMap<VirtioToken, TaskWaker>,
+    /// Tokens that have completed and are ready to be picked up by futures.
+    completed_tokens: BTreeSet<VirtioToken>,
 }
 
 impl VirtioBlockDevice {
     /// Get the device address.
     pub fn address(&self) -> &DeviceAddress {
         &self.address
+    }
+
+    /// Get the sector size in bytes.
+    pub fn sector_size(&self) -> u32 {
+        self.sector_size
+    }
+
+    /// Get the total capacity in sectors.
+    pub fn capacity_sectors(&self) -> u64 {
+        self.capacity_sectors
+    }
+
+    /// Disable device interrupts (for sync I/O to avoid deadlock).
+    pub fn disable_interrupts(&mut self) {
+        self.device.disable_interrupts();
+    }
+
+    /// Enable device interrupts.
+    pub fn enable_interrupts(&mut self) {
+        self.device.enable_interrupts();
+    }
+
+    /// Read a single block synchronously (busy-wait).
+    /// The buffer must be exactly sector_size bytes.
+    pub fn read_block_sync(&mut self, sector: u64, buf: &mut [u8]) -> Result<(), ()> {
+        self.device
+            .read_blocks(sector as usize, buf)
+            .map_err(|_| ())
+    }
+
+    /// Write a single block synchronously (busy-wait).
+    /// The buffer must be exactly sector_size bytes.
+    pub fn write_block_sync(&mut self, sector: u64, buf: &[u8]) -> Result<(), ()> {
+        self.device
+            .write_blocks(sector as usize, buf)
+            .map_err(|_| ())
     }
 
     /// Try to submit a queued request to the device.
@@ -224,8 +293,8 @@ impl VirtioBlockDevice {
         queued: &mut QueuedBlockRequest,
         request_header: &mut BlockRequest,
         response_status: &mut BlockResponse,
-    ) -> Result<u16, VirtioError> {
-        match queued.operation {
+    ) -> Result<VirtioToken, VirtioError> {
+        let raw_token = match queued.operation {
             BlockRequestOperation::Read => unsafe {
                 self.device.read_blocks_nb(
                     queued.sector as usize,
@@ -242,7 +311,13 @@ impl VirtioBlockDevice {
                     response_status,
                 )
             },
-        }
+        }?;
+        Ok(VirtioToken::new(raw_token))
+    }
+
+    /// Peek at the next completed token without consuming it.
+    fn peek_completed_token(&mut self) -> Option<VirtioToken> {
+        self.device.peek_used().map(VirtioToken::new)
     }
 
     /// Process completed requests and try to submit queued ones.
@@ -254,33 +329,50 @@ impl VirtioBlockDevice {
 
         // Check if any request is pending
         let has_pending = !self.pending_requests.is_empty();
-        let peek = self.device.peek_used();
-        if has_pending && peek.is_some() {
+        let has_async = !self.async_wakers.is_empty();
+        let peek = self.peek_completed_token();
+        if (has_pending || has_async) && peek.is_some() {
             debug!(
-                "process_completions: has_pending=true, peek_used={:?}, isr_bits={:#x}",
+                "process_completions: has_pending={}, has_async={}, peek_used={:?}, isr_bits={:#x}",
+                has_pending,
+                has_async,
                 peek,
                 isr.bits()
             );
         }
 
-        // Wake processes with completed requests
-        while let Some(token) = self.device.peek_used() {
-            debug!("process_completions: found completed token {}", token);
+        // Wake processes/futures with completed requests
+        while let Some(token) = self.peek_completed_token() {
+            debug!("process_completions: found completed token {:?}", token);
+
+            // Check old-style pending requests (process-based)
             if let Some(pending) = self.pending_requests.get(&token) {
                 debug!(
                     "process_completions: waking process {:?}",
                     pending.process_id
                 );
                 pending.waker.wake();
-            } else {
+                // Don't remove from pending_requests here - the woken process
+                // will do that in complete_pending_read/write
+                break; // Only process one per call to avoid holding lock too long
+            }
+
+            // Check new-style async wakers (future-based)
+            if let Some(waker) = self.async_wakers.remove(&token) {
                 debug!(
-                    "process_completions: token {} not in pending_requests",
+                    "process_completions: waking async future for token {:?}",
                     token
                 );
+                self.completed_tokens.insert(token);
+                waker.wake();
+                break; // Only process one per call
             }
-            // Don't remove from pending_requests here - the woken process
-            // will do that in complete_pending_read/write
-            break; // Only process one per call to avoid holding lock too long
+
+            debug!(
+                "process_completions: token {:?} not in pending_requests or async_wakers",
+                token
+            );
+            break;
         }
 
         // Try to submit queued requests
@@ -317,340 +409,6 @@ impl VirtioBlockDevice {
                 }
             }
         }
-    }
-}
-
-impl BlockDevice for Spinlock<VirtioBlockDevice> {
-    fn read_sectors(&self, start_sector: u64, buf: &mut [u8]) -> Result<(), BlockError> {
-        let mut device = self.lock();
-        let sector_size = device.sector_size as usize;
-
-        if buf.len() % sector_size != 0 {
-            return Err(BlockError::IoError);
-        }
-
-        // Disable device interrupts during sync I/O to avoid deadlock.
-        // The sync path busy-waits with the lock held, and the IRQ handler
-        // also needs the lock, which would cause deadlock.
-        device.device.disable_interrupts();
-
-        let num_sectors = buf.len() / sector_size;
-        for i in 0..num_sectors {
-            let sector = start_sector + i as u64;
-            let offset = i * sector_size;
-            device
-                .device
-                .read_blocks(sector as usize, &mut buf[offset..offset + sector_size])
-                .map_err(|_| BlockError::IoError)?;
-        }
-
-        // Re-enable interrupts for async I/O
-        device.device.enable_interrupts();
-
-        Ok(())
-    }
-
-    fn write_sectors(&self, start_sector: u64, buf: &[u8]) -> Result<(), BlockError> {
-        let mut device = self.lock();
-        let sector_size = device.sector_size as usize;
-
-        if buf.len() % sector_size != 0 {
-            return Err(BlockError::IoError);
-        }
-
-        // Disable device interrupts during sync I/O to avoid deadlock
-        device.device.disable_interrupts();
-
-        let num_sectors = buf.len() / sector_size;
-        for i in 0..num_sectors {
-            let sector = start_sector + i as u64;
-            let offset = i * sector_size;
-            device
-                .device
-                .write_blocks(sector as usize, &buf[offset..offset + sector_size])
-                .map_err(|_| BlockError::IoError)?;
-        }
-
-        // Re-enable interrupts for async I/O
-        device.device.enable_interrupts();
-
-        Ok(())
-    }
-
-    fn sector_size(&self) -> u32 {
-        self.lock().sector_size
-    }
-
-    fn sector_count(&self) -> u64 {
-        self.lock().capacity_sectors
-    }
-
-    fn flush(&self) -> Result<(), BlockError> {
-        // Note: virtio-drivers crate's flush() method is available if FLUSH feature
-        // is negotiated. For now we rely on write-through behavior.
-        Ok(())
-    }
-
-    fn supports_async(&self) -> bool {
-        true
-    }
-
-    fn read_sectors_async(
-        &self,
-        start_sector: u64,
-        buf: &mut [u8],
-        process_id: ProcessId,
-        waker: Arc<Waker>,
-    ) -> Result<(), BlockError> {
-        let mut device = self.lock();
-        let sector_size = device.sector_size as usize;
-
-        if buf.len() % sector_size != 0 {
-            return Err(BlockError::IoError);
-        }
-
-        // Allocate DMA buffer
-        let mut dma_buffer = DmaBuffer::new(buf.len());
-        let mut request_header = BlockRequest::default();
-        let mut response_status = BlockResponse::default();
-
-        // Try to submit the request
-        let token = match unsafe {
-            device.device.read_blocks_nb(
-                start_sector as usize,
-                &mut request_header,
-                dma_buffer.as_mut_slice(),
-                &mut response_status,
-            )
-        } {
-            Ok(token) => token,
-            Err(VirtioError::QueueFull) => {
-                // Queue full - add to wait queue
-                device.queued_requests.push_back(QueuedBlockRequest {
-                    operation: BlockRequestOperation::Read,
-                    sector: start_sector,
-                    process_id,
-                    waker,
-                    dma_buffer,
-                });
-                return Err(BlockError::WouldBlock);
-            }
-            Err(_) => return Err(BlockError::IoError),
-        };
-
-        // Check if it completed immediately
-        let peek = device.device.peek_used();
-        debug!("read_sectors_async: token={}, peek_used={:?}", token, peek);
-        if peek == Some(token) {
-            unsafe {
-                device
-                    .device
-                    .complete_read_blocks(
-                        token,
-                        &request_header,
-                        dma_buffer.as_mut_slice(),
-                        &mut response_status,
-                    )
-                    .map_err(|_| BlockError::IoError)?;
-            }
-            // Copy from DMA buffer to user buffer
-            buf.copy_from_slice(dma_buffer.as_slice());
-            return Ok(());
-        }
-
-        // Request is pending - save state
-        debug!(
-            "read_sectors_async: request pending with token {}, process {:?}",
-            token, process_id
-        );
-        device.pending_requests.insert(
-            token,
-            PendingBlockRequest {
-                token,
-                operation: BlockRequestOperation::Read,
-                sector: start_sector,
-                process_id,
-                waker,
-                dma_buffer,
-                request_header,
-                response_status,
-            },
-        );
-
-        Err(BlockError::WouldBlock)
-    }
-
-    fn write_sectors_async(
-        &self,
-        start_sector: u64,
-        buf: &[u8],
-        process_id: ProcessId,
-        waker: Arc<Waker>,
-    ) -> Result<(), BlockError> {
-        let mut device = self.lock();
-        let sector_size = device.sector_size as usize;
-
-        if buf.len() % sector_size != 0 {
-            return Err(BlockError::IoError);
-        }
-
-        // Allocate DMA buffer and copy data
-        let mut dma_buffer = DmaBuffer::new(buf.len());
-        dma_buffer.as_mut_slice().copy_from_slice(buf);
-
-        let mut request_header = BlockRequest::default();
-        let mut response_status = BlockResponse::default();
-
-        // Try to submit the request
-        let token = match unsafe {
-            device.device.write_blocks_nb(
-                start_sector as usize,
-                &mut request_header,
-                dma_buffer.as_slice(),
-                &mut response_status,
-            )
-        } {
-            Ok(token) => token,
-            Err(VirtioError::QueueFull) => {
-                // Queue full - add to wait queue
-                device.queued_requests.push_back(QueuedBlockRequest {
-                    operation: BlockRequestOperation::Write,
-                    sector: start_sector,
-                    process_id,
-                    waker,
-                    dma_buffer,
-                });
-                return Err(BlockError::WouldBlock);
-            }
-            Err(_) => return Err(BlockError::IoError),
-        };
-
-        // Check if it completed immediately
-        if device.device.peek_used() == Some(token) {
-            unsafe {
-                device
-                    .device
-                    .complete_write_blocks(
-                        token,
-                        &request_header,
-                        dma_buffer.as_slice(),
-                        &mut response_status,
-                    )
-                    .map_err(|_| BlockError::IoError)?;
-            }
-            return Ok(());
-        }
-
-        // Request is pending - save state
-        device.pending_requests.insert(
-            token,
-            PendingBlockRequest {
-                token,
-                operation: BlockRequestOperation::Write,
-                sector: start_sector,
-                process_id,
-                waker,
-                dma_buffer,
-                request_header,
-                response_status,
-            },
-        );
-
-        Err(BlockError::WouldBlock)
-    }
-
-    fn complete_pending_read(
-        &self,
-        process_id: ProcessId,
-        buf: &mut [u8],
-    ) -> Result<Option<()>, BlockError> {
-        let mut device = self.lock();
-
-        // Find pending request for this process
-        let token = device
-            .pending_requests
-            .iter()
-            .find(|(_, req)| {
-                req.operation == BlockRequestOperation::Read && req.process_id == process_id
-            })
-            .map(|(token, _)| *token);
-
-        let Some(token) = token else {
-            // Check if it's in the queued list
-            if device.queued_requests.iter().any(|req| {
-                req.operation == BlockRequestOperation::Read && req.process_id == process_id
-            }) {
-                return Ok(None); // Still queued, not yet submitted
-            }
-            return Ok(None); // No pending request
-        };
-
-        // Check if completed
-        if device.device.peek_used() != Some(token) {
-            return Ok(None); // Still pending
-        }
-
-        // Remove and complete
-        let mut pending = device.pending_requests.remove(&token).unwrap();
-        unsafe {
-            device
-                .device
-                .complete_read_blocks(
-                    token,
-                    &pending.request_header,
-                    pending.dma_buffer.as_mut_slice(),
-                    &mut pending.response_status,
-                )
-                .map_err(|_| BlockError::IoError)?;
-        }
-
-        // Copy from DMA buffer to user buffer
-        buf.copy_from_slice(pending.dma_buffer.as_slice());
-        Ok(Some(()))
-    }
-
-    fn complete_pending_write(&self, process_id: ProcessId) -> Result<Option<()>, BlockError> {
-        let mut device = self.lock();
-
-        // Find pending request for this process
-        let token = device
-            .pending_requests
-            .iter()
-            .find(|(_, req)| {
-                req.operation == BlockRequestOperation::Write && req.process_id == process_id
-            })
-            .map(|(token, _)| *token);
-
-        let Some(token) = token else {
-            // Check if it's in the queued list
-            if device.queued_requests.iter().any(|req| {
-                req.operation == BlockRequestOperation::Write && req.process_id == process_id
-            }) {
-                return Ok(None); // Still queued, not yet submitted
-            }
-            return Ok(None); // No pending request
-        };
-
-        // Check if completed
-        if device.device.peek_used() != Some(token) {
-            return Ok(None); // Still pending
-        }
-
-        // Remove and complete
-        let mut pending = device.pending_requests.remove(&token).unwrap();
-        unsafe {
-            device
-                .device
-                .complete_write_blocks(
-                    token,
-                    &pending.request_header,
-                    pending.dma_buffer.as_slice(),
-                    &mut pending.response_status,
-                )
-                .map_err(|_| BlockError::IoError)?;
-        }
-
-        Ok(Some(()))
     }
 }
 
@@ -697,6 +455,371 @@ pub fn poll_all() {
     for device in devices.values() {
         device.lock().process_completions();
     }
+}
+
+// =============================================================================
+// Async Future-based I/O Implementation
+// =============================================================================
+
+/// State of an async read operation.
+enum AsyncReadState {
+    /// Initial state - not yet submitted to device.
+    NotSubmitted,
+    /// Request submitted to device, waiting for completion.
+    Submitted { token: VirtioToken },
+    /// Request completed, ready to copy data.
+    Completed { token: VirtioToken },
+}
+
+/// Future for an async block read operation.
+///
+/// This future owns its DMA buffer and virtio request/response headers.
+/// When polled, it submits the request (if not yet submitted) and checks
+/// for completion. The IRQ handler wakes the future when I/O completes.
+struct VirtioReadFuture {
+    device: Arc<Spinlock<VirtioBlockDevice>>,
+    sector: u64,
+    buf_ptr: *mut u8,
+    buf_len: usize,
+    dma_buffer: Option<DmaBuffer>,
+    request_header: BlockRequest,
+    response_status: BlockResponse,
+    state: AsyncReadState,
+}
+
+// Safety: The raw pointer is only accessed during poll while we hold the device lock.
+// The DMA buffer is owned by the future and lives until the future completes.
+unsafe impl Send for VirtioReadFuture {}
+unsafe impl Sync for VirtioReadFuture {}
+
+impl VirtioReadFuture {
+    fn new(device: Arc<Spinlock<VirtioBlockDevice>>, sector: u64, buf: &mut [u8]) -> Self {
+        Self {
+            device,
+            sector,
+            buf_ptr: buf.as_mut_ptr(),
+            buf_len: buf.len(),
+            dma_buffer: None,
+            request_header: BlockRequest::default(),
+            response_status: BlockResponse::default(),
+            state: AsyncReadState::NotSubmitted,
+        }
+    }
+}
+
+impl Future for VirtioReadFuture {
+    type Output = Result<usize, BlockError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+
+        match this.state {
+            AsyncReadState::NotSubmitted => {
+                // Allocate DMA buffer
+                this.dma_buffer = Some(DmaBuffer::new(this.buf_len));
+
+                let mut device = this.device.lock();
+
+                // Try to submit the request
+                let raw_token = match unsafe {
+                    device.device.read_blocks_nb(
+                        this.sector as usize,
+                        &mut this.request_header,
+                        this.dma_buffer.as_mut().unwrap().as_mut_slice(),
+                        &mut this.response_status,
+                    )
+                } {
+                    Ok(t) => t,
+                    Err(VirtioError::QueueFull) => {
+                        // Queue full - register waker and return pending
+                        // The IRQ handler will wake us when there's space
+                        // For now, just return pending - we'll retry on next poll
+                        return Poll::Pending;
+                    }
+                    Err(_) => return Poll::Ready(Err(BlockError::IoError)),
+                };
+                let token = VirtioToken::new(raw_token);
+
+                // Check if it completed immediately (synchronous completion)
+                if device.device.peek_used() == Some(raw_token) {
+                    this.state = AsyncReadState::Completed { token };
+                    drop(device);
+                    return self.poll(cx);
+                }
+
+                // Request is pending - register waker and transition state
+                device.async_wakers.insert(token, cx.waker().clone());
+                this.state = AsyncReadState::Submitted { token };
+                Poll::Pending
+            }
+
+            AsyncReadState::Submitted { token } => {
+                let mut device = this.device.lock();
+
+                // Check if completed
+                if device.completed_tokens.remove(&token) {
+                    this.state = AsyncReadState::Completed { token };
+                    drop(device);
+                    return self.poll(cx);
+                }
+
+                // Still pending - re-register waker (may have changed)
+                device.async_wakers.insert(token, cx.waker().clone());
+                Poll::Pending
+            }
+
+            AsyncReadState::Completed { token } => {
+                let mut device = this.device.lock();
+
+                // Complete the virtio request
+                let result = unsafe {
+                    device.device.complete_read_blocks(
+                        token.raw(),
+                        &this.request_header,
+                        this.dma_buffer.as_mut().unwrap().as_mut_slice(),
+                        &mut this.response_status,
+                    )
+                };
+
+                if result.is_err() {
+                    return Poll::Ready(Err(BlockError::IoError));
+                }
+
+                // Copy from DMA buffer to user buffer
+                let buf = unsafe { core::slice::from_raw_parts_mut(this.buf_ptr, this.buf_len) };
+                buf.copy_from_slice(this.dma_buffer.as_ref().unwrap().as_slice());
+
+                Poll::Ready(Ok(this.buf_len))
+            }
+        }
+    }
+}
+
+/// State of an async write operation.
+enum AsyncWriteState {
+    NotSubmitted,
+    Submitted { token: VirtioToken },
+    Completed { token: VirtioToken },
+}
+
+/// Future for an async block write operation.
+struct VirtioWriteFuture {
+    device: Arc<Spinlock<VirtioBlockDevice>>,
+    sector: u64,
+    buf_len: usize,
+    dma_buffer: Option<DmaBuffer>,
+    request_header: BlockRequest,
+    response_status: BlockResponse,
+    state: AsyncWriteState,
+}
+
+unsafe impl Send for VirtioWriteFuture {}
+unsafe impl Sync for VirtioWriteFuture {}
+
+impl VirtioWriteFuture {
+    fn new(device: Arc<Spinlock<VirtioBlockDevice>>, sector: u64, buf: &[u8]) -> Self {
+        // Allocate DMA buffer and copy data immediately
+        let mut dma_buffer = DmaBuffer::new(buf.len());
+        dma_buffer.as_mut_slice().copy_from_slice(buf);
+
+        Self {
+            device,
+            sector,
+            buf_len: buf.len(),
+            dma_buffer: Some(dma_buffer),
+            request_header: BlockRequest::default(),
+            response_status: BlockResponse::default(),
+            state: AsyncWriteState::NotSubmitted,
+        }
+    }
+}
+
+impl Future for VirtioWriteFuture {
+    type Output = Result<usize, BlockError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+
+        match this.state {
+            AsyncWriteState::NotSubmitted => {
+                let mut device = this.device.lock();
+
+                let raw_token = match unsafe {
+                    device.device.write_blocks_nb(
+                        this.sector as usize,
+                        &mut this.request_header,
+                        this.dma_buffer.as_ref().unwrap().as_slice(),
+                        &mut this.response_status,
+                    )
+                } {
+                    Ok(t) => t,
+                    Err(VirtioError::QueueFull) => {
+                        return Poll::Pending;
+                    }
+                    Err(_) => return Poll::Ready(Err(BlockError::IoError)),
+                };
+                let token = VirtioToken::new(raw_token);
+
+                if device.device.peek_used() == Some(raw_token) {
+                    this.state = AsyncWriteState::Completed { token };
+                    drop(device);
+                    return self.poll(cx);
+                }
+
+                device.async_wakers.insert(token, cx.waker().clone());
+                this.state = AsyncWriteState::Submitted { token };
+                Poll::Pending
+            }
+
+            AsyncWriteState::Submitted { token } => {
+                let mut device = this.device.lock();
+
+                if device.completed_tokens.remove(&token) {
+                    this.state = AsyncWriteState::Completed { token };
+                    drop(device);
+                    return self.poll(cx);
+                }
+
+                device.async_wakers.insert(token, cx.waker().clone());
+                Poll::Pending
+            }
+
+            AsyncWriteState::Completed { token } => {
+                let mut device = this.device.lock();
+
+                let result = unsafe {
+                    device.device.complete_write_blocks(
+                        token.raw(),
+                        &this.request_header,
+                        this.dma_buffer.as_ref().unwrap().as_slice(),
+                        &mut this.response_status,
+                    )
+                };
+
+                if result.is_err() {
+                    return Poll::Ready(Err(BlockError::IoError));
+                }
+
+                Poll::Ready(Ok(this.buf_len))
+            }
+        }
+    }
+}
+
+/// Wrapper that implements AsyncBlockDevice for a virtio block device.
+///
+/// This provides byte-level async access with automatic sector alignment.
+pub struct AsyncVirtioBlockDevice {
+    device: Arc<Spinlock<VirtioBlockDevice>>,
+}
+
+impl AsyncVirtioBlockDevice {
+    /// Create a new async wrapper around a virtio block device.
+    pub fn new(device: Arc<Spinlock<VirtioBlockDevice>>) -> Self {
+        Self { device }
+    }
+}
+
+#[async_trait]
+impl BlockDevice for AsyncVirtioBlockDevice {
+    async fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BlockError> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let (sector_size, total_size) = {
+            let dev = self.device.lock();
+            (
+                dev.sector_size as u64,
+                dev.capacity_sectors * dev.sector_size as u64,
+            )
+        };
+
+        if offset >= total_size {
+            return Ok(0);
+        }
+
+        let available = total_size - offset;
+        let to_read = (buf.len() as u64).min(available) as usize;
+
+        let start_sector = offset / sector_size;
+        let offset_in_sector = (offset % sector_size) as usize;
+        let end_offset = offset + to_read as u64;
+        let end_sector = (end_offset + sector_size - 1) / sector_size;
+        let num_sectors = end_sector - start_sector;
+
+        // Fast path: aligned read
+        if offset_in_sector == 0 && to_read % sector_size as usize == 0 {
+            VirtioReadFuture::new(self.device.clone(), start_sector, &mut buf[..to_read]).await?;
+            return Ok(to_read);
+        }
+
+        // Slow path: unaligned read
+        let mut sector_buf = vec![0u8; (num_sectors * sector_size) as usize];
+        VirtioReadFuture::new(self.device.clone(), start_sector, &mut sector_buf).await?;
+        buf[..to_read].copy_from_slice(&sector_buf[offset_in_sector..offset_in_sector + to_read]);
+
+        Ok(to_read)
+    }
+
+    async fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, BlockError> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let (sector_size, total_size) = {
+            let dev = self.device.lock();
+            (
+                dev.sector_size as u64,
+                dev.capacity_sectors * dev.sector_size as u64,
+            )
+        };
+
+        if offset >= total_size {
+            return Err(BlockError::InvalidOffset);
+        }
+
+        let available = total_size - offset;
+        let to_write = (buf.len() as u64).min(available) as usize;
+
+        let start_sector = offset / sector_size;
+        let offset_in_sector = (offset % sector_size) as usize;
+        let end_offset = offset + to_write as u64;
+        let end_sector = (end_offset + sector_size - 1) / sector_size;
+        let num_sectors = end_sector - start_sector;
+
+        // Fast path: aligned write
+        if offset_in_sector == 0 && to_write % sector_size as usize == 0 {
+            VirtioWriteFuture::new(self.device.clone(), start_sector, &buf[..to_write]).await?;
+            return Ok(to_write);
+        }
+
+        // Slow path: unaligned write (read-modify-write)
+        let mut sector_buf = vec![0u8; (num_sectors * sector_size) as usize];
+        VirtioReadFuture::new(self.device.clone(), start_sector, &mut sector_buf).await?;
+        sector_buf[offset_in_sector..offset_in_sector + to_write].copy_from_slice(&buf[..to_write]);
+        VirtioWriteFuture::new(self.device.clone(), start_sector, &sector_buf).await?;
+
+        Ok(to_write)
+    }
+
+    fn size(&self) -> u64 {
+        let dev = self.device.lock();
+        dev.capacity_sectors * dev.sector_size as u64
+    }
+
+    fn sector_size(&self) -> u32 {
+        self.device.lock().sector_size
+    }
+
+    async fn sync(&self) -> Result<(), BlockError> {
+        Ok(()) // virtio-blk is write-through
+    }
+}
+
+/// Get an async block device wrapper by device address.
+pub fn get_async_device(address: &DeviceAddress) -> Option<AsyncVirtioBlockDevice> {
+    get_device(address).map(AsyncVirtioBlockDevice::new)
 }
 
 /// The interrupt vector used for virtio block MSI-X interrupts.
@@ -787,6 +910,8 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
         sector_size,
         pending_requests: BTreeMap::new(),
         queued_requests: VecDeque::new(),
+        async_wakers: BTreeMap::new(),
+        completed_tokens: BTreeSet::new(),
     };
 
     let block_device = Arc::new(Spinlock::new(block_device));

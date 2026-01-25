@@ -11,12 +11,14 @@ use alloc::vec::Vec;
 use log::{debug, info};
 use spinning_top::RwSpinlock;
 
+use core::task::{Context, Poll};
+
 use crate::apic;
 use crate::executor;
 use crate::interrupts;
 use crate::process::{
-    Process, ProcessId, ProcessState, SavedState, return_from_interrupt, return_from_syscall,
-    waker::Waker,
+    Process, ProcessId, ProcessState, ProcessWaker, SavedState, return_from_interrupt,
+    return_from_syscall, waker::Waker,
 };
 
 pub use rtc::RTC;
@@ -384,31 +386,109 @@ pub unsafe fn exec_next_runnable() -> ! {
 
         match next_entity {
             Some(SchedulableEntity::Process(pid)) => {
-                // Update current_process before jumping to userspace
-                {
+                // Check if process has a pending async syscall that needs polling
+                // IMPORTANT: We must set current_process and drop the scheduler lock
+                // BEFORE polling, because the future may call with_current_process.
+                let pending_syscall = {
                     let mut scheduler = SCHEDULER.write();
                     let scheduler = scheduler.as_mut().unwrap();
+                    // Set current_process so with_current_process works inside the future
                     scheduler.current_process = pid;
-                }
+                    // Take the pending syscall out so we can poll without holding the lock
+                    scheduler
+                        .processes
+                        .get_mut(&pid)
+                        .unwrap()
+                        .take_pending_syscall()
+                };
+                // Lock is now dropped
 
-                // Get process execution parameters
-                let (ip, sp, page_table, saved_state) = {
-                    let scheduler = SCHEDULER.read();
-                    let scheduler = scheduler.as_ref().unwrap();
-                    scheduler.get_process_exec_params(pid)
+                let poll_result = if let Some(pending) = pending_syscall {
+                    // Create waker outside the lock
+                    let waker = ProcessWaker::new(pid).into_waker();
+                    let mut cx = Context::from_waker(&waker);
+
+                    // Poll the future without holding the scheduler lock
+                    let result = pending.future.lock().as_mut().poll(&mut cx);
+
+                    // If pending, put the syscall back; if ready, it will be discarded
+                    if result.is_pending() {
+                        let mut scheduler = SCHEDULER.write();
+                        let process = scheduler.as_mut().unwrap().processes.get_mut(&pid).unwrap();
+                        process.set_pending_syscall(pending);
+                    }
+
+                    Some(result)
+                } else {
+                    None
                 };
 
-                debug!("exec_next_runnable: jumping to userspace (pid={:?})", pid);
-                unsafe {
-                    crate::memory::switch_page_table(page_table);
-                }
-                start_timer_with_deadline();
-                if let Some(state) = saved_state {
-                    // Resuming from preemption or blocked syscall - restore full state
-                    unsafe { return_from_interrupt(&state) }
-                } else {
-                    // Fresh start or yield - use fast sysretq path
-                    unsafe { return_from_syscall(ip, sp, 0) }
+                match poll_result {
+                    Some(Poll::Ready(result)) => {
+                        // Future completed - clear pending syscall and return result
+                        let (ip, sp, page_table) = {
+                            let mut scheduler = SCHEDULER.write();
+                            let scheduler = scheduler.as_mut().unwrap();
+                            let process = scheduler.processes.get_mut(&pid).unwrap();
+                            process.take_pending_syscall();
+                            scheduler.current_process = pid;
+                            let (ip, sp, page_table, _) = process.exec_params();
+                            (ip, sp, page_table)
+                        };
+
+                        info!(
+                            "exec_next_runnable: async syscall completed (pid={:?}, result={}, ip={:#x}, sp={:#x})",
+                            pid,
+                            result,
+                            ip.as_u64(),
+                            sp.as_u64()
+                        );
+                        unsafe {
+                            crate::memory::switch_page_table(page_table);
+                        }
+                        start_timer_with_deadline();
+                        // Return to userspace with the syscall result in rax
+                        unsafe { return_from_syscall(ip, sp, result as u64) }
+                    }
+                    Some(Poll::Pending) => {
+                        // Future not ready - put process back to blocked state
+                        {
+                            let mut scheduler = SCHEDULER.write();
+                            let scheduler = scheduler.as_mut().unwrap();
+                            scheduler.change_state(pid, ProcessState::Blocked);
+                        }
+                        // Loop back to pick another entity
+                        continue;
+                    }
+                    None => {
+                        // No pending syscall - normal execution path
+                        // Update current_process before jumping to userspace
+                        {
+                            let mut scheduler = SCHEDULER.write();
+                            let scheduler = scheduler.as_mut().unwrap();
+                            scheduler.current_process = pid;
+                        }
+
+                        // Get process execution parameters
+                        let (ip, sp, page_table, saved_state) = {
+                            let scheduler = SCHEDULER.read();
+                            let scheduler = scheduler.as_ref().unwrap();
+                            scheduler.get_process_exec_params(pid)
+                        };
+
+                        debug!("exec_next_runnable: jumping to userspace (pid={:?})", pid);
+                        unsafe {
+                            crate::memory::switch_page_table(page_table);
+                        }
+                        start_timer_with_deadline();
+                        if let Some(state) = saved_state {
+                            // Resuming from preemption or blocked syscall - restore full state
+                            unsafe { return_from_interrupt(&state) }
+                        } else {
+                            // Fresh start or yield - use fast sysretq path
+                            unsafe { return_from_syscall(ip, sp, 0) }
+                        }
+                    }
                 }
             }
 

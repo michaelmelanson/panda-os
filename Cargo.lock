@@ -31,6 +31,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.89"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -143,6 +154,13 @@ name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
+
+[[package]]
+name = "ext2_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
 
 [[package]]
 name = "foldhash"
@@ -267,6 +285,7 @@ name = "panda-kernel"
 version = "0.1.0"
 dependencies = [
  "acpi",
+ "async-trait",
  "goblin",
  "linked_list_allocator",
  "log",

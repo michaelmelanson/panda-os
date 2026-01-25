@@ -17,11 +17,14 @@ pub use context::Context;
 pub use exec::{return_from_interrupt, return_from_syscall};
 pub use info::ProcessInfo;
 pub use state::{InterruptFrame, SavedGprs, SavedState};
-pub use waker::Waker;
+pub use waker::{ProcessWaker, Waker};
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use goblin::elf::Elf;
@@ -50,6 +53,27 @@ pub enum ProcessState {
     Blocked,
 }
 
+/// A pending async syscall that the process is blocked on.
+///
+/// When a syscall needs to do async I/O, it creates a future and stores it here.
+/// The scheduler polls the future when the process is woken. When the future
+/// completes, the result is returned to userspace.
+pub struct PendingSyscall {
+    /// The async operation in progress. Output is the syscall return value.
+    /// Wrapped in a spinlock to make it Sync (required for Process to be in RwSpinlock).
+    /// We require Send because the future may be polled from different contexts.
+    pub future: spinning_top::Spinlock<Pin<Box<dyn Future<Output = isize> + Send>>>,
+}
+
+impl PendingSyscall {
+    /// Create a new pending syscall.
+    pub fn new(future: Pin<Box<dyn Future<Output = isize> + Send>>) -> Self {
+        Self {
+            future: spinning_top::Spinlock::new(future),
+        }
+    }
+}
+
 /// A userspace process.
 pub struct Process {
     id: ProcessId,
@@ -76,6 +100,9 @@ pub struct Process {
     /// Free buffer virtual address ranges (start_address -> size_in_pages).
     /// Sorted by address for efficient merging of adjacent ranges.
     buffer_free_ranges: BTreeMap<VirtAddr, usize>,
+    /// Pending async syscall future. When set, the process is blocked waiting
+    /// for this future to complete. The scheduler polls it when the process is woken.
+    pending_syscall: Option<PendingSyscall>,
 }
 
 impl Process {
@@ -140,6 +167,7 @@ impl Process {
             heap,
             info: Arc::new(ProcessInfo::new(id)),
             buffer_free_ranges,
+            pending_syscall: None,
         }
     }
 
@@ -328,5 +356,25 @@ impl Process {
     /// Get the page table physical address for this process.
     pub fn page_table_phys(&self) -> x86_64::PhysAddr {
         self.context.page_table_phys()
+    }
+
+    /// Check if the process has a pending async syscall.
+    pub fn has_pending_syscall(&self) -> bool {
+        self.pending_syscall.is_some()
+    }
+
+    /// Set the pending syscall future.
+    pub fn set_pending_syscall(&mut self, pending: PendingSyscall) {
+        self.pending_syscall = Some(pending);
+    }
+
+    /// Take and return the pending syscall, clearing it from the process.
+    pub fn take_pending_syscall(&mut self) -> Option<PendingSyscall> {
+        self.pending_syscall.take()
+    }
+
+    /// Get a mutable reference to the pending syscall future for polling.
+    pub fn pending_syscall_mut(&mut self) -> Option<&mut PendingSyscall> {
+        self.pending_syscall.as_mut()
     }
 }

@@ -1,0 +1,13 @@
+# Expected log output for ext2_test
+ext2_test: Starting
+ext2_test: Mounting ext2 filesystem
+ext2_test: ext2 mounted at /mnt
+ext2_test: Test 1 - Reading hello.txt
+ext2_test: Test 1 passed
+ext2_test: Test 2 - Reading nested file
+ext2_test: Test 2 passed
+ext2_test: Test 3 - Reading deep path
+ext2_test: Test 3 passed
+ext2_test: Test 4 - Reading large file
+ext2_test: Test 4 passed
+ext2_test: All tests passed!

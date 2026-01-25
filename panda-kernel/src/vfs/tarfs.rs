@@ -1,12 +1,15 @@
 //! TAR archive filesystem implementation.
 //!
 //! Provides read-only access to files stored in a TAR archive (used for initrd).
+//!
+//! All operations complete immediately since data is in memory.
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use async_trait::async_trait;
 use tar_no_std::TarArchiveRef;
 
 use super::{DirEntry, File, FileStat, Filesystem, FsError, SeekFrom};
@@ -47,20 +50,21 @@ impl TarFs {
     }
 }
 
+#[async_trait]
 impl Filesystem for TarFs {
-    fn open(&self, path: &str) -> Option<Box<dyn File>> {
-        let (ptr, len) = self.files.get(path)?;
-        Some(Box::new(TarFile {
+    async fn open(&self, path: &str) -> Result<Box<dyn File>, FsError> {
+        let (ptr, len) = self.files.get(path).ok_or(FsError::NotFound)?;
+        Ok(Box::new(TarFile {
             data: *ptr,
             len: *len,
             pos: 0,
         }))
     }
 
-    fn stat(&self, path: &str) -> Option<FileStat> {
+    async fn stat(&self, path: &str) -> Result<FileStat, FsError> {
         // Check if it's a file
         if let Some((_, len)) = self.files.get(path) {
-            return Some(FileStat {
+            return Ok(FileStat {
                 size: *len as u64,
                 is_dir: false,
             });
@@ -75,17 +79,17 @@ impl Filesystem for TarFs {
 
         for key in self.files.keys() {
             if path.is_empty() || key.starts_with(&dir_prefix) {
-                return Some(FileStat {
+                return Ok(FileStat {
                     size: 0,
                     is_dir: true,
                 });
             }
         }
 
-        None
+        Err(FsError::NotFound)
     }
 
-    fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
+    async fn readdir(&self, path: &str) -> Result<Vec<DirEntry>, FsError> {
         let prefix = if path.is_empty() {
             String::new()
         } else {
@@ -132,9 +136,9 @@ impl Filesystem for TarFs {
         }
 
         if entries.is_empty() && !path.is_empty() {
-            None
+            Err(FsError::NotFound)
         } else {
-            Some(entries)
+            Ok(entries)
         }
     }
 }
@@ -150,8 +154,9 @@ struct TarFile {
 unsafe impl Send for TarFile {}
 unsafe impl Sync for TarFile {}
 
+#[async_trait]
 impl File for TarFile {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {
         let remaining = self.len.saturating_sub(self.pos);
         let to_read = buf.len().min(remaining);
 
@@ -165,7 +170,7 @@ impl File for TarFile {
         Ok(to_read)
     }
 
-    fn seek(&mut self, pos: SeekFrom) -> Result<u64, FsError> {
+    async fn seek(&mut self, pos: SeekFrom) -> Result<u64, FsError> {
         let new_pos = match pos {
             SeekFrom::Start(offset) => offset as i64,
             SeekFrom::Current(offset) => self.pos as i64 + offset,
@@ -180,10 +185,10 @@ impl File for TarFile {
         Ok(self.pos as u64)
     }
 
-    fn stat(&self) -> FileStat {
-        FileStat {
+    async fn stat(&self) -> Result<FileStat, FsError> {
+        Ok(FileStat {
             size: self.len as u64,
             is_dir: false,
-        }
+        })
     }
 }

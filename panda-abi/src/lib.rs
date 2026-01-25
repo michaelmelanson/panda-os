@@ -93,6 +93,10 @@ pub const OP_ENVIRONMENT_LOG: u32 = 0x3_0002;
 pub const OP_ENVIRONMENT_TIME: u32 = 0x3_0003;
 /// Open directory: (path_ptr, path_len) -> dir_handle or error
 pub const OP_ENVIRONMENT_OPENDIR: u32 = 0x3_0004;
+/// Mount filesystem: (fstype_ptr, fstype_len, mountpoint_ptr, mountpoint_len) -> 0 or error
+/// fstype: "ext2" to mount ext2 on first block device
+/// mountpoint: e.g., "/mnt"
+pub const OP_ENVIRONMENT_MOUNT: u32 = 0x3_0005;
 
 // Buffer operations (0x4_0000 - 0x4_FFFF)
 /// Allocate a shared buffer: (size, info_ptr) -> buffer_handle or error

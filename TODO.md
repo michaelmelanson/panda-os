@@ -7,19 +7,18 @@ Working:
 - Higher-half kernel with physical memory window and MMIO region
 - Preemptive multitasking with full context switching
 - Syscall ABI with callee-saved register preservation
-- VFS with tarfs (initrd), resource scheme system
+- VFS with async traits (tarfs, ext2), resource scheme system
+- Read-only ext2 filesystem driver with async I/O support
 - Virtio GPU with Surface API (blit, fill, flush), virtio keyboard with blocking reads
 - Virtio block device driver with async I/O (interrupt-driven, non-blocking)
 - Process handles: spawn returns handle, OP_PROCESS_WAIT blocks until child exits
-- Userspace: libpanda, init, terminal (with keyboard input and font rendering), 12 test suites
+- Userspace: libpanda, init, terminal (with keyboard input and font rendering), 13 test suites
 
 Not yet implemented:
 - `OP_PROCESS_SIGNAL`, `OP_ENVIRONMENT_TIME`
 - ACPI handler read/write methods (27 todo!() macros)
 
 ## Next steps
-
-- **Add simple filesystem (FAT or ext2-readonly)**: Mount a disk image. Start with read-only access.
 
 - **Make terminal execute commands**: Currently terminal just echoes input. Parse command line, spawn programs from initrd (e.g., `spawn file:/path/to/program`).
 

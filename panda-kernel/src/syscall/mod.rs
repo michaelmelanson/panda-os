@@ -106,6 +106,23 @@ impl SyscallContext<'_> {
             );
         }
     }
+
+    /// Yield to the scheduler to poll a pending async syscall.
+    ///
+    /// This is used for async syscalls that have set up a `pending_syscall` future.
+    /// The scheduler will poll the future and return its result to userspace.
+    /// This function does not return.
+    pub fn yield_for_async(&self) -> ! {
+        // The process already has pending_syscall set and state is Runnable.
+        // We need to yield to the scheduler without returning through sysret.
+        // The scheduler will poll the future and return the result.
+        unsafe {
+            scheduler::yield_current(
+                VirtAddr::new(self.return_rip as u64),
+                VirtAddr::new(self.user_rsp as u64),
+            );
+        }
+    }
 }
 
 /// Main syscall handler called from entry.rs.
@@ -154,7 +171,7 @@ extern "sysv64" fn syscall_handler(
             panda_abi::SYSCALL_SEND => {
                 let handle = arg0 as u32;
                 let operation = arg1 as u32;
-                handle_send(&ctx, handle, operation, arg2, arg3)
+                handle_send(&ctx, handle, operation, arg2, arg3, arg4, arg5)
             }
             _ => -1,
         }
@@ -175,6 +192,8 @@ fn handle_send(
     operation: u32,
     arg0: usize,
     arg1: usize,
+    arg2: usize,
+    arg3: usize,
 ) -> isize {
     use panda_abi::*;
 
@@ -195,12 +214,13 @@ fn handle_send(
         OP_PROCESS_SIGNAL => process::handle_signal(),
         OP_PROCESS_BRK => process::handle_brk(arg0),
 
-        // Environment operations
-        OP_ENVIRONMENT_OPEN => environment::handle_open(arg0, arg1),
-        OP_ENVIRONMENT_SPAWN => environment::handle_spawn(arg0, arg1),
+        // Environment operations (open/spawn/opendir/mount are async and don't return)
+        OP_ENVIRONMENT_OPEN => environment::handle_open(ctx, arg0, arg1),
+        OP_ENVIRONMENT_SPAWN => environment::handle_spawn(ctx, arg0, arg1),
         OP_ENVIRONMENT_LOG => environment::handle_log(arg0, arg1),
         OP_ENVIRONMENT_TIME => environment::handle_time(),
-        OP_ENVIRONMENT_OPENDIR => environment::handle_opendir(arg0, arg1),
+        OP_ENVIRONMENT_OPENDIR => environment::handle_opendir(ctx, arg0, arg1),
+        OP_ENVIRONMENT_MOUNT => environment::handle_mount(ctx, arg0, arg1, arg2, arg3),
 
         // Buffer operations
         OP_BUFFER_ALLOC => buffer::handle_alloc(arg0, arg1),

@@ -48,3 +48,27 @@ echo 'fs0:\efi\boot\bootx64.efi' > "$BUILD_DIR/efi/boot/startup.nsh"
 if [ "$TEST_NAME" = "block_test" ]; then
     dd if=/dev/zero of="$BUILD_DIR/test-disk.img" bs=1M count=1 2>/dev/null
 fi
+
+# Create ext2 disk for ext2_test
+if [ "$TEST_NAME" = "ext2_test" ]; then
+    dd if=/dev/zero of="$BUILD_DIR/test-disk.img" bs=1M count=10 2>/dev/null
+    mkfs.ext2 -F "$BUILD_DIR/test-disk.img" >/dev/null 2>&1
+    # Populate with test files using debugfs
+    echo "Hello from ext2!" > "$BUILD_DIR/hello.txt"
+    echo "Nested file content" > "$BUILD_DIR/nested.txt"
+    dd if=/dev/urandom of="$BUILD_DIR/large.bin" bs=1024 count=8 2>/dev/null
+    echo "Deep file" > "$BUILD_DIR/deep.txt"
+    # Create debugfs commands file
+    cat > "$BUILD_DIR/debugfs_cmds.txt" << DEBUGFS_EOF
+mkdir subdir
+mkdir a
+mkdir a/b
+mkdir a/b/c
+write $BUILD_DIR/hello.txt hello.txt
+write $BUILD_DIR/nested.txt subdir/nested.txt
+write $BUILD_DIR/large.bin large.bin
+write $BUILD_DIR/deep.txt a/b/c/deep.txt
+DEBUGFS_EOF
+    debugfs -w "$BUILD_DIR/test-disk.img" -f "$BUILD_DIR/debugfs_cmds.txt" 2>/dev/null
+    rm -f "$BUILD_DIR/hello.txt" "$BUILD_DIR/nested.txt" "$BUILD_DIR/large.bin" "$BUILD_DIR/deep.txt" "$BUILD_DIR/debugfs_cmds.txt"
+fi

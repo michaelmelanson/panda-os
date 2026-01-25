@@ -8,8 +8,8 @@ use alloc::sync::Arc;
 
 use crate::process::waker::Waker;
 use crate::resource::{
-    Block, BlockDevice, Buffer, CharacterOutput, Directory, EventSource, ProcessInterface,
-    Resource, Surface,
+    Block, Buffer, CharacterOutput, Directory, EventSource, ProcessInterface, Resource, Surface,
+    VfsFile,
 };
 
 /// Handle identifier (similar to file descriptor but for any resource)
@@ -57,11 +57,6 @@ impl Handle {
         self.resource.as_block()
     }
 
-    /// Get this handle's resource as a BlockDevice interface (for async I/O).
-    pub fn as_block_device(&self) -> Option<&dyn BlockDevice> {
-        self.resource.as_block_device()
-    }
-
     /// Get this handle's resource as an EventSource interface.
     pub fn as_event_source(&self) -> Option<&dyn EventSource> {
         self.resource.as_event_source()
@@ -95,6 +90,11 @@ impl Handle {
     /// Get a waker for blocking on this handle.
     pub fn waker(&self) -> Option<Arc<Waker>> {
         self.resource.waker()
+    }
+
+    /// Get this handle's resource as a VFS file (for async file operations).
+    pub fn as_vfs_file(&self) -> Option<&dyn VfsFile> {
+        self.resource.as_vfs_file()
     }
 
     /// Get this handle's resource as a Window.

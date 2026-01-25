@@ -1,8 +1,11 @@
 SHELL := /bin/bash
-.PHONY: build panda-kernel init run test kernel-test userspace-test
+.PHONY: build panda-kernel init run test kernel-test userspace-test ext2-image clean-ext2
 
 KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic resource block
-USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test keyboard_test state_test readdir_test buffer_test surface_test window_test multi_window_test alpha_test partial_refresh_test window_move_test block_test
+USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test keyboard_test state_test readdir_test buffer_test surface_test window_test multi_window_test alpha_test partial_refresh_test window_move_test block_test ext2_test
+
+# Ext2 test disk image
+EXT2_IMAGE = build/test.ext2
 
 # Extra binaries needed for specific tests (space-separated)
 spawn_test_EXTRAS := spawn_child
@@ -16,9 +19,8 @@ build: panda-kernel init terminal
 	mkdir -p build/run/initrd
 	cp target/x86_64-panda-uefi/debug/panda-kernel.efi build/run/efi/boot/bootx64.efi
 	cp target/x86_64-panda-userspace/debug/init build/run/initrd/init
-	cp target/x86_64-panda-userspace/debug/terminal build/run/initrd/terminal
 	echo "Hello from the initrd!" > build/run/initrd/hello.txt
-	tar --format=ustar -cf build/run/efi/initrd.tar -C build/run/initrd init terminal hello.txt
+	tar --format=ustar -cf build/run/efi/initrd.tar -C build/run/initrd init hello.txt
 	echo 'fs0:\efi\boot\bootx64.efi' > build/run/efi/boot/startup.nsh
 
 panda-kernel:
@@ -30,12 +32,34 @@ init:
 terminal:
 	cargo +nightly build -Z build-std=core,alloc --package terminal --target ./x86_64-panda-userspace.json
 
-run: build
+run: build ext2-image
 	$(QEMU_COMMON) \
 		-drive format=raw,file=fat:rw:build/run \
+		-drive file=$(EXT2_IMAGE),format=raw,if=none,id=ext2disk \
+		-device virtio-blk-pci,drive=ext2disk \
 		-no-shutdown -no-reboot \
 		-display gtk \
 		-monitor vc
+
+# Create ext2 test disk image
+ext2-image: $(EXT2_IMAGE)
+
+$(EXT2_IMAGE): terminal
+	@echo "Creating ext2 test image..."
+	@mkdir -p build
+	dd if=/dev/zero of=$(EXT2_IMAGE) bs=1M count=10 2>/dev/null
+	mkfs.ext2 -F $(EXT2_IMAGE) >/dev/null 2>&1
+	@# Populate the image using debugfs (no root required)
+	@echo "Hello from ext2!" > build/hello.txt
+	@echo "Nested file content" > build/nested.txt
+	@dd if=/dev/urandom of=build/large.bin bs=1024 count=8 2>/dev/null
+	@echo "Deep file" > build/deep.txt
+	@debugfs -w $(EXT2_IMAGE) -f /dev/stdin <<< $$'mkdir subdir\nmkdir a\nmkdir a/b\nmkdir a/b/c\nwrite build/hello.txt hello.txt\nwrite build/nested.txt subdir/nested.txt\nwrite build/large.bin large.bin\nwrite build/deep.txt a/b/c/deep.txt\nwrite target/x86_64-panda-userspace/debug/terminal terminal' 2>/dev/null
+	@rm -f build/hello.txt build/nested.txt build/large.bin build/deep.txt
+	@echo "Ext2 image created: $(EXT2_IMAGE)"
+
+clean-ext2:
+	rm -f $(EXT2_IMAGE)
 
 # All tests
 test: kernel-test userspace-test

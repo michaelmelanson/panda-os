@@ -3,8 +3,13 @@
 //! A `Waker` allows a process to block waiting for an event (like keyboard input)
 //! and be woken up when data is available. The scheduler is device-agnostic -
 //! it only knows about wakers, not what device they're associated with.
+//!
+//! This module provides two types of wakers:
+//! - `Waker`: For device-level blocking I/O (keyboard, etc.)
+//! - `ProcessWaker`: For Rust `Future` polling - creates a `core::task::Waker`
 
 use alloc::sync::Arc;
+use alloc::task::Wake;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spinning_top::Spinlock;
 
@@ -64,5 +69,38 @@ impl Default for Waker {
             signaled: AtomicBool::new(false),
             waiting: Spinlock::new(None),
         }
+    }
+}
+
+/// A waker for Rust futures that wakes a specific process.
+///
+/// This implements the `Wake` trait so it can be converted to a `core::task::Waker`
+/// for use with Rust's async/await machinery. When `wake()` is called (by a future
+/// that is ready to make progress), it marks the associated process as runnable.
+pub struct ProcessWaker {
+    process_id: ProcessId,
+}
+
+impl ProcessWaker {
+    /// Create a new ProcessWaker for the given process.
+    pub fn new(process_id: ProcessId) -> Arc<Self> {
+        Arc::new(Self { process_id })
+    }
+
+    /// Create a `core::task::Waker` for this process.
+    ///
+    /// The returned waker can be used with `core::task::Context` to poll futures.
+    pub fn into_waker(self: Arc<Self>) -> core::task::Waker {
+        self.into()
+    }
+}
+
+impl Wake for ProcessWaker {
+    fn wake(self: Arc<Self>) {
+        scheduler::wake_process(self.process_id);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        scheduler::wake_process(self.process_id);
     }
 }

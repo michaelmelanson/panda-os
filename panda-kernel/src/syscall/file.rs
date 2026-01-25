@@ -1,129 +1,125 @@
 //! File operation syscall handlers (OP_FILE_*).
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::slice;
 
 use panda_abi::*;
 
-use crate::process::ProcessId;
-use crate::process::waker::Waker;
-use crate::resource::{BlockDevice, BlockError};
+use crate::process::PendingSyscall;
+use crate::resource::VfsFile;
 use crate::scheduler;
+use crate::vfs::SeekFrom;
 
 use super::SyscallContext;
 
-/// Result from attempting an async block I/O operation.
-enum AsyncIoResult {
-    /// I/O completed immediately or pending request completed.
-    Completed(usize),
-    /// Request submitted, need to block.
-    WouldBlock(Arc<Waker>),
-    /// No async support, fall back to sync.
-    NotSupported,
-    /// Error occurred.
-    Error,
-}
-
-/// Try to perform an async block device read.
-fn try_async_read(
-    block_device: &dyn BlockDevice,
-    offset: u64,
-    buf: &mut [u8],
-    process_id: ProcessId,
-) -> AsyncIoResult {
-    let sector_size = block_device.sector_size() as u64;
-
-    // Require sector-aligned I/O for async path
-    if offset % sector_size != 0 || buf.len() as u64 % sector_size != 0 {
-        return AsyncIoResult::NotSupported;
-    }
-
-    let start_sector = offset / sector_size;
-
-    // Check for completed pending request
-    match block_device.complete_pending_read(process_id, buf) {
-        Ok(Some(())) => return AsyncIoResult::Completed(buf.len()),
-        Ok(None) => {}
-        Err(_) => return AsyncIoResult::Error,
-    }
-
-    // Submit new async request
-    let waker = Waker::new();
-    match block_device.read_sectors_async(start_sector, buf, process_id, waker.clone()) {
-        Ok(()) => AsyncIoResult::Completed(buf.len()),
-        Err(BlockError::WouldBlock) => AsyncIoResult::WouldBlock(waker),
-        Err(_) => AsyncIoResult::Error,
-    }
-}
-
-/// Try to perform an async block device write.
-fn try_async_write(
-    block_device: &dyn BlockDevice,
-    offset: u64,
-    buf: &[u8],
-    process_id: ProcessId,
-) -> AsyncIoResult {
-    let sector_size = block_device.sector_size() as u64;
-
-    // Require sector-aligned I/O for async path
-    if offset % sector_size != 0 || buf.len() as u64 % sector_size != 0 {
-        return AsyncIoResult::NotSupported;
-    }
-
-    let start_sector = offset / sector_size;
-
-    // Check for completed pending request
-    match block_device.complete_pending_write(process_id) {
-        Ok(Some(())) => return AsyncIoResult::Completed(buf.len()),
-        Ok(None) => {}
-        Err(_) => return AsyncIoResult::Error,
-    }
-
-    // Submit new async request
-    let waker = Waker::new();
-    match block_device.write_sectors_async(start_sector, buf, process_id, waker.clone()) {
-        Ok(()) => AsyncIoResult::Completed(buf.len()),
-        Err(BlockError::WouldBlock) => AsyncIoResult::WouldBlock(waker),
-        Err(_) => AsyncIoResult::Error,
-    }
-}
-
 /// Handle file read operation.
+///
+/// For VFS files, this is async and may yield to the scheduler if I/O is needed.
 pub fn handle_read(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_len: usize) -> isize {
-    let buf_ptr = buf_ptr as *mut u8;
-    let process_id = scheduler::current_process_id();
-
-    // Try async block device I/O first
-    let async_result = scheduler::with_current_process(|proc| {
-        let handle = proc.handles_mut().get_mut(handle_id)?;
-        let block_device = handle.as_block_device()?;
-
-        if !block_device.supports_async() {
-            return Some(AsyncIoResult::NotSupported);
+    // First, check if this is a VFS file (which needs async handling)
+    let vfs_file: Option<Arc<dyn VfsFile>> = scheduler::with_current_process(|proc| {
+        proc.handles()
+            .get(handle_id)
+            .and_then(|h| h.as_vfs_file())
+            .map(|_| {
+                // Get the resource Arc so we can use it in the async block
+                proc.handles().get(handle_id).unwrap().resource_arc()
+            })
+    })
+    .and_then(|res| {
+        // Try to downcast to a VfsFile-implementing resource
+        // We need to extract VfsFile from the resource
+        if res.as_vfs_file().is_some() {
+            // Create a wrapper that holds the Arc
+            Some(Arc::new(VfsFileWrapper(res)) as Arc<dyn VfsFile>)
+        } else {
+            None
         }
-
-        let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len) };
-        let offset = handle.offset();
-        let result = try_async_read(block_device, offset, buf, process_id);
-
-        // Update offset on success
-        if let AsyncIoResult::Completed(n) = &result {
-            handle.set_offset(offset + *n as u64);
-        }
-        Some(result)
     });
 
-    // Handle async result
-    if let Some(result) = async_result {
-        match result {
-            AsyncIoResult::Completed(n) => return n as isize,
-            AsyncIoResult::WouldBlock(waker) => ctx.block_on(waker),
-            AsyncIoResult::Error => return -1,
-            AsyncIoResult::NotSupported => {}
-        }
+    if let Some(vfs_file) = vfs_file {
+        handle_read_vfs(ctx, handle_id, buf_ptr, buf_len, vfs_file)
+    } else {
+        // Sync path for non-VFS resources (blocks, event sources, etc.)
+        handle_read_sync(ctx, handle_id, buf_ptr as *mut u8, buf_len)
     }
+}
 
-    // Sync path
+/// Async read path for VFS files.
+fn handle_read_vfs(
+    ctx: &SyscallContext,
+    handle_id: u32,
+    buf_ptr: usize,
+    buf_len: usize,
+    vfs_file: Arc<dyn VfsFile>,
+) -> isize {
+    // Get the current offset
+    let offset = scheduler::with_current_process(|proc| {
+        proc.handles()
+            .get(handle_id)
+            .map(|h| h.offset())
+            .unwrap_or(0)
+    });
+
+    // Keep buf_ptr as usize (which is Send) rather than converting to *mut u8
+    // We'll convert to a pointer only when we need to use it inside the async block
+
+    // Async path for VFS files
+    let future = Box::pin(async move {
+        let file_lock = vfs_file.file();
+        let mut file = file_lock.lock();
+
+        // Seek to current offset
+        let seek_result: Result<u64, crate::vfs::FsError> =
+            file.seek(SeekFrom::Start(offset)).await;
+        if seek_result.is_err() {
+            return -1isize;
+        }
+
+        // Read data - convert usize back to pointer inside the async block
+        let buf = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+        match file.read(buf).await {
+            Ok(n) => {
+                // Update handle offset
+                scheduler::with_current_process(|proc| {
+                    if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
+                        handle.set_offset(offset + n as u64);
+                    }
+                });
+                n as isize
+            }
+            Err(_) => -1,
+        }
+    });
+
+    scheduler::with_current_process(|proc| {
+        proc.set_pending_syscall(PendingSyscall::new(future));
+    });
+
+    ctx.yield_for_async()
+}
+
+/// Wrapper to allow holding an Arc<dyn Resource> as Arc<dyn VfsFile>
+struct VfsFileWrapper(Arc<dyn crate::resource::Resource>);
+
+impl VfsFile for VfsFileWrapper {
+    fn file(&self) -> &spinning_top::Spinlock<Box<dyn crate::vfs::File>> {
+        self.0.as_vfs_file().unwrap().file()
+    }
+}
+
+// Safety: VfsFileWrapper just holds an Arc which is Send+Sync
+unsafe impl Send for VfsFileWrapper {}
+unsafe impl Sync for VfsFileWrapper {}
+
+/// Synchronous read path for non-VFS resources.
+fn handle_read_sync(
+    ctx: &SyscallContext,
+    handle_id: u32,
+    buf_ptr: *mut u8,
+    buf_len: usize,
+) -> isize {
     let result = scheduler::with_current_process(|proc| {
         let handle = proc.handles_mut().get_mut(handle_id)?;
 
@@ -181,37 +177,7 @@ pub fn handle_read(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_len
 /// Handle file write operation.
 pub fn handle_write(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_len: usize) -> isize {
     let buf_ptr = buf_ptr as *const u8;
-    let process_id = scheduler::current_process_id();
-
-    // Try async block device I/O first
-    let async_result = scheduler::with_current_process(|proc| {
-        let handle = proc.handles_mut().get_mut(handle_id)?;
-        let block_device = handle.as_block_device()?;
-
-        if !block_device.supports_async() {
-            return Some(AsyncIoResult::NotSupported);
-        }
-
-        let buf = unsafe { slice::from_raw_parts(buf_ptr, buf_len) };
-        let offset = handle.offset();
-        let result = try_async_write(block_device, offset, buf, process_id);
-
-        // Update offset on success
-        if let AsyncIoResult::Completed(n) = &result {
-            handle.set_offset(offset + *n as u64);
-        }
-        Some(result)
-    });
-
-    // Handle async result
-    if let Some(result) = async_result {
-        match result {
-            AsyncIoResult::Completed(n) => return n as isize,
-            AsyncIoResult::WouldBlock(waker) => ctx.block_on(waker),
-            AsyncIoResult::Error => return -1,
-            AsyncIoResult::NotSupported => {}
-        }
-    }
+    let _ = ctx; // Reserved for future async support
 
     // Sync path
     scheduler::with_current_process(|proc| {
