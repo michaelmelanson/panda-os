@@ -1,9 +1,15 @@
-# Preemption test expected log output
-# Parent spawns 3 children, all do CPU-bound work concurrently via preemption
+# @unordered
+# Preemption test: parent and children do CPU-bound work concurrently.
+# Children complete via preemption - timing relative to parent varies.
+
 Preempt test: spawning 3 CPU-bound children
 Preempt test: parent doing CPU-bound work
-# Children complete via preemption while parent also runs
+# @barrier
+# All children must complete, and parent must finish its work
 preempt_child: completed
 preempt_child: completed
 preempt_child: completed
-Preempt test: parent completed, children running via preemption
+Preempt test: parent work done, waiting for children
+# @barrier
+# Parent confirms all children completed successfully
+Preempt test: all children completed successfully

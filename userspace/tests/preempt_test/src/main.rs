@@ -8,17 +8,19 @@
 #![no_std]
 #![no_main]
 
-use libpanda::environment;
+use libpanda::{environment, handle::Handle, process};
 
 libpanda::main! {
     environment::log("Preempt test: spawning 3 CPU-bound children");
 
     // Spawn multiple children that do CPU-bound work without yielding
-    for _ in 0..3 {
-        let Ok(_) = environment::spawn("file:/initrd/preempt_child") else {
+    let mut children: [Option<Handle>; 3] = [None, None, None];
+    for child in &mut children {
+        let Ok(handle) = environment::spawn("file:/initrd/preempt_child") else {
             environment::log("FAIL: spawn returned error");
             return 1;
         };
+        *child = Some(handle);
     }
 
     // Parent also does CPU-bound work to compete for CPU time
@@ -37,8 +39,19 @@ libpanda::main! {
         return 1;
     }
 
+    environment::log("Preempt test: parent work done, waiting for children");
+
+    // Wait for all children to complete
+    for child in children.into_iter().flatten() {
+        let exit_code = process::wait(child);
+        if exit_code != 0 {
+            environment::log("FAIL: child exited with non-zero code");
+            return 1;
+        }
+    }
+
     // If we get here, preemption worked - all 4 processes (parent + 3 children)
     // ran concurrently and completed their CPU-bound work correctly
-    environment::log("Preempt test: parent completed, children running via preemption");
+    environment::log("Preempt test: all children completed successfully");
     0
 }

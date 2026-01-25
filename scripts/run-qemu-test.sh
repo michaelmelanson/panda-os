@@ -268,24 +268,99 @@ if [ -n "$EXPECTED_FILE" ] && [ -f "$EXPECTED_FILE" ]; then
     # Use -a to treat binary files (with escape sequences) as text
     LOG_MESSAGES=$(grep -a "INFO: LOG:" "$LOG_FILE" | sed 's/.*INFO: LOG: //')
 
-    # Read expected patterns (skip comments and blank lines)
-    EXPECTED_PATTERNS=$(grep -v '^#' "$EXPECTED_FILE" | grep -v '^[[:space:]]*$')
+    # Number each log line for position tracking
+    LOG_WITH_NUMS=$(echo "$LOG_MESSAGES" | nl -ba)
 
-    # Check that each expected pattern appears in order
-    LINE_NUM=0
-    while IFS= read -r pattern; do
-        LINE_NUM=$((LINE_NUM + 1))
-        # Find the pattern in remaining log messages
-        MATCH_LINE=$(echo "$LOG_MESSAGES" | grep -n -F "$pattern" | head -1 | cut -d: -f1)
-        if [ -z "$MATCH_LINE" ]; then
-            echo "Expected log not found: '$pattern' (expected.txt line $LINE_NUM)" >&2
-            echo "Remaining log messages:" >&2
-            echo "$LOG_MESSAGES" | head -5 >&2
-            exit 1
+    # Check for @unordered mode
+    if grep -q '^# @unordered' "$EXPECTED_FILE"; then
+        # Unordered mode: patterns within sections can match in any order
+        # Sections are separated by "# @barrier" lines
+
+        LAST_BARRIER_POS=0
+        SECTION_PATTERNS=""
+
+        while IFS= read -r line; do
+            # Skip empty lines and regular comments
+            [[ -z "${line// }" ]] && continue
+            [[ "$line" =~ ^#[[:space:]]*$ ]] && continue
+            [[ "$line" =~ ^#[[:space:]][^@] ]] && continue
+
+            # Skip @unordered directive
+            [[ "$line" == "# @unordered" ]] && continue
+
+            # Handle barrier
+            if [[ "$line" == "# @barrier" ]]; then
+                # Verify all patterns in current section, find max position
+                MAX_POS=$LAST_BARRIER_POS
+                if [ -n "$SECTION_PATTERNS" ]; then
+                    while IFS= read -r pattern; do
+                        [ -z "$pattern" ] && continue
+                        # Find pattern in log with line number
+                        MATCH=$(echo "$LOG_WITH_NUMS" | grep -F "$pattern" | head -1)
+                        if [ -z "$MATCH" ]; then
+                            echo "Expected log not found: '$pattern'" >&2
+                            echo "Log messages:" >&2
+                            echo "$LOG_MESSAGES" | head -10 >&2
+                            exit 1
+                        fi
+                        POS=$(echo "$MATCH" | awk '{print $1}')
+                        if [ "$POS" -le "$LAST_BARRIER_POS" ]; then
+                            echo "Pattern '$pattern' found at position $POS, but barrier requires position > $LAST_BARRIER_POS" >&2
+                            exit 1
+                        fi
+                        if [ "$POS" -gt "$MAX_POS" ]; then
+                            MAX_POS=$POS
+                        fi
+                    done <<< "$SECTION_PATTERNS"
+                fi
+                LAST_BARRIER_POS=$MAX_POS
+                SECTION_PATTERNS=""
+                continue
+            fi
+
+            # Accumulate pattern
+            SECTION_PATTERNS="${SECTION_PATTERNS}${line}"$'\n'
+        done < "$EXPECTED_FILE"
+
+        # Verify final section (after last barrier or if no barriers)
+        if [ -n "$SECTION_PATTERNS" ]; then
+            while IFS= read -r pattern; do
+                [ -z "$pattern" ] && continue
+                MATCH=$(echo "$LOG_WITH_NUMS" | grep -F "$pattern" | head -1)
+                if [ -z "$MATCH" ]; then
+                    echo "Expected log not found: '$pattern'" >&2
+                    echo "Log messages:" >&2
+                    echo "$LOG_MESSAGES" | head -10 >&2
+                    exit 1
+                fi
+                POS=$(echo "$MATCH" | awk '{print $1}')
+                if [ "$POS" -le "$LAST_BARRIER_POS" ]; then
+                    echo "Pattern '$pattern' found at position $POS, but barrier requires position > $LAST_BARRIER_POS" >&2
+                    exit 1
+                fi
+            done <<< "$SECTION_PATTERNS"
         fi
-        # Remove all lines up to and including the match
-        LOG_MESSAGES=$(echo "$LOG_MESSAGES" | tail -n +$((MATCH_LINE + 1)))
-    done <<< "$EXPECTED_PATTERNS"
+    else
+        # Ordered mode (default): patterns must appear in strict order
+        # Read expected patterns (skip comments and blank lines)
+        EXPECTED_PATTERNS=$(grep -v '^#' "$EXPECTED_FILE" | grep -v '^[[:space:]]*$')
+
+        # Check that each expected pattern appears in order
+        LINE_NUM=0
+        while IFS= read -r pattern; do
+            LINE_NUM=$((LINE_NUM + 1))
+            # Find the pattern in remaining log messages
+            MATCH_LINE=$(echo "$LOG_MESSAGES" | grep -n -F "$pattern" | head -1 | cut -d: -f1)
+            if [ -z "$MATCH_LINE" ]; then
+                echo "Expected log not found: '$pattern' (expected.txt line $LINE_NUM)" >&2
+                echo "Remaining log messages:" >&2
+                echo "$LOG_MESSAGES" | head -5 >&2
+                exit 1
+            fi
+            # Remove all lines up to and including the match
+            LOG_MESSAGES=$(echo "$LOG_MESSAGES" | tail -n +$((MATCH_LINE + 1)))
+        done <<< "$EXPECTED_PATTERNS"
+    fi
 fi
 
 exit 0  # passed
