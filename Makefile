@@ -17,7 +17,7 @@ args_test_EXTRAS := args_child
 export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS args_test_EXTRAS
 
 # Build targets
-build: panda-kernel init terminal
+build: panda-kernel init terminal hello ls cat
 	mkdir -p build/run/efi/boot
 	mkdir -p build/run/initrd
 	cp target/x86_64-panda-uefi/debug/panda-kernel.efi build/run/efi/boot/bootx64.efi
@@ -35,6 +35,15 @@ init:
 terminal:
 	cargo +nightly build -Z build-std=core,alloc --package terminal --target ./x86_64-panda-userspace.json
 
+hello:
+	cargo +nightly build -Z build-std=core,alloc --package hello --target ./x86_64-panda-userspace.json
+
+ls:
+	cargo +nightly build -Z build-std=core,alloc --package ls --target ./x86_64-panda-userspace.json
+
+cat:
+	cargo +nightly build -Z build-std=core,alloc --package cat --target ./x86_64-panda-userspace.json
+
 run: build ext2-image
 	$(QEMU_COMMON) \
 		-drive format=raw,file=fat:rw:build/run \
@@ -47,7 +56,7 @@ run: build ext2-image
 # Create ext2 test disk image
 ext2-image: $(EXT2_IMAGE)
 
-$(EXT2_IMAGE): terminal
+$(EXT2_IMAGE): terminal hello ls cat
 	@echo "Creating ext2 test image..."
 	@mkdir -p build
 	dd if=/dev/zero of=$(EXT2_IMAGE) bs=1M count=10 2>/dev/null
@@ -57,7 +66,7 @@ $(EXT2_IMAGE): terminal
 	@echo "Nested file content" > build/nested.txt
 	@dd if=/dev/urandom of=build/large.bin bs=1024 count=8 2>/dev/null
 	@echo "Deep file" > build/deep.txt
-	@debugfs -w $(EXT2_IMAGE) -f /dev/stdin <<< $$'mkdir subdir\nmkdir a\nmkdir a/b\nmkdir a/b/c\nwrite build/hello.txt hello.txt\nwrite build/nested.txt subdir/nested.txt\nwrite build/large.bin large.bin\nwrite build/deep.txt a/b/c/deep.txt\nwrite target/x86_64-panda-userspace/debug/terminal terminal' 2>/dev/null
+	@debugfs -w $(EXT2_IMAGE) -f /dev/stdin <<< $$'mkdir subdir\nmkdir a\nmkdir a/b\nmkdir a/b/c\nwrite build/hello.txt hello.txt\nwrite build/nested.txt subdir/nested.txt\nwrite build/large.bin large.bin\nwrite build/deep.txt a/b/c/deep.txt\nwrite target/x86_64-panda-userspace/debug/terminal terminal\nwrite target/x86_64-panda-userspace/debug/hello hello\nwrite target/x86_64-panda-userspace/debug/ls ls\nwrite target/x86_64-panda-userspace/debug/cat cat' 2>/dev/null
 	@rm -f build/hello.txt build/nested.txt build/large.bin build/deep.txt
 	@echo "Ext2 image created: $(EXT2_IMAGE)"
 

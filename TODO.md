@@ -21,6 +21,12 @@ Not yet implemented:
 - `OP_PROCESS_SIGNAL`, `OP_ENVIRONMENT_TIME`
 - ACPI handler read/write methods (27 todo!() macros)
 
+## Technical debt
+
+- **Add high-level wrappers around `panda-abi` primitives**: The API for operations in `panda-abi` should have well-designed, idiomatic Rust wrappers around the current low-level operations and system calls.
+
+- **`Event` structure should be organized around resources and their events**: e.g. `Key(KeyEvent)` -> `Input(InputEvent::Key(KeyEvent))`
+
 ## Next steps
 
 ### 1. Terminal command execution (see plans/TERMINAL_COMMANDS.md)
@@ -48,8 +54,8 @@ Not yet implemented:
 - [x] Add libpanda startup module (encode/decode args)
 
 #### Phase 4: Userspace API
-- [ ] Update spawn() to take args slice, send startup message over channel
-- [ ] Update main! macro to receive startup message and parse args
+- [x] Update spawn() to take args slice, send startup message over channel
+- [x] Update main! macro to receive startup message and parse args
 
 #### Phase 5: Terminal rewrite
 - [ ] Rewrite terminal with mailbox event loop

@@ -172,3 +172,23 @@ pub fn mount(fstype: &str, mountpoint: &str) -> Result<(), isize> {
     );
     if result < 0 { Err(result) } else { Ok(()) }
 }
+
+/// Check if a file or directory exists at the given path
+///
+/// Returns Ok(FileStat) if the path exists, Err otherwise.
+/// This is useful for checking file existence before opening.
+pub fn stat(path: &str) -> Result<FileStat, isize> {
+    // Open the file to get a handle, then stat it
+    let handle = open(path, 0, 0)?;
+    let mut stat_buf = FileStat {
+        size: 0,
+        is_dir: false,
+    };
+    let result = crate::file::stat(handle, &mut stat_buf);
+    crate::file::close(handle);
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(stat_buf)
+    }
+}

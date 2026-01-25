@@ -5,11 +5,19 @@ extern crate alloc;
 extern crate panda_abi;
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use fontdue::{Font, FontSettings};
-use libpanda::{buffer::Buffer, environment, file, syscall::send};
+use libpanda::{
+    buffer::Buffer,
+    environment,
+    mailbox::{Event, KeyValue, Mailbox},
+    process,
+    syscall::send,
+    Handle,
+};
 use panda_abi::{
-    BlitParams, FillParams, PixelFormat, SurfaceInfoOut, UpdateParamsIn, OP_SURFACE_BLIT,
-    OP_SURFACE_FILL, OP_SURFACE_FLUSH, OP_SURFACE_INFO, OP_SURFACE_UPDATE_PARAMS,
+    BlitParams, FillParams, UpdateParamsIn, EVENT_KEYBOARD_KEY, EVENT_PROCESS_EXITED,
+    OP_SURFACE_BLIT, OP_SURFACE_FILL, OP_SURFACE_FLUSH, OP_SURFACE_UPDATE_PARAMS,
 };
 
 // Terminal colors (ARGB format)
@@ -23,37 +31,38 @@ const CHAR_WIDTH: u32 = 10; // Approximate monospace width
 // Embed the Hack font at compile time
 const FONT_DATA: &[u8] = include_bytes!("../fonts/Hack-Regular.ttf");
 
-/// Input event from keyboard
-#[repr(C)]
-struct InputEvent {
-    event_type: u16,
-    code: u16,
-    value: u32,
-}
-
-const EV_KEY: u16 = 0x01;
+// Shift key codes
+const KEY_LEFTSHIFT: u16 = 42;
+const KEY_RIGHTSHIFT: u16 = 54;
+const KEY_ENTER: u16 = 28;
+const KEY_BACKSPACE: u16 = 14;
 
 /// Terminal state
 struct Terminal {
-    surface: libpanda::Handle,
+    surface: Handle,
+    mailbox: Mailbox,
     font: Font,
     width: u32,
     height: u32,
     cursor_x: u32,
     cursor_y: u32,
     line_buffer: String,
+    /// Currently running child process (if any)
+    child: Option<Handle>,
 }
 
 impl Terminal {
-    fn new(surface: libpanda::Handle, font: Font, width: u32, height: u32) -> Self {
+    fn new(surface: Handle, mailbox: Mailbox, font: Font, width: u32, height: u32) -> Self {
         Self {
             surface,
+            mailbox,
             font,
             width,
             height,
             cursor_x: MARGIN,
             cursor_y: MARGIN,
             line_buffer: String::new(),
+            child: None,
         }
     }
 
@@ -194,12 +203,138 @@ impl Terminal {
         self.flush();
     }
 
+    /// Write a string to the terminal
+    fn write_str(&mut self, s: &str) {
+        for ch in s.chars() {
+            if ch == '\n' {
+                self.newline();
+            } else {
+                if self.cursor_x + CHAR_WIDTH > self.width - MARGIN {
+                    self.newline();
+                }
+                let _ = self.draw_char(ch);
+            }
+        }
+        self.flush();
+    }
+
+    /// Write a line (string + newline) to the terminal
+    fn write_line(&mut self, s: &str) {
+        self.write_str(s);
+        self.newline();
+        self.flush();
+    }
+
+    /// Parse the line buffer into command and arguments
+    fn parse_command(&self) -> Option<(String, Vec<String>)> {
+        let trimmed = self.line_buffer.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.is_empty() {
+            return None;
+        }
+
+        let cmd = String::from(parts[0]);
+        let args: Vec<String> = parts.iter().map(|s| String::from(*s)).collect();
+        Some((cmd, args))
+    }
+
+    /// Resolve a command name to an executable path
+    fn resolve_command(&self, cmd: &str) -> Option<String> {
+        // Search paths in order:
+        // 1. If command contains '/', use as-is
+        // 2. Look in /mnt (ext2 filesystem)
+        // 3. Look in /initrd
+
+        if cmd.contains('/') {
+            // Absolute or relative path - use as-is with file: prefix
+            return Some(alloc::format!("file:{}", cmd));
+        }
+
+        // Try /mnt first (ext2 filesystem)
+        let mnt_path = alloc::format!("file:/mnt/{}", cmd);
+        if environment::stat(&mnt_path).is_ok() {
+            return Some(mnt_path);
+        }
+
+        // Try /initrd
+        let initrd_path = alloc::format!("file:/initrd/{}", cmd);
+        if environment::stat(&initrd_path).is_ok() {
+            return Some(initrd_path);
+        }
+
+        None
+    }
+
+    /// Execute a command
+    fn execute_command(&mut self) {
+        let Some((cmd, args)) = self.parse_command() else {
+            return;
+        };
+
+        // Handle built-in commands
+        match cmd.as_str() {
+            "clear" => {
+                self.clear();
+                return;
+            }
+            "exit" => {
+                process::exit(0);
+            }
+            _ => {}
+        }
+
+        // Resolve command to executable path
+        let Some(path) = self.resolve_command(&cmd) else {
+            self.write_line(&alloc::format!("{}: command not found", cmd));
+            return;
+        };
+
+        // Convert args to &str slice for spawn
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+        // Spawn the process with mailbox attachment for exit notification
+        match environment::spawn(
+            &path,
+            &arg_refs,
+            self.mailbox.handle().as_raw(),
+            EVENT_PROCESS_EXITED,
+        ) {
+            Ok(child_handle) => {
+                self.child = Some(child_handle);
+                // Don't print prompt until child exits
+            }
+            Err(_) => {
+                self.write_line(&alloc::format!("{}: failed to execute", cmd));
+            }
+        }
+    }
+
+    /// Handle child process exit
+    fn handle_child_exit(&mut self, handle: Handle) {
+        if let Some(child) = self.child.take() {
+            if child.as_raw() == handle.as_raw() {
+                // Get exit code
+                let exit_code = process::wait(child);
+                if exit_code != 0 {
+                    self.write_line(&alloc::format!("(exited with code {})", exit_code));
+                }
+            }
+        }
+    }
+
     /// Handle Enter key
     fn handle_enter(&mut self) {
-        // For now, just newline. Later can process line_buffer as command
-        environment::log(&self.line_buffer);
-        self.line_buffer.clear();
         self.newline();
+
+        if !self.line_buffer.trim().is_empty() {
+            self.execute_command();
+        }
+
+        self.line_buffer.clear();
         self.flush();
     }
 
@@ -274,6 +409,37 @@ fn keycode_to_char(code: u16, shift: bool) -> Option<char> {
     }
 }
 
+/// Handle a key event from the mailbox
+fn handle_key_event(term: &mut Terminal, code: u16, value: KeyValue, shift_pressed: &mut bool) {
+    match value {
+        KeyValue::Press | KeyValue::Repeat => {
+            // Track shift state
+            if code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT {
+                *shift_pressed = true;
+                return;
+            }
+
+            // Handle special keys
+            match code {
+                KEY_ENTER => term.handle_enter(),
+                KEY_BACKSPACE => term.handle_backspace(),
+                _ => {
+                    // Try to convert to character
+                    if let Some(ch) = keycode_to_char(code, *shift_pressed) {
+                        term.handle_char(ch);
+                    }
+                }
+            }
+        }
+        KeyValue::Release => {
+            // Track shift release
+            if code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT {
+                *shift_pressed = false;
+            }
+        }
+    }
+}
+
 libpanda::main! {
     environment::log("terminal: Starting");
 
@@ -281,7 +447,10 @@ libpanda::main! {
     let font = Font::from_bytes(FONT_DATA, FontSettings::default())
         .expect("Failed to load font");
 
-    // Open a window surface
+    // Get the default mailbox for event aggregation
+    let mailbox = Mailbox::default();
+
+    // Open a window surface (no mailbox attachment needed)
     let Ok(surface) = environment::open("surface:/window", 0, 0) else {
         environment::log("terminal: Failed to open window");
         return 1;
@@ -308,63 +477,44 @@ libpanda::main! {
         0,
     );
 
-    // Open keyboard
-    let Ok(keyboard) = environment::open("keyboard:/pci/00:03.0", 0, 0) else {
+    // Open keyboard with mailbox attachment for key events
+    let Ok(_keyboard) = environment::open(
+        "keyboard:/pci/00:03.0",
+        mailbox.handle().as_raw(),
+        EVENT_KEYBOARD_KEY,
+    ) else {
         environment::log("terminal: Failed to open keyboard");
         return 1;
     };
 
-    // Create terminal state
-    let mut term = Terminal::new(surface, font, window_width, window_height);
+    // Create terminal state (keyboard handle not needed since events come via mailbox)
+    let mut term = Terminal::new(surface, mailbox, font, window_width, window_height);
     term.clear();
 
-    environment::log("terminal: Ready - type to see characters echoed");
+    // Print welcome message
+    term.write_line("Panda OS Terminal");
+    term.write_line("Type 'help' for available commands.");
+    term.write_str("> ");
 
-    // Main event loop
-    let mut event: InputEvent = InputEvent { event_type: 0, code: 0, value: 0 };
     let mut shift_pressed = false;
 
+    // Main event loop using mailbox
     loop {
-        // Read keyboard event (blocking) - use properly aligned InputEvent buffer
-        let event_bytes = unsafe {
-            core::slice::from_raw_parts_mut(
-                &mut event as *mut InputEvent as *mut u8,
-                core::mem::size_of::<InputEvent>(),
-            )
-        };
-        let n = file::read(keyboard, event_bytes);
-        if n < 0 {
-            continue;
-        }
+        let (handle, event) = term.mailbox.recv();
 
-        if n as usize >= core::mem::size_of::<InputEvent>() {
-
-            if event.event_type == EV_KEY && event.value == 1 {
-                // Key pressed (value=1), ignore release (value=0) and repeat (value=2)
-
-                // Track shift state
-                if event.code == 42 || event.code == 54 {
-                    // Left shift (42) or right shift (54)
-                    shift_pressed = true;
-                    continue;
-                }
-
-                // Handle special keys
-                match event.code {
-                    28 => term.handle_enter(),     // Enter
-                    14 => term.handle_backspace(), // Backspace
-                    _ => {
-                        // Try to convert to character
-                        if let Some(ch) = keycode_to_char(event.code, shift_pressed) {
-                            term.handle_char(ch);
-                        }
-                    }
-                }
-            } else if event.event_type == EV_KEY && event.value == 0 {
-                // Key released
-                if event.code == 42 || event.code == 54 {
-                    shift_pressed = false;
-                }
+        match event {
+            Event::Key(key_event) => {
+                // Process key event directly from mailbox
+                handle_key_event(&mut term, key_event.code, key_event.value, &mut shift_pressed);
+            }
+            Event::ProcessExited => {
+                // Child process exited
+                term.handle_child_exit(handle);
+                // Show prompt for next command
+                term.write_str("> ");
+            }
+            _ => {
+                // Ignore other events
             }
         }
     }

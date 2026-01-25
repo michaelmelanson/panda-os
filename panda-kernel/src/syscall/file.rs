@@ -16,7 +16,14 @@ use super::SyscallContext;
 /// Handle file read operation.
 ///
 /// For VFS files, this is async and may yield to the scheduler if I/O is needed.
-pub fn handle_read(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_len: usize) -> isize {
+/// The `flags` parameter can include `FILE_NONBLOCK` to return immediately if no data.
+pub fn handle_read(
+    ctx: &SyscallContext,
+    handle_id: u32,
+    buf_ptr: usize,
+    buf_len: usize,
+    flags: u32,
+) -> isize {
     // First, check if this is a VFS file (which needs async handling)
     let vfs_file: Option<Arc<dyn VfsFile>> = scheduler::with_current_process(|proc| {
         proc.handles()
@@ -42,7 +49,7 @@ pub fn handle_read(ctx: &SyscallContext, handle_id: u32, buf_ptr: usize, buf_len
         handle_read_vfs(ctx, handle_id, buf_ptr, buf_len, vfs_file)
     } else {
         // Sync path for non-VFS resources (blocks, event sources, etc.)
-        handle_read_sync(ctx, handle_id, buf_ptr as *mut u8, buf_len)
+        handle_read_sync(ctx, handle_id, buf_ptr as *mut u8, buf_len, flags)
     }
 }
 
@@ -114,11 +121,15 @@ unsafe impl Send for VfsFileWrapper {}
 unsafe impl Sync for VfsFileWrapper {}
 
 /// Synchronous read path for non-VFS resources (event sources, etc.).
+///
+/// If `flags` includes `FILE_NONBLOCK`, returns 0 immediately when no data is available
+/// instead of blocking.
 fn handle_read_sync(
     ctx: &SyscallContext,
     handle_id: u32,
     buf_ptr: *mut u8,
     buf_len: usize,
+    flags: u32,
 ) -> isize {
     let result: Option<isize> = scheduler::with_current_process(|proc| {
         let handle = proc.handles_mut().get_mut(handle_id)?;
@@ -141,7 +152,7 @@ fn handle_read_sync(
                 buf[..n].copy_from_slice(&event_bytes[..n]);
                 Some(n as isize)
             } else {
-                None // No event available - need to block
+                None // No event available - need to block (or return 0 if non-blocking)
             }
         } else {
             Some(0)
@@ -151,6 +162,13 @@ fn handle_read_sync(
     match result {
         Some(n) => n,
         None => {
+            // No data available
+            if flags & FILE_NONBLOCK != 0 {
+                // Non-blocking: return 0 to indicate no data
+                return 0;
+            }
+
+            // Blocking: wait for data
             let waker = scheduler::with_current_process(|proc| {
                 proc.handles().get(handle_id).and_then(|h| h.waker())
             });

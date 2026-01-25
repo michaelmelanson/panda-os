@@ -164,6 +164,10 @@ pub const SEEK_SET: u32 = 0;
 pub const SEEK_CUR: u32 = 1;
 pub const SEEK_END: u32 = 2;
 
+// File read flags (passed in arg3)
+/// Non-blocking read: return immediately if no data available.
+pub const FILE_NONBLOCK: u32 = 1 << 0;
+
 // Channel constants
 /// Maximum size of a single channel message in bytes.
 /// Larger data should use shared memory / buffer handles.

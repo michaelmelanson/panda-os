@@ -201,7 +201,7 @@ fn handle_send(
 
     match operation {
         // File operations
-        OP_FILE_READ => file::handle_read(ctx, handle, arg0, arg1),
+        OP_FILE_READ => file::handle_read(ctx, handle, arg0, arg1, arg2 as u32),
         OP_FILE_WRITE => file::handle_write(ctx, handle, arg0, arg1),
         OP_FILE_SEEK => file::handle_seek(ctx, handle, arg0, arg1),
         OP_FILE_STAT => file::handle_stat(ctx, handle, arg0),

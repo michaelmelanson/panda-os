@@ -4,7 +4,7 @@ use crate::handle::Handle;
 use crate::syscall::send;
 use panda_abi::*;
 
-/// Read from a file handle into a buffer
+/// Read from a file handle into a buffer (blocking)
 ///
 /// Returns number of bytes read, or negative error code
 #[inline(always)]
@@ -15,6 +15,22 @@ pub fn read(handle: Handle, buf: &mut [u8]) -> isize {
         buf.as_mut_ptr() as usize,
         buf.len(),
         0,
+        0,
+    )
+}
+
+/// Try to read from a file handle (non-blocking)
+///
+/// Returns number of bytes read, 0 if no data available, or negative error code.
+/// Unlike `read`, this never blocks waiting for data.
+#[inline(always)]
+pub fn try_read(handle: Handle, buf: &mut [u8]) -> isize {
+    send(
+        handle,
+        OP_FILE_READ,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        FILE_NONBLOCK as usize,
         0,
     )
 }
