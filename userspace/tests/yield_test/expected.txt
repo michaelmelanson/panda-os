@@ -3,9 +3,7 @@
 # Each line is matched as a substring against LOG: output
 
 Parent: spawning child
-Parent: before yield
 Child: before yield
-Parent: after yield
 Parent: before yield
 Child: after yield
 Child: before yield
@@ -14,6 +12,8 @@ Parent: before yield
 Child: after yield
 Child: before yield
 Parent: after yield
-Parent: done
+Parent: before yield
 Child: after yield
 Child: done
+Parent: after yield
+Parent: done

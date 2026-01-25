@@ -2,8 +2,8 @@
 # Parent spawns 3 children, all do CPU-bound work concurrently via preemption
 Preempt test: spawning 3 CPU-bound children
 Preempt test: parent doing CPU-bound work
+# Children complete via preemption while parent also runs
+preempt_child: completed
+preempt_child: completed
+preempt_child: completed
 Preempt test: parent completed, children running via preemption
-# Children complete after parent (order may vary due to preemption scheduling)
-preempt_child: completed
-preempt_child: completed
-preempt_child: completed
