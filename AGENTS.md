@@ -17,6 +17,10 @@ This file is a table of contents into the docs/ directory. Keep detailed documen
 - [docs/HIGHER_HALF_KERNEL.md](docs/HIGHER_HALF_KERNEL.md) - Higher-half kernel memory layout and relocation
 - [docs/VIRTUAL_ADDRESS_SPACE.md](docs/VIRTUAL_ADDRESS_SPACE.md) - Virtual address space layout for kernel and userspace
 
+## Design plans
+
+- [plans/DEVICE_PATHS.md](plans/DEVICE_PATHS.md) - Unified device path scheme with human-friendly names
+
 ## Quick Reference
 
 ```bash
@@ -34,4 +38,5 @@ userspace/libpanda/ # Userspace library
 userspace/tests/    # Userspace test programs
 panda-abi/          # Shared syscall definitions
 docs/               # Detailed documentation
+plans/              # Design plans for future work
 ```

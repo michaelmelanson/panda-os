@@ -12,34 +12,76 @@ Working:
 - Virtio GPU with Surface API (blit, fill, flush), virtio keyboard with blocking reads
 - Virtio block device driver with async I/O (interrupt-driven, non-blocking)
 - Process handles: spawn returns handle, OP_PROCESS_WAIT blocks until child exits
-- Userspace: libpanda, init, terminal (with keyboard input and font rendering), 13 test suites
+- Userspace: libpanda, init, terminal (with keyboard input and font rendering), 24 test suites
 
 Not yet implemented:
 - `OP_PROCESS_SIGNAL`, `OP_ENVIRONMENT_TIME`
 - ACPI handler read/write methods (27 todo!() macros)
+- Message-passing IPC (channel.rs has stubs only)
 
 ## Next steps
 
-- **Make terminal execute commands**: Currently terminal just echoes input. Parse command line, spawn programs from initrd (e.g., `spawn file:/path/to/program`).
+### Usability (make the system interactive)
 
-- **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes.
+- **Make terminal execute commands**: Currently terminal just echoes input. Parse command line, spawn programs (e.g., typing `hello` spawns `/mnt/hello`). Handle child process exit and return to prompt.
 
-- **Implement system initialization tool**: It should use declarative service configurations, similar to `systemd` on Linux, to describe a set of services to start to boot the machine.
+- **Basic file utilities**: Create simple programs for file operations:
+  - `ls` - list directory contents
+  - `cat` - print file contents
+  - `echo` - print arguments
 
-- **Implement block device discovery**: Add `readdir` support to `BlockScheme` to list available block devices via `block:/` path. Currently devices must be accessed by known PCI address (e.g., `block:/pci/00:04.0`).
+### Device discovery (see plans/DEVICE_PATHS.md)
 
-- **Block I/O: Scatter-gather support**: Submit multiple non-contiguous sectors in one virtio request for better throughput.
+- **Unified device paths**: Implement human-friendly device paths using PCI class names:
+  - `keyboard:/pci/input/0` instead of `keyboard:/pci/00:03.0`
+  - `block:/pci/storage/0` instead of `block:/pci/00:04.0`
+  - `surface:/pci/display/0` instead of `surface:/pci/00:01.0`
 
-- **Block I/O: Read-ahead**: Prefetch subsequent sectors while returning current data to reduce latency for sequential reads.
+- **PCI class tracking**: Store device class code during PCI enumeration. Add `pci::get_device_by_class(class, index)` function.
 
-- **Block I/O: Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
+- **Shared path resolution**: Create `device_path` module with `resolve()` and `list()` functions used by all device schemes.
+
+- **Cross-scheme discovery**: Implement `*:` scheme prefix for querying device capabilities:
+  - `readdir("*:/pci")` lists device classes
+  - `readdir("*:/pci/storage")` lists storage devices
+  - `readdir("*:/pci/storage/0")` lists schemes that support the device
+
+### Missing syscalls
+
+- **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes from terminal.
 
 - **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
+
+### System services
+
+- **Implement system initialization tool**: Declarative service configurations, similar to `systemd` on Linux, to describe services to start at boot.
+
+### Block I/O optimizations
+
+- **Scatter-gather support**: Submit multiple non-contiguous sectors in one virtio request for better throughput.
+
+- **Read-ahead**: Prefetch subsequent sectors while returning current data to reduce latency for sequential reads.
+
+- **Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
+
+### Future work
+
+- **IPC/Pipes**: Implement pipe support for shell pipelines. The channel.rs module has stubs for message-passing but nothing is implemented yet.
+
+- **Environment variables**: Support for PATH, HOME, etc. needed for proper shell operation.
+
+- **Ext2 write support**: Currently ext2 is read-only.
+
+- **Multi-CPU support**: APIC infrastructure exists but no SMP/IPI support.
 
 ## Known issues
 
 - **proc-macro2 >= 1.0.104 causes test failures**: The `log!` macros generate incorrect code when used in x86-interrupt handlers with proc-macro2 1.0.104+. Cargo.lock pins proc-macro2 to 1.0.103 as a workaround.
 
-- **ConfigurationAccess::unsafe_clone unimplemented**: virtio_gpu/mod.rs has a `todo!()` in the PCI configuration access trait impl.
+- **ConfigurationAccess::unsafe_clone unimplemented**: virtio_gpu/mod.rs has a `todo!()` in the PCI configuration access trait impl. Not called in normal operation.
 
-- **ACPI handler incomplete**: 27 `todo!()` macros in acpi/handler.rs for memory read/write operations.
+- **ACPI handler incomplete**: 27 `todo!()` macros in acpi/handler.rs for memory read/write operations. Not needed for current boot path.
+
+## Design documents
+
+- [plans/DEVICE_PATHS.md](plans/DEVICE_PATHS.md) - Unified device path scheme with human-friendly names
