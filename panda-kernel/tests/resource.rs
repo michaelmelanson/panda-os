@@ -300,6 +300,7 @@ fn create_test_process() -> panda_kernel::process::Process {
     let context = Context::new_user_context();
     let elf_slice: &[u8] = &elf_data;
     panda_kernel::process::Process::from_elf_data(context, elf_slice as *const [u8])
+        .expect("Failed to create test process from ELF data")
 }
 
 fn buffer_free_list_no_merge() {

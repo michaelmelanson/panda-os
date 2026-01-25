@@ -17,7 +17,7 @@ use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use goblin::pe::PE;
-use log::info;
+use log::{debug, info};
 use uefi::mem::memory_map::{MemoryMap, MemoryMapOwned};
 use x86_64::structures::paging::page_table::PageTableLevel;
 use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
@@ -553,7 +553,7 @@ unsafe fn apply_kernel_relocations(kernel_info: &KernelImageInfo, higher_half_ba
 /// Must be called after `create_physical_memory_window()` and before jumping
 /// to higher-half execution.
 pub unsafe fn relocate_kernel_to_higher_half(kernel_info: &KernelImageInfo) -> VirtAddr {
-    info!("Relocating kernel to higher half...");
+    debug!("Relocating kernel to higher half...");
 
     // Map kernel pages to higher-half addresses
     let higher_half_base = unsafe { map_kernel_to_higher_half(kernel_info) };
@@ -664,5 +664,5 @@ pub unsafe fn remove_identity_mapping() {
     // Flush TLB to ensure stale mappings are removed
     x86_64::instructions::tlb::flush_all();
 
-    info!("Identity mapping removed, kernel running entirely in higher half");
+    debug!("Identity mapping removed, kernel running entirely in higher half");
 }

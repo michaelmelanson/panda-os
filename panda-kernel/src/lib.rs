@@ -15,6 +15,7 @@ pub mod acpi;
 pub mod apic;
 pub mod compositor;
 pub mod device_address;
+pub mod device_path;
 pub mod devices;
 pub mod executor;
 pub mod handle;

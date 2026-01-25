@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use spinning_top::{RwSpinlock, Spinlock};
 use x86_64::instructions::port::Port;
 
-use crate::device_address::DeviceAddress;
+use crate::device_path;
 use crate::devices::virtio_block;
 use crate::devices::virtio_keyboard::{self, VirtioKeyboard};
 use crate::process::waker::Waker;
@@ -60,14 +60,52 @@ pub async fn open(uri: &str) -> Option<Box<dyn Resource>> {
 }
 
 /// List directory contents by URI (e.g., "file:/initrd")
+///
+/// Special case: `*:/path` discovers which schemes support the given path,
+/// returning each scheme name as a directory entry.
 pub async fn readdir(uri: &str) -> Option<Vec<DirEntry>> {
     let (scheme, path) = uri.split_once(':')?;
+
+    // Special case: "*" scheme discovers which schemes support this path
+    if scheme == "*" {
+        return Some(discover_schemes(path).await);
+    }
+
     // Clone the handler to avoid holding the lock across await
     let handler: Arc<dyn SchemeHandler> = {
         let schemes = SCHEMES.read();
         schemes.get(scheme).map(|h| Arc::clone(h))?
     };
     handler.readdir(path).await
+}
+
+/// Discover which schemes can open a given path.
+///
+/// Returns a list of scheme names that successfully open the path.
+/// This enables cross-scheme discovery like `*:/pci/storage/0` or `*:/serial/0`.
+pub async fn discover_schemes(path: &str) -> Vec<DirEntry> {
+    // Get list of all scheme names and handlers
+    let handlers: Vec<(&'static str, Arc<dyn SchemeHandler>)> = {
+        let schemes = SCHEMES.read();
+        schemes
+            .iter()
+            .map(|(&name, handler)| (name, Arc::clone(handler)))
+            .collect()
+    };
+
+    let mut results = Vec::new();
+
+    for (name, handler) in handlers {
+        // Try to open the path with this scheme
+        if handler.open(path).await.is_some() {
+            results.push(DirEntry {
+                name: alloc::string::String::from(name),
+                is_dir: false,
+            });
+        }
+    }
+
+    results
 }
 
 // =============================================================================
@@ -182,6 +220,20 @@ impl SchemeHandler for ConsoleScheme {
             _ => None,
         }
     }
+
+    async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
+        match path {
+            "/" => Some(alloc::vec![DirEntry {
+                name: alloc::string::String::from("serial"),
+                is_dir: true,
+            }]),
+            "/serial" => Some(alloc::vec![DirEntry {
+                name: alloc::string::String::from("0"),
+                is_dir: false,
+            }]),
+            _ => None,
+        }
+    }
 }
 
 /// A serial console resource
@@ -222,10 +274,14 @@ pub struct KeyboardScheme;
 #[async_trait]
 impl SchemeHandler for KeyboardScheme {
     async fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
-        // Parse path like "/pci/00:03.0"
-        let address = DeviceAddress::from_path(path)?;
+        // Resolve path like "/pci/input/0" or "/pci/00:03.0"
+        let address = device_path::resolve(path)?;
         let keyboard = virtio_keyboard::get_keyboard(&address)?;
         Some(Box::new(KeyboardResource { keyboard }))
+    }
+
+    async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
+        device_path::list(path)
     }
 }
 
@@ -282,6 +338,22 @@ impl SchemeHandler for SurfaceScheme {
             _ => None,
         }
     }
+
+    async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
+        match path {
+            "/" => Some(alloc::vec![
+                DirEntry {
+                    name: alloc::string::String::from("window"),
+                    is_dir: false,
+                },
+                DirEntry {
+                    name: alloc::string::String::from("fb0"),
+                    is_dir: false,
+                },
+            ]),
+            _ => None,
+        }
+    }
 }
 
 // =============================================================================
@@ -290,14 +362,16 @@ impl SchemeHandler for SurfaceScheme {
 
 /// Scheme handler for block devices (virtio-blk, future AHCI, NVMe).
 ///
-/// Paths are device addresses: `/pci/00:04.0`
+/// Paths support both raw addresses and class-based resolution:
+/// - `/pci/00:04.0` - raw PCI address
+/// - `/pci/storage/0` - first storage device
 pub struct BlockScheme;
 
 #[async_trait]
 impl SchemeHandler for BlockScheme {
     async fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
-        // Parse path like "/pci/00:04.0" directly to DeviceAddress
-        let address = DeviceAddress::from_path(path)?;
+        // Resolve path like "/pci/storage/0" or "/pci/00:04.0"
+        let address = device_path::resolve(path)?;
 
         // Try virtio-blk registry (future: try AHCI, NVMe registries too)
         let device = virtio_block::get_device(&address)?;
@@ -310,7 +384,9 @@ impl SchemeHandler for BlockScheme {
         }))
     }
 
-    // TODO: Implement readdir for block device discovery (see TODO.md)
+    async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
+        device_path::list(path)
+    }
 }
 
 /// Resource wrapper for a block device.
