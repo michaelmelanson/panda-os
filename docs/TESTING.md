@@ -183,8 +183,11 @@ process::wait(child_handle);           // Wait for child
 
 ### Expected output matching
 
-The test framework extracts log messages and verifies they appear in order:
+The test framework extracts log messages and verifies they appear in the expected order.
 
+#### Ordered mode (default)
+
+In the default ordered mode:
 - Lines starting with `#` are comments
 - Each non-comment line must appear in the log output
 - Lines must appear in the specified order
@@ -196,6 +199,50 @@ Example `expected.txt`:
 VFS test starting
 VFS test passed
 ```
+
+#### Unordered mode with barriers
+
+For tests with non-deterministic output (e.g., concurrent processes), use `# @unordered` mode with `# @barrier` markers:
+
+```
+# @unordered
+# Patterns within a section can match in any order.
+# Use # @barrier to enforce ordering between sections.
+
+First thing that happens
+Second thing (order with first doesn't matter)
+# @barrier
+# Everything above must complete before anything below
+Third thing
+Fourth thing (order with third doesn't matter)
+# @barrier
+Final thing that must come last
+```
+
+Rules:
+- `# @unordered` at the start enables unordered mode
+- Patterns within a section can match log lines in any order
+- `# @barrier` enforces that all patterns before it match log lines that appear before any patterns after it
+- Each pattern still must appear exactly once in the log
+
+Example from `preempt_test/expected.txt`:
+```
+# @unordered
+Preempt test: spawning 3 CPU-bound children
+Preempt test: parent doing CPU-bound work
+# @barrier
+preempt_child: completed
+preempt_child: completed
+preempt_child: completed
+Preempt test: parent work done, waiting for children
+# @barrier
+Preempt test: all children completed successfully
+```
+
+This verifies:
+1. Spawning and parent work messages appear first (either order)
+2. Then all 3 children complete and parent finishes work (any interleaving)
+3. Finally the success message appears last
 
 ### Exit codes
 
