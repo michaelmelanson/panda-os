@@ -6,6 +6,3 @@ edition = "2021"
 [dependencies]
 libpanda = { path = "../../libpanda" }
 panda-abi = { path = "../../../panda-abi" }
-
-[profile.dev]
-panic = "abort"

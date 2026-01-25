@@ -36,10 +36,6 @@ Not yet implemented:
 
 - **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
 
-## Technical debt
-
-- **Cargo.toml workspace profile warnings**: Several userspace test packages have profile settings that should be moved to the workspace root Cargo.toml.
-
 ## Known issues
 
 - **proc-macro2 >= 1.0.104 causes test failures**: The `log!` macros generate incorrect code when used in x86-interrupt handlers with proc-macro2 1.0.104+. Cargo.lock pins proc-macro2 to 1.0.103 as a workaround.
