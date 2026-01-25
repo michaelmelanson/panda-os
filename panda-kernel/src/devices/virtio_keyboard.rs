@@ -2,6 +2,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use spinning_top::{RwSpinlock, Spinlock};
 use virtio_drivers::{
     device::input::VirtIOInput,
@@ -16,6 +17,7 @@ use crate::{
     interrupts::{self, IrqHandlerFunc},
     pci::device::PciDevice,
     process::waker::Waker,
+    resource::MailboxRef,
 };
 
 use super::virtio_hal::VirtioHal;
@@ -85,6 +87,8 @@ pub struct VirtioKeyboard {
     buffer: RingBuffer<64>,
     waker: Arc<Waker>,
     address: DeviceAddress,
+    /// Mailboxes attached to this keyboard for event delivery.
+    mailboxes: Vec<MailboxRef>,
 }
 
 impl VirtioKeyboard {
@@ -108,6 +112,11 @@ impl VirtioKeyboard {
         &self.address
     }
 
+    /// Attach a mailbox to receive keyboard events.
+    pub fn attach_mailbox(&mut self, mailbox_ref: MailboxRef) {
+        self.mailboxes.push(mailbox_ref);
+    }
+
     /// Poll the device for new events (called from IRQ handler)
     pub fn poll(&mut self) {
         // Poll virtio device and push events to buffer
@@ -119,6 +128,12 @@ impl VirtioKeyboard {
                     code: event.code,
                     value: event.value,
                 });
+
+                // Post to all attached mailboxes with encoded key event
+                let encoded = panda_abi::encode_key_event(event.code, event.value as u8);
+                for mailbox in &self.mailboxes {
+                    mailbox.post_event(encoded);
+                }
             }
         }
 
@@ -182,6 +197,7 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
         buffer: RingBuffer::new(),
         waker: Waker::new(),
         address: address.clone(),
+        mailboxes: Vec::new(),
     };
 
     let keyboard = Arc::new(Spinlock::new(keyboard));

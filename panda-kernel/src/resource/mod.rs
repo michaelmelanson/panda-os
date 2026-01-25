@@ -27,7 +27,7 @@ pub use mailbox::{Mailbox, MailboxRef};
 pub use process::Process as ProcessInterface;
 pub use process_resource::ProcessResource;
 pub use scheme::{
-    ConsoleScheme, DirectoryResource, FileScheme, KeyboardScheme, SchemeHandler,
+    ConsoleScheme, DirectoryResource, FileScheme, KeyboardResource, KeyboardScheme, SchemeHandler,
     init as init_schemes, open, readdir, register_scheme,
 };
 pub use spawn_handle::SpawnHandle;
@@ -122,6 +122,11 @@ pub trait Resource: Send + Sync {
 
     /// Get this resource as a Mailbox (for event aggregation).
     fn as_mailbox(&self) -> Option<&Mailbox> {
+        None
+    }
+
+    /// Get this resource as a Keyboard (for keyboard devices).
+    fn as_keyboard(&self) -> Option<&KeyboardResource> {
         None
     }
 

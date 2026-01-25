@@ -106,6 +106,11 @@ impl Handle {
         self.resource.as_mailbox()
     }
 
+    /// Get this handle's resource as a Keyboard (for keyboard devices).
+    pub fn as_keyboard(&self) -> Option<&crate::resource::KeyboardResource> {
+        self.resource.as_keyboard()
+    }
+
     /// Get supported events for this resource.
     pub fn supported_events(&self) -> u32 {
         self.resource.supported_events()

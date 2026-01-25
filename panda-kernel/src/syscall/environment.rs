@@ -60,7 +60,18 @@ pub fn handle_open(
                     if mailbox_handle != 0 && event_mask != 0 {
                         if let Some(mailbox_h) = proc.handles().get(mailbox_handle) {
                             if let Some(mailbox) = mailbox_h.as_mailbox() {
+                                // Tell mailbox which handles to track
                                 mailbox.attach(handle_id, event_mask);
+
+                                // Tell the resource where to post events
+                                // (needed for resources that generate async events like keyboards)
+                                if let Some(opened_h) = proc.handles().get(handle_id) {
+                                    if let Some(keyboard) = opened_h.as_keyboard() {
+                                        let mailbox_ref =
+                                            resource::MailboxRef::new(mailbox, handle_id);
+                                        keyboard.attach_mailbox(mailbox_ref);
+                                    }
+                                }
                             }
                         }
                     }

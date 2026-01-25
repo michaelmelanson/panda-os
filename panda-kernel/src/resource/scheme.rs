@@ -286,12 +286,23 @@ impl SchemeHandler for KeyboardScheme {
 }
 
 /// Handle to an open keyboard device
-struct KeyboardResource {
+pub struct KeyboardResource {
     keyboard: Arc<Spinlock<VirtioKeyboard>>,
+}
+
+impl KeyboardResource {
+    /// Attach a mailbox to receive keyboard events.
+    pub fn attach_mailbox(&self, mailbox_ref: super::MailboxRef) {
+        self.keyboard.lock().attach_mailbox(mailbox_ref);
+    }
 }
 
 impl Resource for KeyboardResource {
     fn as_event_source(&self) -> Option<&dyn EventSource> {
+        Some(self)
+    }
+
+    fn as_keyboard(&self) -> Option<&KeyboardResource> {
         Some(self)
     }
 
