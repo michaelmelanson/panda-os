@@ -68,17 +68,25 @@ Not yet implemented:
 - [x] Create `cat` program (with args support)
 - [x] Update Makefile to build and include in ext2 image
 
-### 2. Missing syscalls
+### 2. Terminal IPC protocol (see plans/TERMINAL_IPC.md)
+
+A structured message-passing protocol between terminal and child processes, replacing character-oriented VT100/ANSI. Key features:
+- Typed messages over channels (Write, SetStyle, RequestInput, etc.)
+- Generic `Output` enum: `Text`, `StyledText`, `Image`, `Table`, `Link`, etc.
+- ANSI compatibility layer for legacy software
+- Clean libpanda::terminal API for common operations
+
+### 3. Missing syscalls
 
 - **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes from terminal.
 
 - **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
 
-### 3. System services
+### 4. System services
 
 - **Implement system initialization tool**: Declarative service configurations, similar to `systemd` on Linux, to describe services to start at boot.
 
-### 4. Block I/O optimizations
+### 5. Block I/O optimizations
 
 - **Scatter-gather support**: Submit multiple non-contiguous sectors in one virtio request for better throughput.
 
@@ -86,11 +94,11 @@ Not yet implemented:
 
 - **Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
 
-### 5. Type safety improvements
+### 6. Type safety improvements
 
 - **Convert panda-abi constants to enums**: The syscall opcodes, event flags, channel flags, and handle constants are all raw `u32`/`usize` values. Should use proper enums with `#[repr(u32)]` for type safety. This would catch misuse at compile time (e.g., passing an event flag where a syscall opcode is expected).
 
-### 6. Future work
+### 7. Future work
 
 - **IPC/Pipes**: Implement pipe support for shell pipelines.
 
@@ -114,3 +122,4 @@ Not yet implemented:
 
 - [plans/DEVICE_PATHS.md](plans/DEVICE_PATHS.md) - Unified device path scheme with human-friendly names
 - [plans/TERMINAL_COMMANDS.md](plans/TERMINAL_COMMANDS.md) - Terminal command execution with mailbox/channel IPC
+- [plans/TERMINAL_IPC.md](plans/TERMINAL_IPC.md) - Structured terminal IPC protocol (replacing VT100/ANSI)
