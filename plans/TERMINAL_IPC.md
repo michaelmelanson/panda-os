@@ -2,7 +2,7 @@
 
 ## Overview
 
-A structured message-passing protocol between terminal emulators and child processes, replacing the traditional character-oriented VT100/ANSI model.
+A structured, stateless message-passing protocol between terminal emulators and child processes, replacing the traditional character-oriented VT100/ANSI model.
 
 ## Motivation
 
@@ -13,6 +13,14 @@ The Unix terminal model has fundamental limitations:
 3. **Character-oriented**: No structure for rich content (images, tables, links).
 4. **No capability negotiation**: Programs guess terminal features via `$TERM`.
 5. **Stdout hijacking**: Child processes write directly to a shared byte stream.
+
+## Design Principles
+
+1. **Stateless**: Style is a property of output content, not terminal state. Each `Write` message is self-contained.
+2. **Typed messages**: Structured data over channels, not byte streams.
+3. **Feature discovery**: Query capabilities before using optional features.
+4. **Native by default**: New programs use the native protocol; ANSI is opt-in via client-side translation.
+5. **Graceful degradation**: Unsupported features are silently ignored (use capability queries to avoid this).
 
 ## Design
 
@@ -27,22 +35,33 @@ The Unix terminal model has fundamental limitations:
 
 The terminal and child communicate via the parent channel (HANDLE_PARENT) using typed messages. The terminal owns rendering; the child sends content.
 
+For shells running multiple background jobs, the shell acts as intermediary - each job has its own channel to the shell, and the shell multiplexes output to the terminal. Jobs are distinguished by their channel handle.
+
+### Message Encoding
+
+Messages use a simple TLV (type-length-value) format:
+
+```
+┌──────────┬──────────┬─────────────┐
+│ Type(u16)│Length(u32)│ Payload ... │
+└──────────┴──────────┴─────────────┘
+```
+
+This is simple to parse in no_std environments without serde.
+
 ### Message Protocol
 
-All messages are serialized structs sent over the channel.
+All messages are serialized structs sent over the channel. Messages are auto-flushed (no explicit flush needed).
 
 #### Output Messages (Child → Terminal)
 
 ```rust
 /// Message from child process to terminal
 enum TerminalOutput {
-    /// Write content to the terminal
+    /// Write content to the terminal (stateless - style is in the content)
     Write(Output),
     
-    /// Set text style for subsequent writes
-    SetStyle(Style),
-    
-    /// Move cursor to position
+    /// Move cursor to position (for interactive apps)
     MoveCursor { row: u16, col: u16 },
     
     /// Clear a region
@@ -69,17 +88,17 @@ enum Output {
     /// Plain text (may contain newlines)
     Text(String),
     
-    /// Text with embedded style spans
-    StyledText(StyledText),
+    /// Text with embedded style spans (stateless - style per span)
+    Styled(StyledText),
     
-    /// Raw bytes (for compatibility/binary data)
+    /// Raw bytes (for binary data)
     Bytes(Vec<u8>),
     
     /// Image (terminal decides how to render - inline, sixel, kitty protocol, or placeholder)
     Image(Image),
     
     /// Hyperlink
-    Link { text: String, url: String },
+    Link { text: String, url: String, style: Option<Style> },
     
     /// Table (terminal handles layout)
     Table(Table),
@@ -90,13 +109,9 @@ enum Output {
 
 /// Image content
 struct Image {
-    /// Image format
     format: ImageFormat,
-    /// Raw image data
     data: Vec<u8>,
-    /// Optional alt text
     alt: Option<String>,
-    /// Sizing hints
     size: Option<ImageSize>,
 }
 
@@ -104,39 +119,34 @@ enum ImageFormat {
     Png,
     Jpeg,
     Svg,
-    // Future: video, animated
 }
 
 struct ImageSize {
-    /// Desired width in cells (None = auto)
     width_cells: Option<u16>,
-    /// Desired height in cells (None = auto)  
     height_cells: Option<u16>,
-    /// Preserve aspect ratio
     preserve_aspect: bool,
 }
 
 /// Table content
 struct Table {
-    headers: Option<Vec<String>>,
-    rows: Vec<Vec<String>>,
-    /// Column alignment hints
+    headers: Option<Vec<StyledText>>,
+    rows: Vec<Vec<StyledText>>,
     alignment: Vec<Alignment>,
 }
 
 /// Structured data that terminal can format
 enum StructuredData {
     /// Key-value pairs (terminal can align, colorize)
-    KeyValue(Vec<(String, String)>),
+    KeyValue(Vec<(StyledText, StyledText)>),
     /// List items (terminal can bullet/number)
-    List(Vec<String>),
+    List(Vec<StyledText>),
     /// Tree structure (for file listings, etc.)
     Tree(TreeNode),
     /// JSON (terminal can pretty-print, syntax highlight)
     Json(String),
 }
 
-/// Text with style information
+/// Text with style information (stateless - each span carries its style)
 struct StyledText {
     spans: Vec<StyledSpan>,
 }
@@ -147,6 +157,7 @@ struct StyledSpan {
 }
 
 /// Text styling
+#[derive(Default)]
 struct Style {
     foreground: Option<Color>,
     background: Option<Color>,
@@ -157,56 +168,36 @@ struct Style {
 }
 
 enum Color {
-    /// Basic 16 colors
     Named(NamedColor),
-    /// 256 color palette
     Palette(u8),
-    /// True color
     Rgb { r: u8, g: u8, b: u8 },
 }
 
 enum ClearRegion {
-    /// Clear entire screen
     Screen,
-    /// Clear from cursor to end of screen
     ToEndOfScreen,
-    /// Clear from cursor to end of line
     ToEndOfLine,
-    /// Clear entire line
     Line,
 }
 
-/// Input request types
 struct InputRequest {
-    /// Prompt to display (if any)
-    prompt: Option<String>,
-    /// Type of input expected
+    prompt: Option<StyledText>,
     kind: InputKind,
-    /// Request ID for matching response
     id: u32,
 }
 
 enum InputKind {
-    /// Single line of text
     Line,
-    /// Password (hidden input)
     Password,
-    /// Single character
     Char,
-    /// Yes/no confirmation
     Confirm,
-    /// Choice from options
     Choice(Vec<String>),
-    /// Raw key events (for interactive apps)
     RawKeys,
 }
 
 enum TerminalQuery {
-    /// Get terminal size
     Size,
-    /// Get supported capabilities
     Capabilities,
-    /// Get current cursor position
     CursorPosition,
 }
 ```
@@ -233,9 +224,7 @@ enum TerminalInput {
 }
 
 struct InputResponse {
-    /// Matches InputRequest.id
     id: u32,
-    /// The input value (None if cancelled)
     value: Option<InputValue>,
 }
 
@@ -276,15 +265,14 @@ struct TerminalCapabilities {
 Simple high-level API in libpanda for common cases:
 
 ```rust
-// Simple output (most programs just need this)
 pub mod terminal {
-    /// Print text (no newline)
+    /// Print plain text (no newline)
     pub fn print(s: &str);
     
-    /// Print text with newline
+    /// Print plain text with newline
     pub fn println(s: &str);
     
-    /// Print formatted text with styles
+    /// Print styled text
     pub fn print_styled(text: StyledText);
     
     /// Read a line of input
@@ -305,11 +293,11 @@ pub mod terminal {
     /// Display an image
     pub fn image(img: Image);
     
-    /// Set text style for subsequent prints
-    pub fn set_style(style: Style);
+    /// Query terminal capabilities
+    pub fn capabilities() -> TerminalCapabilities;
     
-    /// Reset to default style
-    pub fn reset_style();
+    /// Query terminal size
+    pub fn size() -> (u16, u16);
 }
 
 // Low-level access for interactive apps
@@ -329,42 +317,45 @@ pub mod terminal::raw {
     /// Receive input message
     pub fn recv() -> TerminalInput;
 }
+
+// Builder for styled text
+impl StyledText {
+    pub fn new() -> Self;
+    pub fn plain(s: &str) -> Self;
+    pub fn push(&mut self, text: &str, style: Style);
+    pub fn bold(&mut self, text: &str);
+    pub fn colored(&mut self, text: &str, fg: Color);
+    // etc.
+}
 ```
 
 ### Example: Simple Program
 
 ```rust
-// hello.rs
 libpanda::main! {
     terminal::println("Hello, world!");
     0
 }
+```
 
-// cat.rs
-libpanda::main! {
-    let args = libpanda::args();
-    for path in &args[1..] {
-        let content = fs::read_to_string(path)?;
-        terminal::print(&content);
-    }
-    0
-}
+### Example: Styled Output
 
-// interactive greeter
+```rust
 libpanda::main! {
-    let name = terminal::input("What's your name? ")?;
-    terminal::println(&format!("Hello, {}!", name));
-    0
+    let mut text = StyledText::new();
+    text.colored("Error: ", Color::Named(NamedColor::Red));
+    text.plain("file not found");
+    terminal::print_styled(text);
+    1
 }
 ```
 
 ### Example: Interactive Program
 
 ```rust
-// Simple text editor (conceptual)
 libpanda::main! {
     terminal::raw::enable_raw_keys();
-    terminal::send(TerminalOutput::Clear(ClearRegion::Screen));
+    terminal::raw::send(TerminalOutput::Clear(ClearRegion::Screen));
     
     loop {
         match terminal::raw::recv() {
@@ -372,7 +363,6 @@ libpanda::main! {
                 match key.code {
                     KeyCode::Char('q') if key.modifiers.ctrl => break,
                     KeyCode::Char(c) => { /* insert character */ }
-                    KeyCode::Arrow(dir) => { /* move cursor */ }
                     _ => {}
                 }
             }
@@ -389,79 +379,70 @@ libpanda::main! {
 
 ## ANSI Compatibility Layer
 
-For porting existing software, provide an ANSI escape code parser that translates to terminal messages:
+For porting existing software that emits ANSI escape codes, libpanda provides a client-side translation layer. This runs in the child process, not the terminal - the terminal only speaks the native protocol.
 
 ```rust
-/// Wraps a channel to accept raw bytes and parse ANSI sequences
-struct AnsiCompat {
-    channel: Channel,
+/// Client-side wrapper that translates ANSI escape codes to native protocol.
+/// Use this when porting legacy software.
+pub struct AnsiWriter {
     parser: AnsiParser,
 }
 
-impl AnsiCompat {
-    /// Write bytes, parsing ANSI escapes into terminal messages
-    fn write(&mut self, bytes: &[u8]) {
+impl AnsiWriter {
+    pub fn new() -> Self;
+    
+    /// Write bytes, parsing ANSI escapes and sending native messages
+    pub fn write(&mut self, bytes: &[u8]) {
         for action in self.parser.parse(bytes) {
             match action {
-                AnsiAction::Print(text) => {
-                    self.channel.send(TerminalOutput::Write(Output::Text(text)));
-                }
-                AnsiAction::SetColor(fg, bg) => {
-                    self.channel.send(TerminalOutput::SetStyle(Style { 
-                        foreground: fg, 
-                        background: bg,
-                        ..Default::default()
-                    }));
+                AnsiAction::Print(text, style) => {
+                    let styled = StyledText::with_style(&text, style);
+                    terminal::raw::send(TerminalOutput::Write(Output::Styled(styled)));
                 }
                 AnsiAction::MoveCursor(row, col) => {
-                    self.channel.send(TerminalOutput::MoveCursor { row, col });
+                    terminal::raw::send(TerminalOutput::MoveCursor { row, col });
                 }
                 AnsiAction::Clear(region) => {
-                    self.channel.send(TerminalOutput::Clear(region));
+                    terminal::raw::send(TerminalOutput::Clear(region));
                 }
                 // ... etc
             }
         }
     }
 }
+
+// Usage in ported legacy code:
+let mut writer = AnsiWriter::new();
+writer.write(b"\x1b[31mRed text\x1b[0m normal");
 ```
 
-This allows running legacy programs that emit ANSI codes, while native programs use the cleaner message API.
+This approach:
+- Keeps the terminal simple (only native protocol)
+- Puts complexity where it belongs (legacy compatibility in client)
+- Allows gradual migration from ANSI to native
 
 ## Implementation Plan
 
 ### Phase 1: Core Protocol
 1. Define message types in panda-abi
-2. Add serialization (simple binary format, not serde - we're no_std)
-3. Implement terminal side: receive messages, render appropriately
-4. Implement libpanda::terminal module with basic print/println/input
+2. Add TLV serialization (simple, no_std compatible)
+3. Implement terminal side: receive messages, render
+4. Implement libpanda::terminal module with print/println/input
 
 ### Phase 2: Enhanced Output
-1. Add StyledText support
+1. Add StyledText support with builder API
 2. Add Table rendering
 3. Add StructuredData formatting (KeyValue, List, Tree)
 
 ### Phase 3: Rich Content
-1. Add Image support (inline rendering or placeholder)
+1. Add Image support (inline rendering or alt text fallback)
 2. Add hyperlink support
 
 ### Phase 4: Compatibility
-1. Implement AnsiCompat parser
-2. Add legacy mode for programs that write raw bytes
+1. Implement AnsiWriter parser in libpanda
+2. Test with legacy code patterns
 
 ### Phase 5: Advanced Features
 1. Raw key mode for interactive apps
 2. Query/response for capabilities
 3. Progress indicators
-
-## Open Questions
-
-1. **Message encoding**: Use a simple TLV (type-length-value) format? Or something more structured?
-
-2. **Backward compatibility**: Should HANDLE_PARENT default to ANSI mode, requiring opt-in for structured mode? Or vice versa?
-
-3. **Buffering**: Should Write messages be auto-flushed, or should there be explicit flush? (Probably auto-flush for simplicity, with batching hints for performance.)
-
-4. **Error handling**: What happens if terminal doesn't support a feature (e.g., images)? Silent fallback to alt text? Error response?
-
-5. **Multiplexing**: If a shell runs multiple background jobs, how do their outputs interleave? (Probably: shell is intermediary, not terminal.)
