@@ -11,6 +11,74 @@ pub const EXT2_ROOT_INO: u32 = 2;
 /// Superblock offset from start of device (in bytes).
 pub const SUPERBLOCK_OFFSET: u64 = 1024;
 
+// =============================================================================
+// Feature flags
+// =============================================================================
+
+// Compatible features (can mount read-write even if not supported)
+/// Directory preallocation
+pub const COMPAT_DIR_PREALLOC: u32 = 0x0001;
+/// "imagic inodes" (AFS server inodes)
+pub const COMPAT_IMAGIC_INODES: u32 = 0x0002;
+/// Has a journal (ext3)
+pub const COMPAT_HAS_JOURNAL: u32 = 0x0004;
+/// Extended attributes
+pub const COMPAT_EXT_ATTR: u32 = 0x0008;
+/// Filesystem can resize itself for larger partitions
+pub const COMPAT_RESIZE_INO: u32 = 0x0010;
+/// Directories use hash index
+pub const COMPAT_DIR_INDEX: u32 = 0x0020;
+
+// Incompatible features (must not mount if not supported)
+/// Compression
+pub const INCOMPAT_COMPRESSION: u32 = 0x0001;
+/// Directory entries have file type byte
+pub const INCOMPAT_FILETYPE: u32 = 0x0002;
+/// Filesystem needs recovery (journal replay)
+pub const INCOMPAT_RECOVER: u32 = 0x0004;
+/// Filesystem has separate journal device
+pub const INCOMPAT_JOURNAL_DEV: u32 = 0x0008;
+/// Meta block groups
+pub const INCOMPAT_META_BG: u32 = 0x0010;
+/// Files use extents (ext4)
+pub const INCOMPAT_EXTENTS: u32 = 0x0040;
+/// 64-bit filesystem
+pub const INCOMPAT_64BIT: u32 = 0x0080;
+/// Multiple mount protection
+pub const INCOMPAT_MMP: u32 = 0x0100;
+/// Flexible block groups
+pub const INCOMPAT_FLEX_BG: u32 = 0x0200;
+
+// Read-only compatible features (can mount read-only if not supported)
+/// Sparse superblocks
+pub const RO_COMPAT_SPARSE_SUPER: u32 = 0x0001;
+/// Large files (> 2GB)
+pub const RO_COMPAT_LARGE_FILE: u32 = 0x0002;
+/// Files use B-tree directories
+pub const RO_COMPAT_BTREE_DIR: u32 = 0x0004;
+/// Files use huge files
+pub const RO_COMPAT_HUGE_FILE: u32 = 0x0008;
+/// Group descriptors have checksums
+pub const RO_COMPAT_GDT_CSUM: u32 = 0x0010;
+/// Large directories (> 32000 subdirs)
+pub const RO_COMPAT_DIR_NLINK: u32 = 0x0020;
+/// Extra inode size
+pub const RO_COMPAT_EXTRA_ISIZE: u32 = 0x0040;
+
+/// Features we support for incompatible feature mask.
+/// FILETYPE is common in modern ext2 filesystems.
+pub const SUPPORTED_INCOMPAT: u32 = INCOMPAT_FILETYPE;
+
+/// Features we support for read-only compatible feature mask.
+/// We support all standard RO_COMPAT features since we're read-only anyway.
+pub const SUPPORTED_RO_COMPAT: u32 = RO_COMPAT_SPARSE_SUPER
+    | RO_COMPAT_LARGE_FILE
+    | RO_COMPAT_BTREE_DIR
+    | RO_COMPAT_HUGE_FILE
+    | RO_COMPAT_GDT_CSUM
+    | RO_COMPAT_DIR_NLINK
+    | RO_COMPAT_EXTRA_ISIZE;
+
 // Inode mode type mask
 pub const S_IFMT: u16 = 0xF000;
 /// Regular file
@@ -127,6 +195,15 @@ impl Superblock {
     /// Calculate number of block groups.
     pub fn block_group_count(&self) -> u32 {
         self.blocks_count.div_ceil(self.blocks_per_group)
+    }
+
+    /// Check if the filesystem has unsupported incompatible features.
+    ///
+    /// Returns the mask of unsupported features, or 0 if all are supported.
+    /// For read-only mounts, only INCOMPAT features matter.
+    /// For read-write mounts, RO_COMPAT features would also need checking.
+    pub fn unsupported_incompat_features(&self) -> u32 {
+        self.feature_incompat & !SUPPORTED_INCOMPAT
     }
 }
 

@@ -2,6 +2,7 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use async_trait::async_trait;
 
 use super::Inode;
@@ -20,6 +21,9 @@ pub struct Ext2File {
     size: u64,
     /// Current read position.
     pos: u64,
+    /// Cache for indirect block data to speed up sequential reads.
+    /// Stores (indirect_block_number, cached_pointers).
+    indirect_cache: Option<(u32, Vec<u32>)>,
 }
 
 impl Ext2File {
@@ -31,53 +35,93 @@ impl Ext2File {
             inode,
             block_size,
             pos: 0,
+            indirect_cache: None,
         }
     }
 
-    /// Get block number for file block index (handles indirection).
-    async fn get_block(&self, file_block: u32) -> Result<u32, FsError> {
+    /// Get block number for file block index (handles indirection with caching).
+    async fn get_block(&mut self, file_block: u32) -> Result<u32, FsError> {
         let ptrs_per_block = self.block_size / 4;
 
-        // Direct blocks (0-11)
+        // Direct blocks (0-11) - no caching needed
         if file_block < 12 {
             return Ok(self.inode.block[file_block as usize]);
         }
 
-        // Indirect block (12)
+        // For indirect blocks, use the cached block lookup
+        self.get_block_indirect(file_block, ptrs_per_block).await
+    }
+
+    /// Handle indirect block lookup with caching.
+    async fn get_block_indirect(
+        &mut self,
+        file_block: u32,
+        ptrs_per_block: u32,
+    ) -> Result<u32, FsError> {
+        // Single indirect block (12)
         let fb = file_block - 12;
         if fb < ptrs_per_block {
-            return self.read_block_ptr(self.inode.block[12], fb).await;
+            return self.read_cached_ptr(self.inode.block[12], fb).await;
         }
 
         // Double indirect block (13)
         let fb = fb - ptrs_per_block;
         if fb < ptrs_per_block * ptrs_per_block {
             let ind = self
-                .read_block_ptr(self.inode.block[13], fb / ptrs_per_block)
+                .read_cached_ptr(self.inode.block[13], fb / ptrs_per_block)
                 .await?;
-            return self.read_block_ptr(ind, fb % ptrs_per_block).await;
+            return self.read_cached_ptr(ind, fb % ptrs_per_block).await;
         }
 
         // Triple indirect block (14)
         let fb = fb - ptrs_per_block * ptrs_per_block;
         let pp = ptrs_per_block * ptrs_per_block;
-        let dbl = self.read_block_ptr(self.inode.block[14], fb / pp).await?;
-        let ind = self.read_block_ptr(dbl, (fb % pp) / ptrs_per_block).await?;
-        self.read_block_ptr(ind, fb % ptrs_per_block).await
+        let dbl = self.read_cached_ptr(self.inode.block[14], fb / pp).await?;
+        let ind = self
+            .read_cached_ptr(dbl, (fb % pp) / ptrs_per_block)
+            .await?;
+        self.read_cached_ptr(ind, fb % ptrs_per_block).await
     }
 
-    /// Read a block pointer from an indirect block.
-    async fn read_block_ptr(&self, block: u32, index: u32) -> Result<u32, FsError> {
+    /// Read a block pointer, using cache if available.
+    ///
+    /// This caches the entire indirect block on first access, making sequential
+    /// reads through the same indirect block much faster.
+    async fn read_cached_ptr(&mut self, block: u32, index: u32) -> Result<u32, FsError> {
         if block == 0 {
             return Ok(0);
         }
-        let offset = block as u64 * self.block_size as u64 + index as u64 * 4;
-        let mut buf = [0u8; 4];
+
+        // Check cache
+        if let Some((cached_block, ref pointers)) = self.indirect_cache {
+            if cached_block == block {
+                return Ok(pointers.get(index as usize).copied().unwrap_or(0));
+            }
+        }
+
+        // Cache miss - read the entire indirect block
+        let ptrs_per_block = (self.block_size / 4) as usize;
+        let mut buf = alloc::vec![0u8; self.block_size as usize];
+        let offset = block as u64 * self.block_size as u64;
         self.device
             .read_at(offset, &mut buf)
             .await
             .map_err(|_| FsError::NotReadable)?;
-        Ok(u32::from_le_bytes(buf))
+
+        // Parse all pointers from the block
+        let pointers: Vec<u32> = (0..ptrs_per_block)
+            .map(|i| {
+                let start = i * 4;
+                u32::from_le_bytes([buf[start], buf[start + 1], buf[start + 2], buf[start + 3]])
+            })
+            .collect();
+
+        let result = pointers.get(index as usize).copied().unwrap_or(0);
+
+        // Update cache
+        self.indirect_cache = Some((block, pointers));
+
+        Ok(result)
     }
 }
 

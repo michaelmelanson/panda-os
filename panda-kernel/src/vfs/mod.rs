@@ -38,20 +38,21 @@ fn noop_waker() -> TaskWaker {
     unsafe { TaskWaker::from_raw(RawWaker::new(core::ptr::null(), &NOOP_VTABLE)) }
 }
 
-/// Poll a future once, expecting it to complete immediately.
+/// Poll a future once, returning `Some(result)` if it completes immediately.
 ///
 /// This is for use with synchronous filesystems like TarFs that always
-/// return immediately-ready futures. Panics if the future returns Pending.
+/// return immediately-ready futures. Returns `None` if the future is not
+/// ready (i.e., it would need to be polled again later).
 ///
 /// For truly async operations (like ext2 disk I/O), use the process-level
 /// async infrastructure instead.
-pub fn poll_immediate<T>(mut future: Pin<&mut (impl Future<Output = T> + ?Sized)>) -> T {
+pub fn poll_immediate<T>(mut future: Pin<&mut (impl Future<Output = T> + ?Sized)>) -> Option<T> {
     let waker = noop_waker();
     let mut cx = Context::from_waker(&waker);
 
     match future.as_mut().poll(&mut cx) {
-        Poll::Ready(result) => result,
-        Poll::Pending => panic!("poll_immediate called on a future that returned Pending"),
+        Poll::Ready(result) => Some(result),
+        Poll::Pending => None,
     }
 }
 
@@ -138,13 +139,13 @@ struct Mount {
     /// Mount point path (e.g., "/initrd")
     path: String,
     /// The filesystem implementation
-    fs: Box<dyn Filesystem>,
+    fs: Arc<dyn Filesystem>,
 }
 
 static MOUNTS: RwSpinlock<Vec<Mount>> = RwSpinlock::new(Vec::new());
 
-/// Mount a filesystem at the given path
-pub fn mount(path: &str, fs: Box<dyn Filesystem>) {
+/// Mount a filesystem at the given path.
+pub fn mount(path: &str, fs: Arc<dyn Filesystem>) {
     let mut mounts = MOUNTS.write();
     mounts.push(Mount {
         path: String::from(path),
@@ -235,26 +236,8 @@ pub async fn mount_ext2(mountpoint: &str) -> Result<(), &'static str> {
     };
     let device: Arc<dyn crate::resource::BlockDevice> = Arc::new(device);
 
-    // Mount ext2
+    // Mount ext2 - Ext2Fs::mount returns Arc<Ext2Fs> which implements Filesystem
     let fs = Ext2Fs::mount(device).await?;
-    mount(mountpoint, Box::new(Ext2FsWrapper(fs)));
+    mount(mountpoint, fs);
     Ok(())
-}
-
-/// Wrapper to convert Arc<Ext2Fs> to Box<dyn Filesystem>.
-struct Ext2FsWrapper(Arc<Ext2Fs>);
-
-#[async_trait]
-impl Filesystem for Ext2FsWrapper {
-    async fn open(&self, path: &str) -> Result<Box<dyn File>, FsError> {
-        self.0.open(path).await
-    }
-
-    async fn stat(&self, path: &str) -> Result<FileStat, FsError> {
-        self.0.stat(path).await
-    }
-
-    async fn readdir(&self, path: &str) -> Result<Vec<DirEntry>, FsError> {
-        self.0.readdir(path).await
-    }
 }

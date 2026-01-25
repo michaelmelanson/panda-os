@@ -14,6 +14,15 @@ use tar_no_std::TarArchiveRef;
 
 use super::{DirEntry, File, FileStat, Filesystem, FsError, SeekFrom};
 
+/// Error type for TarFs creation.
+#[derive(Debug)]
+pub enum TarFsError {
+    /// The TAR archive data is malformed.
+    InvalidArchive,
+    /// A filename in the archive is not valid UTF-8.
+    InvalidFilename,
+}
+
 /// A filesystem backed by a TAR archive
 pub struct TarFs {
     /// Maps path to (data pointer, length)
@@ -25,16 +34,18 @@ unsafe impl Send for TarFs {}
 unsafe impl Sync for TarFs {}
 
 impl TarFs {
-    /// Create a TarFs from raw TAR archive data
-    pub fn from_tar_data(data: *const [u8]) -> Self {
+    /// Create a TarFs from raw TAR archive data.
+    ///
+    /// Returns an error if the archive is malformed or contains invalid filenames.
+    pub fn from_tar_data(data: *const [u8]) -> Result<Self, TarFsError> {
         let bytes = unsafe { data.as_ref().unwrap() };
-        let archive = TarArchiveRef::new(bytes).expect("Failed to parse TAR archive");
+        let archive = TarArchiveRef::new(bytes).map_err(|_| TarFsError::InvalidArchive)?;
 
         let mut files = BTreeMap::new();
 
         for entry in archive.entries() {
             let filename = entry.filename();
-            let name = filename.as_str().expect("Invalid UTF-8 in filename");
+            let name = filename.as_str().map_err(|_| TarFsError::InvalidFilename)?;
             if name.is_empty() {
                 continue;
             }
@@ -46,7 +57,7 @@ impl TarFs {
             files.insert(String::from(normalized), (data_ptr, data_len));
         }
 
-        TarFs { files }
+        Ok(TarFs { files })
     }
 }
 

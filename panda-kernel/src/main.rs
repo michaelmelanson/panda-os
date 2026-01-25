@@ -70,8 +70,8 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
     initrd::init(initrd_data);
 
     // Mount initrd as /initrd
-    let tarfs = vfs::TarFs::from_tar_data(initrd_data);
-    vfs::mount("/initrd", alloc::boxed::Box::new(tarfs));
+    let tarfs = vfs::TarFs::from_tar_data(initrd_data).expect("Failed to parse initrd TAR archive");
+    vfs::mount("/initrd", alloc::sync::Arc::new(tarfs));
 
     // Initialize resource scheme system
     resource::init_schemes();

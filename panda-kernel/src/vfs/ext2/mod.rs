@@ -17,6 +17,71 @@ use async_trait::async_trait;
 use crate::resource::BlockDevice;
 use crate::vfs::{DirEntry, File, FileStat, Filesystem, FsError};
 
+// =============================================================================
+// Block indirection helpers (shared between Ext2Fs and Ext2File)
+// =============================================================================
+
+/// Get block number for a file block index, handling indirect blocks.
+///
+/// Block pointers in an inode:
+/// - 0-11: direct blocks
+/// - 12: single indirect (points to block of pointers)
+/// - 13: double indirect (points to block of single indirect blocks)
+/// - 14: triple indirect (points to block of double indirect blocks)
+pub async fn get_block_number(
+    device: &dyn BlockDevice,
+    block_pointers: &[u32; 15],
+    block_size: u32,
+    file_block: u32,
+) -> Result<u32, FsError> {
+    let ptrs_per_block = block_size / 4;
+
+    // Direct blocks (0-11)
+    if file_block < 12 {
+        return Ok(block_pointers[file_block as usize]);
+    }
+
+    // Indirect block (12)
+    let fb = file_block - 12;
+    if fb < ptrs_per_block {
+        return read_block_ptr(device, block_pointers[12], fb, block_size).await;
+    }
+
+    // Double indirect block (13)
+    let fb = fb - ptrs_per_block;
+    if fb < ptrs_per_block * ptrs_per_block {
+        let ind =
+            read_block_ptr(device, block_pointers[13], fb / ptrs_per_block, block_size).await?;
+        return read_block_ptr(device, ind, fb % ptrs_per_block, block_size).await;
+    }
+
+    // Triple indirect block (14)
+    let fb = fb - ptrs_per_block * ptrs_per_block;
+    let pp = ptrs_per_block * ptrs_per_block;
+    let dbl = read_block_ptr(device, block_pointers[14], fb / pp, block_size).await?;
+    let ind = read_block_ptr(device, dbl, (fb % pp) / ptrs_per_block, block_size).await?;
+    read_block_ptr(device, ind, fb % ptrs_per_block, block_size).await
+}
+
+/// Read a single block pointer from an indirect block.
+async fn read_block_ptr(
+    device: &dyn BlockDevice,
+    block: u32,
+    index: u32,
+    block_size: u32,
+) -> Result<u32, FsError> {
+    if block == 0 {
+        return Ok(0);
+    }
+    let offset = block as u64 * block_size as u64 + index as u64 * 4;
+    let mut buf = [0u8; 4];
+    device
+        .read_at(offset, &mut buf)
+        .await
+        .map_err(|_| FsError::NotReadable)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
 /// An ext2 filesystem instance.
 pub struct Ext2Fs {
     /// The underlying block device.
@@ -46,6 +111,16 @@ impl Ext2Fs {
 
         if sb.magic != EXT2_SUPER_MAGIC {
             return Err("invalid ext2 magic number");
+        }
+
+        // Check for unsupported incompatible features
+        let unsupported = sb.unsupported_incompat_features();
+        if unsupported != 0 {
+            log::error!(
+                "ext2: unsupported incompatible features: {:#x}",
+                unsupported
+            );
+            return Err("ext2 filesystem has unsupported features");
         }
 
         let block_size = sb.block_size();
@@ -201,48 +276,7 @@ impl Ext2Fs {
 
     /// Get block number for file block index (handles indirection).
     pub async fn get_block(&self, inode: &Inode, file_block: u32) -> Result<u32, FsError> {
-        let ptrs_per_block = self.block_size / 4;
-
-        // Direct blocks (0-11)
-        if file_block < 12 {
-            return Ok(inode.block[file_block as usize]);
-        }
-
-        // Indirect block (12)
-        let fb = file_block - 12;
-        if fb < ptrs_per_block {
-            return self.read_block_ptr(inode.block[12], fb).await;
-        }
-
-        // Double indirect block (13)
-        let fb = fb - ptrs_per_block;
-        if fb < ptrs_per_block * ptrs_per_block {
-            let ind = self
-                .read_block_ptr(inode.block[13], fb / ptrs_per_block)
-                .await?;
-            return self.read_block_ptr(ind, fb % ptrs_per_block).await;
-        }
-
-        // Triple indirect block (14)
-        let fb = fb - ptrs_per_block * ptrs_per_block;
-        let pp = ptrs_per_block * ptrs_per_block;
-        let dbl = self.read_block_ptr(inode.block[14], fb / pp).await?;
-        let ind = self.read_block_ptr(dbl, (fb % pp) / ptrs_per_block).await?;
-        self.read_block_ptr(ind, fb % ptrs_per_block).await
-    }
-
-    /// Read a block pointer from an indirect block.
-    async fn read_block_ptr(&self, block: u32, index: u32) -> Result<u32, FsError> {
-        if block == 0 {
-            return Ok(0);
-        }
-        let offset = block as u64 * self.block_size as u64 + index as u64 * 4;
-        let mut buf = [0u8; 4];
-        self.device
-            .read_at(offset, &mut buf)
-            .await
-            .map_err(|_| FsError::NotReadable)?;
-        Ok(u32::from_le_bytes(buf))
+        get_block_number(&*self.device, &inode.block, self.block_size, file_block).await
     }
 
     /// Read a full block.
@@ -276,9 +310,6 @@ impl Filesystem for Ext2Fs {
             return Err(FsError::NotFound); // Can't open directories as files
         }
 
-        // We need an Arc<Ext2Fs> but we only have &self.
-        // This is a design issue - the Filesystem trait should probably work with Arc<Self>.
-        // For now, we'll create the file with the device directly.
         Ok(Box::new(Ext2File::new(
             self.device.clone(),
             inode,
