@@ -21,6 +21,11 @@ Working:
 
 - **Add high-level wrappers around `panda-abi` primitives**: The API for operations in `panda-abi` should have well-designed, idiomatic Rust wrappers around the current low-level operations and system calls.
 
+- **Large files needing refactoring**: Several files have grown large and would benefit from splitting:
+  - `devices/virtio_block.rs` (1,035 lines) - Could split into transport.rs, request.rs, futures.rs
+  - `terminal/src/main.rs` (1,100+ lines) - Could split into render.rs, input.rs, commands.rs
+  - `scheduler/mod.rs` (699 lines) - Could extract deadline.rs, async_poll.rs
+
 ## Next steps
 
 ### 1. Terminal IPC protocol (see plans/TERMINAL_IPC.md)
