@@ -1,7 +1,9 @@
 //! Window compositor for multi-window display management.
 //!
-//! Manages multiple windows with alpha compositing, dirty region tracking,
-//! and 60fps refresh rate.
+//! The compositor uses a single-owner model where only the compositor task
+//! calls composite(). Flush syscalls just mark regions dirty and return
+//! immediately. The compositor task runs at ~60fps and processes all dirty
+//! regions on each tick.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -49,8 +51,9 @@ impl WindowManager {
         self.dirty_regions.push(rect);
     }
 
-    /// Composite all dirty regions to the framebuffer
-    pub fn composite(&mut self) {
+    /// Composite all dirty regions to the framebuffer.
+    /// This should ONLY be called from the compositor task.
+    fn composite(&mut self) {
         if self.dirty_regions.is_empty() {
             return;
         }
@@ -117,16 +120,9 @@ impl WindowManager {
         buffer: &[u8],
         clip_rect: &Rect,
     ) {
-        log::debug!("composite_window: pos=({},{}), size={}x{}, clip=({},{} {}x{}), buf_len={}",
-            window_pos.0, window_pos.1, window_size.0, window_size.1,
-            clip_rect.x, clip_rect.y, clip_rect.width, clip_rect.height,
-            buffer.len());
-
         // Calculate source offset within window
         let src_x = clip_rect.x.saturating_sub(window_pos.0);
         let src_y = clip_rect.y.saturating_sub(window_pos.1);
-
-        log::debug!("composite_window: src offset = ({}, {})", src_x, src_y);
 
         // Composite pixel by pixel with alpha blending
         for y in 0..clip_rect.height {
@@ -208,7 +204,11 @@ pub fn destroy_window(window_id: u64) {
     let mut compositor = COMPOSITOR.lock();
     let compositor = compositor.as_mut().expect("Compositor not initialized");
 
-    if let Some(pos) = compositor.windows.iter().position(|w| w.lock().id == window_id) {
+    if let Some(pos) = compositor
+        .windows
+        .iter()
+        .position(|w| w.lock().id == window_id)
+    {
         let dirty_rect = {
             let window = &compositor.windows[pos];
             let w = window.lock();
@@ -287,41 +287,31 @@ pub fn mark_dirty_direct(rect: Rect) {
     compositor.mark_dirty(rect);
 }
 
-/// Force an immediate composite (called on explicit flush)
+/// Called from flush syscall - just marks dirty, compositor task does the work.
+/// This function returns immediately; actual compositing happens on next tick.
 pub fn force_composite() {
-    log::debug!("force_composite: called");
-    let mut compositor = COMPOSITOR.lock();
-    if let Some(compositor) = compositor.as_mut() {
-        log::debug!("force_composite: compositor found, calling composite()");
-        compositor.composite();
-    } else {
-        log::debug!("force_composite: compositor not initialized");
-    }
+    // No-op: dirty regions are already marked by the caller.
+    // The compositor task will process them on its next tick.
 }
 
-/// Compositor async task - runs as a kernel task
+/// Compositor async task - the ONLY place that calls composite().
+///
+/// This task runs at ~60fps and processes all dirty regions each tick.
+/// Flush syscalls just mark regions dirty and return immediately.
 async fn compositor_task() {
     use crate::executor::sleep::sleep_ms;
 
     log::info!("Compositor task started");
 
     loop {
-        // Composite if dirty
-        // Use try_lock to avoid blocking if syscall holds the lock
-        if let Some(mut compositor) = COMPOSITOR.try_lock() {
-            if let Some(compositor) = compositor.as_mut() {
-                if !compositor.dirty_regions.is_empty() {
-                    log::debug!(
-                        "Compositor: processing {} dirty regions",
-                        compositor.dirty_regions.len()
-                    );
-                    compositor.composite();
-                }
-            }
-        }
-
         // Sleep until next frame
         sleep_ms(REFRESH_INTERVAL_MS).await;
+
+        // Composite any dirty regions
+        let mut compositor = COMPOSITOR.lock();
+        if let Some(compositor) = compositor.as_mut() {
+            compositor.composite();
+        }
     }
 }
 

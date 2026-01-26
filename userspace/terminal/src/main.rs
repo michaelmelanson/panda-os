@@ -385,7 +385,8 @@ impl Terminal {
         let fg_g = ((fg >> 8) & 0xFF) as u8;
         let fg_b = (fg & 0xFF) as u8;
 
-        // Convert grayscale bitmap to ARGB with colour
+        // Convert grayscale bitmap to ARGB with foreground colour
+        // Keep alpha from font for proper compositing
         let pixels = glyph_buffer.as_mut_slice();
         for py in 0..glyph_height {
             for px in 0..glyph_width {

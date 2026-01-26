@@ -1,7 +1,5 @@
 //! Surface syscall handlers.
 
-use log::debug;
-
 use crate::resource::Buffer;
 use crate::scheduler;
 
@@ -17,8 +15,6 @@ use crate::scheduler;
 /// - 0 on success
 /// - negative error code on failure
 pub fn handle_info(handle: u32, info_ptr: usize) -> isize {
-    debug!("handle_info: handle={}, info_ptr={:#x}", handle, info_ptr);
-
     if info_ptr == 0 {
         return -1;
     }
@@ -58,8 +54,6 @@ pub fn handle_info(handle: u32, info_ptr: usize) -> isize {
 /// - 0 on success
 /// - negative error code on failure
 pub fn handle_blit(handle: u32, params_ptr: usize) -> isize {
-    debug!("handle_blit: handle={}, params_ptr={:#x}", handle, params_ptr);
-
     if params_ptr == 0 {
         return -1;
     }
@@ -72,13 +66,10 @@ pub fn handle_blit(handle: u32, params_ptr: usize) -> isize {
             let Some(resource) = proc.handles().get(handle) else {
                 return -1;
             };
-            let is_win = resource.as_window().is_some();
-            debug!("handle_blit: is_window={}", is_win);
-            is_win
+            resource.as_window().is_some()
         };
 
         if is_window {
-            debug!("handle_blit: taking window path");
             // For windows, copy pixels from source buffer into window's pixel_data
             let source_buffer = {
                 let Some(buffer_handle) = proc.handles().get(params.buffer_handle) else {
@@ -105,7 +96,6 @@ pub fn handle_blit(handle: u32, params_ptr: usize) -> isize {
                 let expected_src_size = (params.width * params.height * 4) as usize;
 
                 if src_data.len() < expected_src_size {
-                    debug!("handle_blit: source buffer too small");
                     return -1;
                 }
 
@@ -116,24 +106,44 @@ pub fn handle_blit(handle: u32, params_ptr: usize) -> isize {
                 if params.x + params.width > window_width
                     || params.y + params.height > window_height
                 {
-                    debug!("handle_blit: blit region out of bounds");
                     return -1;
                 }
 
-                // Copy row by row
+                // Blit with alpha blending
                 for row in 0..params.height {
-                    let src_offset = (row * params.width * 4) as usize;
-                    let dst_offset =
-                        (((params.y + row) * window_width + params.x) * 4) as usize;
-                    let row_bytes = (params.width * 4) as usize;
+                    for col in 0..params.width {
+                        let src_offset = ((row * params.width + col) * 4) as usize;
+                        let dst_offset =
+                            (((params.y + row) * window_width + params.x + col) * 4) as usize;
 
-                    if dst_offset + row_bytes > window.pixel_data.len() {
-                        debug!("handle_blit: destination overflow");
-                        return -1;
+                        if dst_offset + 4 > window.pixel_data.len() {
+                            return -1;
+                        }
+
+                        let src_a = src_data[src_offset + 3] as u16;
+
+                        if src_a == 0 {
+                            // Fully transparent - skip
+                            continue;
+                        } else if src_a == 255 {
+                            // Fully opaque - direct copy
+                            window.pixel_data[dst_offset..dst_offset + 4]
+                                .copy_from_slice(&src_data[src_offset..src_offset + 4]);
+                        } else {
+                            // Alpha blend: out = src * alpha + dst * (1 - alpha)
+                            let inv_a = 255 - src_a;
+                            for i in 0..3 {
+                                let src_c = src_data[src_offset + i] as u16;
+                                let dst_c = window.pixel_data[dst_offset + i] as u16;
+                                window.pixel_data[dst_offset + i] =
+                                    ((src_c * src_a + dst_c * inv_a) / 255) as u8;
+                            }
+                            // Output alpha: src_a + dst_a * (1 - src_a)
+                            let dst_a = window.pixel_data[dst_offset + 3] as u16;
+                            window.pixel_data[dst_offset + 3] =
+                                (src_a + (dst_a * inv_a) / 255) as u8;
+                        }
                     }
-
-                    window.pixel_data[dst_offset..dst_offset + row_bytes]
-                        .copy_from_slice(&src_data[src_offset..src_offset + row_bytes]);
                 }
 
                 // Keep buffer reference for backwards compatibility
@@ -172,7 +182,13 @@ pub fn handle_blit(handle: u32, params_ptr: usize) -> isize {
                 unsafe { core::slice::from_raw_parts(buffer_slice_ptr, expected_size) };
 
             // Blit from the buffer to the surface
-            match surface.blit(params.x, params.y, params.width, params.height, buffer_slice) {
+            match surface.blit(
+                params.x,
+                params.y,
+                params.width,
+                params.height,
+                buffer_slice,
+            ) {
                 Ok(()) => 0,
                 Err(_) => -1,
             }
@@ -192,8 +208,6 @@ pub fn handle_blit(handle: u32, params_ptr: usize) -> isize {
 /// - 0 on success
 /// - negative error code on failure
 pub fn handle_fill(handle: u32, params_ptr: usize) -> isize {
-    debug!("handle_fill: handle={}, params_ptr={:#x}", handle, params_ptr);
-
     if params_ptr == 0 {
         return -1;
     }
@@ -210,7 +224,13 @@ pub fn handle_fill(handle: u32, params_ptr: usize) -> isize {
         };
 
         // Surface uses interior mutability, so we can call fill on &self
-        match surface.fill(params.x, params.y, params.width, params.height, params.color) {
+        match surface.fill(
+            params.x,
+            params.y,
+            params.width,
+            params.height,
+            params.color,
+        ) {
             Ok(()) => 0,
             Err(_) => -1,
         }
@@ -229,21 +249,16 @@ pub fn handle_fill(handle: u32, params_ptr: usize) -> isize {
 /// - 0 on success
 /// - negative error code on failure
 pub fn handle_flush(handle: u32, rect_ptr: usize) -> isize {
-    debug!("handle_flush: handle={}, rect_ptr={:#x}", handle, rect_ptr);
-
     scheduler::with_current_process(|proc| {
         // Check if this is a window resource
         let is_window = {
             let Some(resource) = proc.handles().get(handle) else {
                 return -1;
             };
-            let is_win = resource.as_window().is_some();
-            debug!("handle_flush: is_window={}", is_win);
-            is_win
+            resource.as_window().is_some()
         };
 
         if is_window {
-            debug!("handle_flush: taking window path");
             // For windows, mark the region dirty in the compositor
             let Some(resource) = proc.handles().get(handle) else {
                 return -1;
@@ -315,35 +330,23 @@ pub fn handle_flush(handle: u32, rect_ptr: usize) -> isize {
 /// - 0 on success
 /// - negative error code on failure
 pub fn handle_update_params(handle: u32, params_ptr: usize) -> isize {
-    debug!(
-        "handle_update_params: handle={}, params_ptr={:#x}",
-        handle, params_ptr
-    );
-
     if params_ptr == 0 {
         return -1;
     }
 
     let params = unsafe { *(params_ptr as *const panda_abi::UpdateParamsIn) };
 
-    debug!("About to call with_current_process");
     scheduler::with_current_process(|proc| {
-        debug!("Inside with_current_process closure");
         let Some(resource) = proc.handles().get(handle) else {
-            debug!("No resource with handle {}", handle);
             return -1;
         };
 
-        debug!("Got resource, checking if window");
         let Some(window_arc) = resource.as_window() else {
-            debug!("Resource is not a window");
             return -1;
         };
 
-        debug!("Got window, locking it");
         let window_id = {
             let mut window = window_arc.lock();
-            debug!("Window locked");
 
             // Update window parameters
             window.position = (params.x, params.y);
@@ -363,12 +366,9 @@ pub fn handle_update_params(handle: u32, params_ptr: usize) -> isize {
 
         // Mark window dirty if visible
         if params.visible != 0 && params.width > 0 && params.height > 0 {
-            debug!("Marking window {} dirty", window_id);
             crate::compositor::mark_window_dirty(window_id);
-            debug!("Marked window dirty, returning");
         }
 
-        debug!("handle_update_params returning 0");
         0
     })
 }
