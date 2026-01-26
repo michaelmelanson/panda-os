@@ -10,6 +10,7 @@ use fontdue::{Font, FontSettings};
 use libpanda::{
     buffer::Buffer,
     channel, environment, file,
+    keyboard::{self, KeyValue, RawInputEvent, KEY_BACKSPACE, KEY_ENTER},
     mailbox::{ChannelEvent, Event, InputEvent, Mailbox, ProcessEvent},
     process,
     syscall::send,
@@ -99,31 +100,6 @@ impl<'a> Iterator for WordIter<'a> {
 
 // Embed the Hack font at compile time
 const FONT_DATA: &[u8] = include_bytes!("../fonts/Hack-Regular.ttf");
-
-// Shift key codes
-const KEY_LEFTSHIFT: u16 = 42;
-const KEY_RIGHTSHIFT: u16 = 54;
-const KEY_ENTER: u16 = 28;
-const KEY_BACKSPACE: u16 = 14;
-
-/// Key event value (press/release/repeat)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KeyValue {
-    Release,
-    Press,
-    Repeat,
-}
-
-impl KeyValue {
-    fn from_u32(value: u32) -> Self {
-        match value {
-            0 => KeyValue::Release,
-            1 => KeyValue::Press,
-            2 => KeyValue::Repeat,
-            _ => KeyValue::Release,
-        }
-    }
-}
 
 /// Pending input request state
 struct PendingInput {
@@ -1028,81 +1004,12 @@ impl Terminal {
     }
 }
 
-/// Convert Linux keycode to ASCII character
-fn keycode_to_char(code: u16, shift: bool) -> Option<char> {
-    match code {
-        // Letters
-        30 => Some(if shift { 'A' } else { 'a' }),
-        48 => Some(if shift { 'B' } else { 'b' }),
-        46 => Some(if shift { 'C' } else { 'c' }),
-        32 => Some(if shift { 'D' } else { 'd' }),
-        18 => Some(if shift { 'E' } else { 'e' }),
-        33 => Some(if shift { 'F' } else { 'f' }),
-        34 => Some(if shift { 'G' } else { 'g' }),
-        35 => Some(if shift { 'H' } else { 'h' }),
-        23 => Some(if shift { 'I' } else { 'i' }),
-        36 => Some(if shift { 'J' } else { 'j' }),
-        37 => Some(if shift { 'K' } else { 'k' }),
-        38 => Some(if shift { 'L' } else { 'l' }),
-        50 => Some(if shift { 'M' } else { 'm' }),
-        49 => Some(if shift { 'N' } else { 'n' }),
-        24 => Some(if shift { 'O' } else { 'o' }),
-        25 => Some(if shift { 'P' } else { 'p' }),
-        16 => Some(if shift { 'Q' } else { 'q' }),
-        19 => Some(if shift { 'R' } else { 'r' }),
-        31 => Some(if shift { 'S' } else { 's' }),
-        20 => Some(if shift { 'T' } else { 't' }),
-        22 => Some(if shift { 'U' } else { 'u' }),
-        47 => Some(if shift { 'V' } else { 'v' }),
-        17 => Some(if shift { 'W' } else { 'w' }),
-        45 => Some(if shift { 'X' } else { 'x' }),
-        21 => Some(if shift { 'Y' } else { 'y' }),
-        44 => Some(if shift { 'Z' } else { 'z' }),
-
-        // Numbers
-        11 => Some(if shift { '!' } else { '1' }),
-        2 => Some(if shift { '@' } else { '2' }),
-        3 => Some(if shift { '#' } else { '3' }),
-        4 => Some(if shift { '$' } else { '4' }),
-        5 => Some(if shift { '%' } else { '5' }),
-        6 => Some(if shift { '^' } else { '6' }),
-        7 => Some(if shift { '&' } else { '7' }),
-        8 => Some(if shift { '*' } else { '8' }),
-        9 => Some(if shift { '(' } else { '9' }),
-        10 => Some(if shift { ')' } else { '0' }),
-
-        // Symbols
-        57 => Some(' '), // Space
-        12 => Some(if shift { '_' } else { '-' }),
-        13 => Some(if shift { '+' } else { '=' }),
-        26 => Some(if shift { '{' } else { '[' }),
-        27 => Some(if shift { '}' } else { ']' }),
-        39 => Some(if shift { ':' } else { ';' }),
-        40 => Some(if shift { '"' } else { '\'' }),
-        41 => Some(if shift { '~' } else { '`' }),
-        43 => Some(if shift { '|' } else { '\\' }),
-        51 => Some(if shift { '<' } else { ',' }),
-        52 => Some(if shift { '>' } else { '.' }),
-        53 => Some(if shift { '?' } else { '/' }),
-
-        _ => None,
-    }
-}
-
-/// Raw input event structure (matches kernel's input event layout)
-#[repr(C)]
-struct RawInputEvent {
-    event_type: u16,
-    code: u16,
-    value: u32,
-}
-
 /// Handle a key event
 fn handle_key_event(term: &mut Terminal, code: u16, value: KeyValue, shift_pressed: &mut bool) {
     match value {
         KeyValue::Press | KeyValue::Repeat => {
             // Track shift state
-            if code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT {
+            if keyboard::is_shift_key(code) {
                 *shift_pressed = true;
                 return;
             }
@@ -1113,7 +1020,7 @@ fn handle_key_event(term: &mut Terminal, code: u16, value: KeyValue, shift_press
                 KEY_BACKSPACE => term.handle_backspace(),
                 _ => {
                     // Try to convert to character
-                    if let Some(ch) = keycode_to_char(code, *shift_pressed) {
+                    if let Some(ch) = keyboard::keycode_to_char(code, *shift_pressed) {
                         // If there's pending input from child, route to that
                         if term.pending_input.is_some() {
                             term.handle_input_char(ch);
@@ -1126,7 +1033,7 @@ fn handle_key_event(term: &mut Terminal, code: u16, value: KeyValue, shift_press
             }
         }
         KeyValue::Release => {
-            if code == KEY_LEFTSHIFT || code == KEY_RIGHTSHIFT {
+            if keyboard::is_shift_key(code) {
                 *shift_pressed = false;
             }
         }

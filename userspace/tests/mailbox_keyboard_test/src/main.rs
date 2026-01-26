@@ -10,51 +10,11 @@
 
 use libpanda::environment;
 use libpanda::file;
+use libpanda::keyboard::{RawInputEvent, keycode_to_char};
 use libpanda::mailbox::{Event, InputEvent, Mailbox};
 use panda_abi::EVENT_KEYBOARD_KEY;
 
-/// Input event structure (matches kernel's InputEvent)
-#[repr(C)]
-struct InputEvent {
-    event_type: u16,
-    code: u16,
-    value: u32,
-}
-
 const EV_KEY: u16 = 0x01;
-
-/// Convert Linux keycode to ASCII character (simplified, lowercase only)
-fn keycode_to_char(code: u16) -> Option<char> {
-    match code {
-        30 => Some('a'),
-        48 => Some('b'),
-        46 => Some('c'),
-        32 => Some('d'),
-        18 => Some('e'),
-        33 => Some('f'),
-        34 => Some('g'),
-        35 => Some('h'),
-        23 => Some('i'),
-        36 => Some('j'),
-        37 => Some('k'),
-        38 => Some('l'),
-        50 => Some('m'),
-        49 => Some('n'),
-        24 => Some('o'),
-        25 => Some('p'),
-        16 => Some('q'),
-        19 => Some('r'),
-        31 => Some('s'),
-        20 => Some('t'),
-        22 => Some('u'),
-        47 => Some('v'),
-        17 => Some('w'),
-        45 => Some('x'),
-        21 => Some('y'),
-        44 => Some('z'),
-        _ => None,
-    }
-}
 
 fn format_key_msg<'a>(buf: &'a mut [u8], key: char, action: &str) -> &'a str {
     let prefix = b"Key '";
@@ -91,10 +51,10 @@ fn process_keyboard_events(keyboard: libpanda::Handle, events_read: &mut usize) 
             break;
         }
 
-        if n as usize >= core::mem::size_of::<InputEvent>() {
-            let event = unsafe { &*(event_buf.as_ptr() as *const InputEvent) };
+        if n as usize >= core::mem::size_of::<RawInputEvent>() {
+            let event = unsafe { &*(event_buf.as_ptr() as *const RawInputEvent) };
             if event.event_type == EV_KEY {
-                let key_char = keycode_to_char(event.code).unwrap_or('?');
+                let key_char = keycode_to_char(event.code, false).unwrap_or('?');
 
                 let action = if event.value == 1 {
                     "pressed"

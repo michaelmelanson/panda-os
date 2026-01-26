@@ -9,6 +9,7 @@ pub mod environment;
 pub mod file;
 pub mod handle;
 pub mod heap;
+pub mod keyboard;
 pub mod mailbox;
 pub mod print;
 pub mod process;
