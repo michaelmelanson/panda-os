@@ -21,8 +21,6 @@ Working:
 
 - **Add high-level wrappers around `panda-abi` primitives**: The API for operations in `panda-abi` should have well-designed, idiomatic Rust wrappers around the current low-level operations and system calls.
 
-- **`Event` structure should be organized around resources and their events**: e.g. `Key(KeyEvent)` -> `Input(InputEvent::Key(KeyEvent))`
-
 ## Next steps
 
 ### 1. Terminal IPC protocol (see plans/TERMINAL_IPC.md)

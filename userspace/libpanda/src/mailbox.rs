@@ -78,19 +78,42 @@ impl Mailbox {
     }
 }
 
-/// Events that can be received from handles.
+/// Input device events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputEvent {
+    /// Keyboard input available - read from keyboard handle to get key data.
+    Keyboard,
+    /// Mouse input available - read from mouse handle to get mouse data.
+    Mouse,
+}
+
+/// Channel events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelEvent {
+    /// Message available to receive.
+    Readable,
+    /// Space available to send.
+    Writable,
+    /// Peer closed their endpoint.
+    Closed,
+}
+
+/// Process events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessEvent {
+    /// Child process has exited.
+    Exited,
+}
+
+/// Events that can be received from handles, organized by resource type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
-    /// Keyboard input available - read from keyboard handle to get key data.
-    KeyboardReady,
-    /// Message available to receive (for channel handles).
-    ChannelReadable,
-    /// Space available to send (for channel handles).
-    ChannelWritable,
-    /// Peer closed their endpoint (for channel handles).
-    ChannelClosed,
-    /// Child process has exited (for spawn handles).
-    ProcessExited,
+    /// Input device events (keyboard, mouse).
+    Input(InputEvent),
+    /// Channel events (readable, writable, closed).
+    Channel(ChannelEvent),
+    /// Process events (exited).
+    Process(ProcessEvent),
     /// Unknown or combined event flags.
     Raw(u32),
 }
@@ -103,21 +126,21 @@ impl Event {
     pub fn decode(flags: u32) -> Self {
         // Check channel events first (most common for IPC)
         if flags & EVENT_CHANNEL_CLOSED != 0 {
-            return Event::ChannelClosed;
+            return Event::Channel(ChannelEvent::Closed);
         }
         if flags & EVENT_CHANNEL_READABLE != 0 {
-            return Event::ChannelReadable;
+            return Event::Channel(ChannelEvent::Readable);
         }
         if flags & EVENT_CHANNEL_WRITABLE != 0 {
-            return Event::ChannelWritable;
+            return Event::Channel(ChannelEvent::Writable);
         }
         // Check process events
         if flags & EVENT_PROCESS_EXITED != 0 {
-            return Event::ProcessExited;
+            return Event::Process(ProcessEvent::Exited);
         }
-        // Check keyboard events - just notification, read handle for actual data
+        // Check input events
         if flags & EVENT_KEYBOARD_KEY != 0 {
-            return Event::KeyboardReady;
+            return Event::Input(InputEvent::Keyboard);
         }
         // Fallback for unknown events
         Event::Raw(flags)

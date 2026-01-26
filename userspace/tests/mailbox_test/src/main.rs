@@ -3,7 +3,7 @@
 
 use libpanda::{
     channel, environment,
-    mailbox::{Event, Mailbox},
+    mailbox::{ChannelEvent, Event, Mailbox},
     process,
 };
 use panda_abi::{EVENT_CHANNEL_CLOSED, EVENT_CHANNEL_READABLE};
@@ -41,7 +41,7 @@ libpanda::main! {
 
         if handle.as_raw() == child_handle.as_raw() {
             match event {
-                Event::ChannelReadable => {
+                Event::Channel(ChannelEvent::Readable) => {
                     environment::log("Mailbox test: got ChannelReadable event!");
                     got_readable = true;
 
@@ -56,7 +56,7 @@ libpanda::main! {
                         }
                     }
                 }
-                Event::ChannelClosed => {
+                Event::Channel(ChannelEvent::Closed) => {
                     environment::log("Mailbox test: got ChannelClosed event!");
                     got_closed = true;
                 }

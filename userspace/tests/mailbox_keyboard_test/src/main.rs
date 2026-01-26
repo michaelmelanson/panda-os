@@ -10,7 +10,7 @@
 
 use libpanda::environment;
 use libpanda::file;
-use libpanda::mailbox::{Event, Mailbox};
+use libpanda::mailbox::{Event, InputEvent, Mailbox};
 use panda_abi::EVENT_KEYBOARD_KEY;
 
 /// Input event structure (matches kernel's InputEvent)
@@ -140,7 +140,7 @@ libpanda::main! {
         let (_handle, event) = mailbox.recv();
 
         match event {
-            Event::KeyboardReady => {
+            Event::Input(InputEvent::Keyboard) => {
                 // Keyboard has events - read them with non-blocking reads
                 process_keyboard_events(keyboard, &mut events_read);
             }

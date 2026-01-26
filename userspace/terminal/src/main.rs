@@ -10,7 +10,7 @@ use fontdue::{Font, FontSettings};
 use libpanda::{
     buffer::Buffer,
     channel, environment, file,
-    mailbox::{Event, Mailbox},
+    mailbox::{ChannelEvent, Event, InputEvent, Mailbox, ProcessEvent},
     process,
     syscall::send,
     Handle,
@@ -1089,9 +1089,9 @@ fn keycode_to_char(code: u16, shift: bool) -> Option<char> {
     }
 }
 
-/// Input event structure (matches kernel's InputEvent)
+/// Raw input event structure (matches kernel's input event layout)
 #[repr(C)]
-struct InputEvent {
+struct RawInputEvent {
     event_type: u16,
     code: u16,
     value: u32,
@@ -1135,7 +1135,7 @@ fn handle_key_event(term: &mut Terminal, code: u16, value: KeyValue, shift_press
 
 /// Process any pending keyboard events
 fn process_keyboard_events(term: &mut Terminal, shift_pressed: &mut bool) {
-    let mut buf = [0u8; 8]; // InputEvent is 8 bytes
+    let mut buf = [0u8; 8]; // RawInputEvent is 8 bytes
 
     loop {
         let n = file::try_read(term.keyboard, &mut buf);
@@ -1144,7 +1144,7 @@ fn process_keyboard_events(term: &mut Terminal, shift_pressed: &mut bool) {
         }
 
         if n >= 8 {
-            let event = unsafe { &*(buf.as_ptr() as *const InputEvent) };
+            let event = unsafe { &*(buf.as_ptr() as *const RawInputEvent) };
             let value = KeyValue::from_u32(event.value);
             handle_key_event(term, event.code, value, shift_pressed);
         }
@@ -1206,14 +1206,14 @@ libpanda::main! {
         let (handle, event) = term.mailbox.recv();
 
         match event {
-            Event::KeyboardReady => {
+            Event::Input(InputEvent::Keyboard) => {
                 process_keyboard_events(&mut term, &mut shift_pressed);
             }
-            Event::ChannelReadable => {
+            Event::Channel(ChannelEvent::Readable) => {
                 // Child process sent a message
                 term.process_child_messages(handle);
             }
-            Event::ProcessExited => {
+            Event::Process(ProcessEvent::Exited) => {
                 term.handle_child_exit(handle);
                 term.write_str("> ");
             }
