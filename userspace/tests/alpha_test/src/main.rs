@@ -5,8 +5,7 @@ use libpanda::buffer::Buffer;
 use libpanda::environment;
 use libpanda::syscall;
 use panda_abi::{
-    BlitParams, UpdateParamsIn, OP_SURFACE_BLIT, OP_SURFACE_FLUSH,
-    OP_SURFACE_UPDATE_PARAMS,
+    BlitParams, UpdateParamsIn, OP_SURFACE_BLIT, OP_SURFACE_FLUSH, OP_SURFACE_UPDATE_PARAMS,
 };
 
 libpanda::main! {
@@ -187,6 +186,11 @@ libpanda::main! {
     environment::log("PASS: Created blue window with 60% alpha");
 
     environment::log("PASS: Alpha blending test complete");
+
+    // Give compositor time to process the flush before taking screenshot
+    for _ in 0..10 {
+        libpanda::process::yield_now();
+    }
 
     // Signal that screenshot can be taken
     environment::screenshot_ready();
