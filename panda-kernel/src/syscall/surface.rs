@@ -1,7 +1,11 @@
 //! Surface syscall handlers.
 
+use alloc::boxed::Box;
+
+use crate::process::PendingSyscall;
 use crate::resource::Buffer;
 use crate::scheduler;
+use crate::syscall::SyscallContext;
 
 /// Handle OP_SURFACE_INFO syscall.
 ///
@@ -239,56 +243,74 @@ pub fn handle_fill(handle: u32, params_ptr: usize) -> isize {
 
 /// Handle OP_SURFACE_FLUSH syscall.
 ///
-/// Flush surface updates to the display.
+/// Flush surface updates to the display. For windows, this blocks until the
+/// compositor has completed a frame with the updated content.
 ///
 /// Arguments:
+/// - ctx: Syscall context (needed for async waiting on windows)
 /// - handle: Surface handle
 /// - rect_ptr: Optional pointer to SurfaceRect (0 for full flush)
 ///
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_flush(handle: u32, rect_ptr: usize) -> isize {
-    scheduler::with_current_process(|proc| {
-        // Check if this is a window resource
-        let is_window = {
-            let Some(resource) = proc.handles().get(handle) else {
-                return -1;
-            };
-            resource.as_window().is_some()
+pub fn handle_flush(ctx: &SyscallContext, handle: u32, rect_ptr: usize) -> isize {
+    let is_window = scheduler::with_current_process(|proc| {
+        let Some(resource) = proc.handles().get(handle) else {
+            return None;
         };
+        Some(resource.as_window().is_some())
+    });
 
-        if is_window {
-            // For windows, mark the region dirty in the compositor
+    let Some(is_window) = is_window else {
+        return -1;
+    };
+
+    if is_window {
+        // For windows, mark the region dirty and wait for compositor
+        let window_id = scheduler::with_current_process(|proc| {
             let Some(resource) = proc.handles().get(handle) else {
-                return -1;
+                return None;
             };
             let Some(window_arc) = resource.as_window() else {
-                return -1;
+                return None;
             };
+            Some(window_arc.lock().id)
+        });
 
-            let window_id = window_arc.lock().id;
+        let Some(window_id) = window_id else {
+            return -1;
+        };
 
-            if rect_ptr != 0 {
-                // Mark specific region dirty
-                let rect = unsafe { *(rect_ptr as *const panda_abi::SurfaceRect) };
-                let compositor_rect = crate::resource::Rect {
-                    x: rect.x,
-                    y: rect.y,
-                    width: rect.width,
-                    height: rect.height,
-                };
-                crate::compositor::mark_window_region_dirty(window_id, compositor_rect);
-            } else {
-                // Mark entire window dirty
-                crate::compositor::mark_window_dirty(window_id);
-            }
-
-            // Force immediate composite when flush is called
-            crate::compositor::force_composite();
-            0
+        if rect_ptr != 0 {
+            // Mark specific region dirty
+            let rect = unsafe { *(rect_ptr as *const panda_abi::SurfaceRect) };
+            let compositor_rect = crate::resource::Rect {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+            };
+            crate::compositor::mark_window_region_dirty(window_id, compositor_rect);
         } else {
-            // For non-window surfaces, use traditional flush
+            // Mark entire window dirty
+            crate::compositor::mark_window_dirty(window_id);
+        }
+
+        // Wait for next compositor tick to complete
+        let future = Box::pin(async move {
+            crate::compositor::wait_for_next_frame().await;
+            0isize
+        });
+
+        scheduler::with_current_process(|proc| {
+            proc.set_pending_syscall(PendingSyscall::new(future));
+        });
+
+        ctx.yield_for_async()
+    } else {
+        // For non-window surfaces, use traditional synchronous flush
+        scheduler::with_current_process(|proc| {
             let Some(resource) = proc.handles().get(handle) else {
                 return -1;
             };
@@ -314,8 +336,8 @@ pub fn handle_flush(handle: u32, rect_ptr: usize) -> isize {
                 Ok(()) => 0,
                 Err(_) => -1,
             }
-        }
-    })
+        })
+    }
 }
 
 /// Handle OP_SURFACE_UPDATE_PARAMS syscall.

@@ -254,7 +254,7 @@ fn handle_send(
         OP_SURFACE_INFO => surface::handle_info(handle, arg0),
         OP_SURFACE_BLIT => surface::handle_blit(handle, arg0),
         OP_SURFACE_FILL => surface::handle_fill(handle, arg0),
-        OP_SURFACE_FLUSH => surface::handle_flush(handle, arg0),
+        OP_SURFACE_FLUSH => surface::handle_flush(ctx, handle, arg0),
         OP_SURFACE_UPDATE_PARAMS => surface::handle_update_params(handle, arg0),
 
         // Mailbox operations

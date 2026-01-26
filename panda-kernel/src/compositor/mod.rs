@@ -1,12 +1,14 @@
 //! Window compositor for multi-window display management.
 //!
 //! The compositor uses a single-owner model where only the compositor task
-//! calls composite(). Flush syscalls just mark regions dirty and return
-//! immediately. The compositor task runs at ~60fps and processes all dirty
-//! regions on each tick.
+//! calls composite(). Flush syscalls mark regions dirty and block until the
+//! next compositor tick completes. The compositor task runs at ~60fps and
+//! processes all dirty regions on each tick.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::task::Waker;
 use spinning_top::Spinlock;
 
 use crate::resource::{FramebufferSurface, Rect, SharedBuffer, Surface, alpha_blend};
@@ -19,6 +21,12 @@ const REFRESH_INTERVAL_MS: u64 = 16;
 
 /// Global compositor instance
 static COMPOSITOR: Spinlock<Option<WindowManager>> = Spinlock::new(None);
+
+/// Frame counter - incremented after each compositor tick completes
+static FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Wakers waiting for the next frame to complete
+static FRAME_WAITERS: Spinlock<Vec<Waker>> = Spinlock::new(Vec::new());
 
 /// Window manager state
 pub struct WindowManager {
@@ -287,11 +295,46 @@ pub fn mark_dirty_direct(rect: Rect) {
     compositor.mark_dirty(rect);
 }
 
-/// Called from flush syscall - just marks dirty, compositor task does the work.
-/// This function returns immediately; actual compositing happens on next tick.
-pub fn force_composite() {
-    // No-op: dirty regions are already marked by the caller.
-    // The compositor task will process them on its next tick.
+/// Future that waits for the next compositor frame to complete.
+pub struct WaitForNextFrame {
+    start_frame: u64,
+    registered: bool,
+}
+
+impl WaitForNextFrame {
+    fn new() -> Self {
+        Self {
+            start_frame: FRAME_COUNTER.load(Ordering::Acquire),
+            registered: false,
+        }
+    }
+}
+
+impl core::future::Future for WaitForNextFrame {
+    type Output = ();
+
+    fn poll(
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Self::Output> {
+        // Check if a frame has completed since we started waiting
+        if FRAME_COUNTER.load(Ordering::Acquire) > self.start_frame {
+            return core::task::Poll::Ready(());
+        }
+
+        // Register waker if not already registered
+        if !self.registered {
+            FRAME_WAITERS.lock().push(cx.waker().clone());
+            self.registered = true;
+        }
+
+        core::task::Poll::Pending
+    }
+}
+
+/// Wait until the compositor has completed the next frame.
+pub fn wait_for_next_frame() -> WaitForNextFrame {
+    WaitForNextFrame::new()
 }
 
 /// Compositor async task - the ONLY place that calls composite().
@@ -308,9 +351,20 @@ async fn compositor_task() {
         sleep_ms(REFRESH_INTERVAL_MS).await;
 
         // Composite any dirty regions
-        let mut compositor = COMPOSITOR.lock();
-        if let Some(compositor) = compositor.as_mut() {
-            compositor.composite();
+        {
+            let mut compositor = COMPOSITOR.lock();
+            if let Some(compositor) = compositor.as_mut() {
+                compositor.composite();
+            }
+        }
+
+        // Increment frame counter to signal waiters that this tick is complete
+        FRAME_COUNTER.fetch_add(1, Ordering::Release);
+
+        // Wake all waiters - they'll check the frame counter and complete
+        let waiters: Vec<Waker> = FRAME_WAITERS.lock().drain(..).collect();
+        for waker in waiters {
+            waker.wake();
         }
     }
 }

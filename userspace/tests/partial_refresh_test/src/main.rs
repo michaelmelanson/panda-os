@@ -144,11 +144,6 @@ libpanda::main! {
 
     environment::log("PASS: Partial refresh test complete");
 
-    // Give compositor time to process the flush before taking screenshot
-    for _ in 0..10 {
-        libpanda::process::yield_now();
-    }
-
     // Signal that screenshot can be taken
     environment::screenshot_ready();
 

@@ -155,11 +155,6 @@ libpanda::main! {
 
     environment::log("PASS: Multi-window test complete - blue should overlap red");
 
-    // Give compositor time to process the flush before taking screenshot
-    for _ in 0..10 {
-        libpanda::process::yield_now();
-    }
-
     // Signal screenshot ready
     environment::screenshot_ready();
 
