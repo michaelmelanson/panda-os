@@ -7,7 +7,7 @@ use spinning_top::RwSpinlock;
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::device_address::DeviceAddress;
-use crate::memory::physical_address_to_virtual;
+use crate::memory::PhysicalMapping;
 
 use device::PciDevice;
 
@@ -42,6 +42,9 @@ impl PciSegmentGroup {
 }
 
 static PCI_SEGMENT_GROUPS: RwSpinlock<Vec<PciSegmentGroup>> = RwSpinlock::new(Vec::default());
+
+/// ECAM mappings for PCI config space (persist for kernel lifetime).
+static ECAM_MAPPINGS: RwSpinlock<Vec<PhysicalMapping>> = RwSpinlock::new(Vec::new());
 
 /// Registry of PCI devices by class code.
 /// Maps class code -> Vec of DeviceAddress in discovery order.
@@ -201,8 +204,20 @@ pub fn init() {
     crate::acpi::with_table::<Mcfg>(|mcfg| {
         let mcfg = mcfg.expect("No MCFG table found");
         for entry in mcfg.entries() {
+            // Calculate ECAM size: 4KB per function * 8 functions * 32 devices * bus_count
+            // Cast to usize first to avoid u8 overflow on + 1
+            let bus_count =
+                (entry.bus_number_end as usize).saturating_sub(entry.bus_number_start as usize) + 1;
+            let ecam_size = bus_count * 32 * 8 * 4096;
+
+            // Map the ECAM config space
+            let mapping = PhysicalMapping::new(PhysAddr::new(entry.base_address), ecam_size);
+            let base_virt = mapping.virt_addr();
+            // Store the mapping - PCI config space persists for kernel lifetime
+            ECAM_MAPPINGS.write().push(mapping);
+
             init_pci_bus(
-                physical_address_to_virtual(PhysAddr::new(entry.base_address)),
+                base_virt,
                 entry.bus_number_start,
                 entry.bus_number_end,
                 entry.pci_segment_group,

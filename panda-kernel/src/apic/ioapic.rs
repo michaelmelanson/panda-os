@@ -4,13 +4,12 @@
 //! Local APIC. Each IOAPIC has 24 redirection entries that map IRQ lines
 //! to interrupt vectors.
 
-use core::sync::atomic::{AtomicU64, Ordering};
-
 use acpi::sdt::madt::{Madt, MadtEntry};
 use log::debug;
+use spinning_top::Spinlock;
 use x86_64::PhysAddr;
 
-use crate::memory::physical_address_to_virtual;
+use crate::memory::PhysicalMapping;
 
 /// IOAPIC register offsets (accessed via index/data registers)
 mod reg {
@@ -83,8 +82,8 @@ impl RedirectionEntry {
 
 /// I/O APIC instance
 struct IoApic {
-    /// Base virtual address of the IOAPIC registers
-    base_virt: u64,
+    /// MMIO mapping for IOAPIC registers (kept alive for kernel lifetime).
+    mapping: PhysicalMapping,
     /// Global System Interrupt base for this IOAPIC
     gsi_base: u32,
     /// Number of redirection entries
@@ -94,10 +93,11 @@ struct IoApic {
 impl IoApic {
     /// Create a new IOAPIC at the given physical address
     fn new(base_phys: u64, gsi_base: u32) -> Self {
-        let base_virt = physical_address_to_virtual(PhysAddr::new(base_phys)).as_u64();
+        // Map IOAPIC registers (index at 0x00, data at 0x10)
+        let mapping = PhysicalMapping::new(PhysAddr::new(base_phys), 0x20);
 
         let mut ioapic = Self {
-            base_virt,
+            mapping,
             gsi_base,
             max_entries: 0,
         };
@@ -112,28 +112,19 @@ impl IoApic {
     /// Write to the IOAPIC index register
     #[inline]
     fn write_index(&self, index: u32) {
-        unsafe {
-            let ptr = self.base_virt as *mut u32;
-            core::ptr::write_volatile(ptr, index);
-        }
+        self.mapping.write(0, index);
     }
 
     /// Read from the IOAPIC data register
     #[inline]
     fn read_data(&self) -> u32 {
-        unsafe {
-            let ptr = (self.base_virt + 0x10) as *const u32;
-            core::ptr::read_volatile(ptr)
-        }
+        self.mapping.read(0x10)
     }
 
     /// Write to the IOAPIC data register
     #[inline]
     fn write_data(&self, value: u32) {
-        unsafe {
-            let ptr = (self.base_virt + 0x10) as *mut u32;
-            core::ptr::write_volatile(ptr, value);
-        }
+        self.mapping.write(0x10, value);
     }
 
     /// Read a 32-bit register
@@ -182,10 +173,8 @@ impl IoApic {
     }
 }
 
-/// Global IOAPIC base address (we only support one IOAPIC for now)
-static IOAPIC_BASE: AtomicU64 = AtomicU64::new(0);
-static IOAPIC_GSI_BASE: AtomicU64 = AtomicU64::new(0);
-static IOAPIC_MAX_ENTRIES: AtomicU64 = AtomicU64::new(0);
+/// Global IOAPIC instance (we only support one IOAPIC for now)
+static IOAPIC: Spinlock<Option<IoApic>> = Spinlock::new(None);
 
 /// Initialize the IOAPIC from ACPI MADT
 pub fn init() {
@@ -199,10 +188,12 @@ pub fn init() {
                 let gsi_base = ioapic_entry.global_system_interrupt_base;
                 let ioapic = IoApic::new(address as u64, gsi_base);
 
-                // Store for later use
-                IOAPIC_BASE.store(ioapic.base_virt, Ordering::Release);
-                IOAPIC_GSI_BASE.store(ioapic.gsi_base as u64, Ordering::Release);
-                IOAPIC_MAX_ENTRIES.store(ioapic.max_entries as u64, Ordering::Release);
+                debug!(
+                    "IOAPIC: base={:#x}, GSI base={}, max entries={}",
+                    address, gsi_base, ioapic.max_entries
+                );
+
+                *IOAPIC.lock() = Some(ioapic);
 
                 // Only handle the first IOAPIC for now
                 break;
@@ -211,28 +202,28 @@ pub fn init() {
     });
 }
 
+/// Execute a function with the IOAPIC.
+fn with_ioapic<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&IoApic) -> R,
+{
+    let guard = IOAPIC.lock();
+    guard.as_ref().map(f)
+}
+
 /// Configure an IRQ to route to a specific vector on the BSP (CPU 0)
 pub fn configure_irq(irq: u8, vector: u8) {
-    let base = IOAPIC_BASE.load(Ordering::Acquire);
-    if base == 0 {
-        return; // IOAPIC not initialized
-    }
+    with_ioapic(|ioapic| {
+        if irq >= ioapic.max_entries {
+            return; // IRQ out of range
+        }
 
-    let ioapic = IoApic {
-        base_virt: base,
-        gsi_base: IOAPIC_GSI_BASE.load(Ordering::Acquire) as u32,
-        max_entries: IOAPIC_MAX_ENTRIES.load(Ordering::Acquire) as u8,
-    };
+        // Route to CPU 0 (APIC ID 0)
+        let entry = RedirectionEntry::new(vector, 0);
+        ioapic.set_redirection(irq, entry);
 
-    if irq >= ioapic.max_entries {
-        return; // IRQ out of range
-    }
-
-    // Route to CPU 0 (APIC ID 0)
-    let entry = RedirectionEntry::new(vector, 0);
-    ioapic.set_redirection(irq, entry);
-
-    debug!("IOAPIC: Configured IRQ {} -> vector {:#x}", irq, vector);
+        debug!("IOAPIC: Configured IRQ {} -> vector {:#x}", irq, vector);
+    });
 }
 
 /// Configure a PCI IRQ with edge-triggered, active-low settings.
@@ -240,72 +231,45 @@ pub fn configure_irq(irq: u8, vector: u8) {
 /// emulated virtio-pci works better with edge-triggered to avoid
 /// interrupt storms when we can't immediately consume the used ring.
 pub fn configure_pci_irq(irq: u8, vector: u8) {
-    let base = IOAPIC_BASE.load(Ordering::Acquire);
-    if base == 0 {
-        return; // IOAPIC not initialized
-    }
+    with_ioapic(|ioapic| {
+        if irq >= ioapic.max_entries {
+            return; // IRQ out of range
+        }
 
-    let ioapic = IoApic {
-        base_virt: base,
-        gsi_base: IOAPIC_GSI_BASE.load(Ordering::Acquire) as u32,
-        max_entries: IOAPIC_MAX_ENTRIES.load(Ordering::Acquire) as u8,
-    };
+        // Route to CPU 0 (APIC ID 0) with edge-triggered settings
+        // Using active-high because QEMU's virtio-pci seems to use positive edges
+        let entry = RedirectionEntry {
+            vector,
+            delivery_mode: DeliveryMode::Fixed,
+            destination_mode_logical: false,
+            polarity_low: false,  // Active-high for QEMU virtio
+            trigger_level: false, // Edge-triggered
+            masked: false,
+            destination: 0,
+        };
+        ioapic.set_redirection(irq, entry);
 
-    if irq >= ioapic.max_entries {
-        return; // IRQ out of range
-    }
-
-    // Route to CPU 0 (APIC ID 0) with edge-triggered settings
-    // Using active-high because QEMU's virtio-pci seems to use positive edges
-    let entry = RedirectionEntry {
-        vector,
-        delivery_mode: DeliveryMode::Fixed,
-        destination_mode_logical: false,
-        polarity_low: false,  // Active-high for QEMU virtio
-        trigger_level: false, // Edge-triggered
-        masked: false,
-        destination: 0,
-    };
-    ioapic.set_redirection(irq, entry);
-
-    debug!(
-        "IOAPIC: Configured PCI IRQ {} -> vector {:#x} (edge-triggered, active-high)",
-        irq, vector
-    );
+        debug!(
+            "IOAPIC: Configured PCI IRQ {} -> vector {:#x} (edge-triggered, active-high)",
+            irq, vector
+        );
+    });
 }
 
 /// Mask (disable) an IRQ in the IOAPIC
 pub fn mask_irq(irq: u8) {
-    let base = IOAPIC_BASE.load(Ordering::Acquire);
-    if base == 0 {
-        return;
-    }
-
-    let ioapic = IoApic {
-        base_virt: base,
-        gsi_base: IOAPIC_GSI_BASE.load(Ordering::Acquire) as u32,
-        max_entries: IOAPIC_MAX_ENTRIES.load(Ordering::Acquire) as u8,
-    };
-
-    if irq < ioapic.max_entries {
-        ioapic.mask_irq(irq);
-    }
+    with_ioapic(|ioapic| {
+        if irq < ioapic.max_entries {
+            ioapic.mask_irq(irq);
+        }
+    });
 }
 
 /// Unmask (enable) an IRQ in the IOAPIC
 pub fn unmask_irq(irq: u8) {
-    let base = IOAPIC_BASE.load(Ordering::Acquire);
-    if base == 0 {
-        return;
-    }
-
-    let ioapic = IoApic {
-        base_virt: base,
-        gsi_base: IOAPIC_GSI_BASE.load(Ordering::Acquire) as u32,
-        max_entries: IOAPIC_MAX_ENTRIES.load(Ordering::Acquire) as u8,
-    };
-
-    if irq < ioapic.max_entries {
-        ioapic.unmask_irq(irq);
-    }
+    with_ioapic(|ioapic| {
+        if irq < ioapic.max_entries {
+            ioapic.unmask_irq(irq);
+        }
+    });
 }

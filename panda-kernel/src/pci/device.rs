@@ -1,10 +1,15 @@
 use core::fmt::UpperHex;
 
+use alloc::vec::Vec;
 use log::{debug, trace};
+use spinning_top::Spinlock;
 use x86_64::{PhysAddr, VirtAddr};
 
-use crate::memory::MmioMapping;
+use crate::memory::PhysicalMapping;
 use crate::pci::PciSegmentGroup;
+
+/// PCI device MMIO mappings (MSI-X tables, virtio config, etc.) that persist for device lifetime.
+static PCI_DEVICE_MAPPINGS: Spinlock<Vec<PhysicalMapping>> = Spinlock::new(Vec::new());
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PciDeviceAddress {
@@ -292,10 +297,10 @@ impl VirtioCommonConfig {
                     let config_phys = PhysAddr::new(bar_addr + offset as u64);
 
                     // Map MMIO region to higher-half
-                    let mmio = MmioMapping::new(config_phys, length as usize);
-                    let base_vaddr = mmio.virt_addr();
-                    // Leak the mapping - config persists for device lifetime
-                    core::mem::forget(mmio);
+                    let mapping = PhysicalMapping::new(config_phys, length as usize);
+                    let base_vaddr = mapping.virt_addr();
+                    // Store the mapping - config persists for device lifetime
+                    PCI_DEVICE_MAPPINGS.lock().push(mapping);
 
                     debug!(
                         "PCI {}: Found virtio common config in BAR{} at offset {:#x}, bar_addr={:#x}, vaddr={:#x}",
@@ -416,10 +421,10 @@ impl MsixCapability {
         let table_bytes = (table_size as usize) * 16;
 
         // Map MMIO region to higher-half
-        let mmio = MmioMapping::new(table_phys, table_bytes);
-        let table_vaddr = mmio.virt_addr();
-        // Leak the mapping - MSI-X table persists for device lifetime
-        core::mem::forget(mmio);
+        let mapping = PhysicalMapping::new(table_phys, table_bytes);
+        let table_vaddr = mapping.virt_addr();
+        // Store the mapping - MSI-X table persists for device lifetime
+        PCI_DEVICE_MAPPINGS.lock().push(mapping);
 
         debug!(
             "MSI-X table: BAR{} addr={:#x}, offset={:#x}, phys={:#x}, vaddr={:#x}",

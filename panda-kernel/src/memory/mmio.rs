@@ -1,70 +1,163 @@
-//! MMIO (Memory-Mapped I/O) access with RAII wrappers.
+//! Physical memory mapping with RAII wrappers.
 //!
-//! This module provides type-safe, volatile access to device memory through RAII
-//! wrappers. All device register access should go through these types to ensure
-//! proper memory ordering.
+//! This module provides type-safe, volatile access to physical memory through RAII
+//! wrappers. All device register access and external physical memory access should
+//! go through `PhysicalMapping` to ensure proper memory ordering and lifecycle.
 //!
-//! MMIO regions are mapped in a dedicated virtual address region starting at
-//! `MMIO_REGION_BASE` (0xffff_9000_0000_0000), separate from the physical memory
-//! window. Virtual address allocation uses a simple bump allocator.
+//! Physical mappings are allocated in a dedicated virtual address region starting at
+//! `MMIO_REGION_BASE` (0xffff_9000_0000_0000). Virtual address allocation supports
+//! both allocation and deallocation, allowing temporary mappings to be freed.
 
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::{AtomicU64, Ordering};
 
+use alloc::collections::BTreeMap;
 use log::debug;
+use spinning_top::Spinlock;
 use x86_64::{PhysAddr, VirtAddr};
 
 use super::address_space::MMIO_REGION_BASE;
 use super::paging::map_external;
 use super::{Mapping, MemoryMappingOptions};
 
-/// Next available virtual address in the MMIO region.
-/// This is a simple bump allocator - MMIO mappings are typically not freed.
-static MMIO_NEXT_ADDR: AtomicU64 = AtomicU64::new(MMIO_REGION_BASE);
+/// Size of the MMIO virtual address region (16 TB).
+const MMIO_REGION_SIZE: u64 = 0x1000_0000_0000;
 
-/// Allocate virtual address space in the MMIO region.
+/// Virtual address allocator for physical mappings.
 ///
-/// Returns the base virtual address of the allocated region.
-/// The allocation is page-aligned.
-fn allocate_mmio_vaddr(size: usize) -> VirtAddr {
-    let aligned_size = ((size as u64 + 4095) & !4095) as u64;
-    let addr = MMIO_NEXT_ADDR.fetch_add(aligned_size, Ordering::SeqCst);
-    VirtAddr::new(addr)
+/// Uses a simple free-list approach with a BTreeMap keyed by address.
+/// Free regions are coalesced when adjacent allocations are freed.
+struct MmioVaddrAllocator {
+    /// Map of free region start addresses to their sizes.
+    free_regions: BTreeMap<u64, u64>,
+    /// Next address for bump allocation when no free regions fit.
+    bump_next: u64,
 }
 
-/// RAII wrapper for accessing a memory-mapped I/O region.
+impl MmioVaddrAllocator {
+    const fn new() -> Self {
+        Self {
+            free_regions: BTreeMap::new(),
+            bump_next: MMIO_REGION_BASE,
+        }
+    }
+
+    /// Allocate virtual address space of the given size (must be page-aligned).
+    fn allocate(&mut self, size: u64) -> VirtAddr {
+        // First-fit search in free regions
+        let mut found_addr = None;
+        for (&addr, &region_size) in &self.free_regions {
+            if region_size >= size {
+                found_addr = Some((addr, region_size));
+                break;
+            }
+        }
+
+        if let Some((addr, region_size)) = found_addr {
+            self.free_regions.remove(&addr);
+            // If there's leftover space, put it back
+            if region_size > size {
+                self.free_regions.insert(addr + size, region_size - size);
+            }
+            return VirtAddr::new(addr);
+        }
+
+        // No suitable free region - bump allocate
+        let addr = self.bump_next;
+        assert!(
+            addr + size <= MMIO_REGION_BASE + MMIO_REGION_SIZE,
+            "MMIO region exhausted"
+        );
+        self.bump_next = addr + size;
+        VirtAddr::new(addr)
+    }
+
+    /// Free virtual address space, returning it to the allocator.
+    fn deallocate(&mut self, addr: VirtAddr, size: u64) {
+        let addr = addr.as_u64();
+
+        // Try to coalesce with adjacent regions
+        // Check for region immediately before
+        let mut new_addr = addr;
+        let mut new_size = size;
+
+        // Find and merge with predecessor if adjacent
+        let predecessor = self
+            .free_regions
+            .range(..addr)
+            .next_back()
+            .map(|(&a, &s)| (a, s));
+        if let Some((pred_addr, pred_size)) = predecessor {
+            if pred_addr + pred_size == addr {
+                // Merge with predecessor
+                self.free_regions.remove(&pred_addr);
+                new_addr = pred_addr;
+                new_size += pred_size;
+            }
+        }
+
+        // Find and merge with successor if adjacent
+        if let Some(&succ_size) = self.free_regions.get(&(new_addr + new_size)) {
+            self.free_regions.remove(&(new_addr + new_size));
+            new_size += succ_size;
+        }
+
+        self.free_regions.insert(new_addr, new_size);
+    }
+}
+
+static MMIO_VADDR_ALLOCATOR: Spinlock<MmioVaddrAllocator> =
+    Spinlock::new(MmioVaddrAllocator::new());
+
+/// Allocate virtual address space in the physical mapping region.
+fn allocate_phys_mapping_vaddr(size: usize) -> VirtAddr {
+    let aligned_size = ((size as u64 + 4095) & !4095) as u64;
+    MMIO_VADDR_ALLOCATOR.lock().allocate(aligned_size)
+}
+
+/// Free virtual address space in the physical mapping region.
+fn deallocate_phys_mapping_vaddr(addr: VirtAddr, size: usize) {
+    let aligned_size = ((size as u64 + 4095) & !4095) as u64;
+    MMIO_VADDR_ALLOCATOR.lock().deallocate(addr, aligned_size)
+}
+
+/// RAII wrapper for accessing physical memory.
 ///
-/// Provides volatile read/write access to device registers. The mapping is
-/// created when the wrapper is constructed and remains valid for the lifetime
-/// of the wrapper.
+/// Provides volatile read/write access to physical memory regions such as
+/// device MMIO registers, ACPI tables, or other external physical addresses.
+/// The mapping is created when the wrapper is constructed and unmapped on drop.
 ///
-/// MMIO regions are allocated from a dedicated higher-half region starting at
-/// `MMIO_REGION_BASE`, separate from the physical memory window.
+/// Physical mappings are allocated from a dedicated higher-half region starting at
+/// `MMIO_REGION_BASE` (0xffff_9000_0000_0000).
 ///
 /// # Example
 ///
 /// ```ignore
-/// let mmio = MmioMapping::new(pci_bar_phys_addr, 4096);
-/// let status: u32 = mmio.read(0x10);
-/// mmio.write(0x14, 0x1234u32);
+/// let mapping = PhysicalMapping::new(pci_bar_phys_addr, 4096);
+/// let status: u32 = mapping.read(0x10);
+/// mapping.write(0x14, 0x1234u32);
 /// ```
-pub struct MmioMapping {
+pub struct PhysicalMapping {
+    /// Virtual address (includes offset for non-page-aligned physical addresses).
     virt_addr: VirtAddr,
+    /// Size of the mapping in bytes.
     size: usize,
-    // The underlying Mapping handles the page table entries.
-    // We leak it on drop since MMIO regions typically persist.
+    /// Page-aligned virtual address for deallocation.
+    aligned_virt: VirtAddr,
+    /// Page-aligned size for deallocation.
+    aligned_size: usize,
+    /// The underlying Mapping handles the page table entries.
     _mapping: Mapping,
 }
 
-impl MmioMapping {
-    /// Create a new MMIO mapping for a device region.
+impl PhysicalMapping {
+    /// Create a new physical memory mapping.
     ///
-    /// The physical region is mapped to a virtual address in the dedicated MMIO
-    /// region at `MMIO_REGION_BASE`.
+    /// The physical region is mapped to a virtual address in the dedicated
+    /// physical mapping region at `MMIO_REGION_BASE`.
     ///
     /// # Arguments
     ///
-    /// * `phys_addr` - Physical address of the MMIO region
+    /// * `phys_addr` - Physical address to map
     /// * `size` - Size of the region in bytes
     pub fn new(phys_addr: PhysAddr, size: usize) -> Self {
         // Align physical address down and calculate offset
@@ -72,8 +165,8 @@ impl MmioMapping {
         let offset = (phys_addr.as_u64() - aligned_phys.as_u64()) as usize;
         let aligned_size = (size + offset + 4095) & !4095;
 
-        // Allocate virtual address space in the MMIO region
-        let aligned_virt = allocate_mmio_vaddr(aligned_size);
+        // Allocate virtual address space in the physical mapping region
+        let aligned_virt = allocate_phys_mapping_vaddr(aligned_size);
 
         // Create the mapping using map_external (returns Mapping with Mmio backing)
         let mapping = map_external(
@@ -91,7 +184,7 @@ impl MmioMapping {
         let virt_addr = VirtAddr::new(aligned_virt.as_u64() + offset as u64);
 
         debug!(
-            "MMIO: mapped phys {:#x} -> virt {:#x} (size {})",
+            "PhysicalMapping: mapped phys {:#x} -> virt {:#x} (size {})",
             phys_addr.as_u64(),
             virt_addr.as_u64(),
             size
@@ -100,6 +193,8 @@ impl MmioMapping {
         Self {
             virt_addr,
             size,
+            aligned_virt,
+            aligned_size,
             _mapping: mapping,
         }
     }
@@ -114,7 +209,7 @@ impl MmioMapping {
         self.size
     }
 
-    /// Read a value from the MMIO region at the given byte offset.
+    /// Read a value from the mapping at the given byte offset.
     ///
     /// # Panics
     ///
@@ -122,13 +217,13 @@ impl MmioMapping {
     pub fn read<T: Copy>(&self, offset: usize) -> T {
         assert!(
             offset + core::mem::size_of::<T>() <= self.size,
-            "MMIO read out of bounds"
+            "PhysicalMapping read out of bounds"
         );
         let ptr = (self.virt_addr.as_u64() + offset as u64) as *const T;
         unsafe { read_volatile(ptr) }
     }
 
-    /// Write a value to the MMIO region at the given byte offset.
+    /// Write a value to the mapping at the given byte offset.
     ///
     /// # Panics
     ///
@@ -136,13 +231,13 @@ impl MmioMapping {
     pub fn write<T: Copy>(&self, offset: usize, value: T) {
         assert!(
             offset + core::mem::size_of::<T>() <= self.size,
-            "MMIO write out of bounds"
+            "PhysicalMapping write out of bounds"
         );
         let ptr = (self.virt_addr.as_u64() + offset as u64) as *mut T;
         unsafe { write_volatile(ptr, value) }
     }
 
-    /// Read a value from the MMIO region without bounds checking.
+    /// Read a value from the mapping without bounds checking.
     ///
     /// # Safety
     ///
@@ -152,7 +247,7 @@ impl MmioMapping {
         unsafe { read_volatile(ptr) }
     }
 
-    /// Write a value to the MMIO region without bounds checking.
+    /// Write a value to the mapping without bounds checking.
     ///
     /// # Safety
     ///
@@ -181,6 +276,15 @@ impl MmioMapping {
     }
 }
 
-// MmioMapping stores the Mapping, so when MmioMapping is dropped, the Mapping
-// is dropped too and the region is unmapped. If you need the mapping to persist,
-// use core::mem::forget(mmio_mapping).
+impl Drop for PhysicalMapping {
+    fn drop(&mut self) {
+        // Return virtual address space to the allocator
+        deallocate_phys_mapping_vaddr(self.aligned_virt, self.aligned_size);
+        debug!(
+            "PhysicalMapping: unmapped virt {:#x} (size {})",
+            self.aligned_virt.as_u64(),
+            self.aligned_size
+        );
+        // The _mapping field is dropped automatically, which unmaps the page table entries
+    }
+}

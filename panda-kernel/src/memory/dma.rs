@@ -7,7 +7,7 @@ use core::slice;
 
 use x86_64::{PhysAddr, VirtAddr};
 
-use super::{Frame, allocate_physical, physical_address_to_virtual};
+use super::{Frame, allocate_physical};
 
 /// A buffer suitable for DMA operations.
 ///
@@ -38,8 +38,11 @@ impl DmaBuffer {
     }
 
     /// Get the virtual address for CPU access.
+    ///
+    /// This returns the heap address where the frame was allocated, avoiding
+    /// the physical memory window which could alias with other mappings.
     pub fn virtual_address(&self) -> VirtAddr {
-        physical_address_to_virtual(self.frame.start_address())
+        self.frame.virtual_address()
     }
 
     /// Get a mutable slice of the buffer contents.

@@ -12,14 +12,12 @@ use x86_64::{
 };
 
 use super::mapping::{Mapping, MappingBacking};
+use super::recursive;
 use super::{MemoryMappingOptions, allocate_frame, allocate_frame_raw, deallocate_frame_raw};
 
-/// Get the current page table pointer.
+/// Get the current page table pointer via recursive mapping.
 pub fn current_page_table() -> *mut PageTable {
-    let (page_table_frame, _flags) = Cr3::read();
-    let page_table_vaddr =
-        super::address::physical_address_to_virtual(page_table_frame.start_address());
-    page_table_vaddr.as_mut_ptr::<PageTable>()
+    recursive::pml4_mut() as *mut PageTable
 }
 
 /// Get the current page table's physical address.
@@ -51,29 +49,42 @@ pub unsafe fn switch_page_table(pml4_phys: PhysAddr) {
 /// - Kernel heap (0xffff_a000...)
 /// - Kernel image (0xffff_c000...)
 pub fn create_user_page_table() -> PhysAddr {
-    let frame = allocate_frame_raw();
-    let new_pml4 =
-        super::physical_address_to_virtual(frame.start_address()).as_mut_ptr::<PageTable>();
+    // Allocate a frame for the new PML4 (already zeroed by alloc_zeroed)
+    let frame = super::allocate_frame();
+    let frame_phys = frame.start_address();
+
+    // Access the new page table via its heap virtual address
+    let new_pml4 = frame.virtual_address().as_mut_ptr::<PageTable>();
 
     // Higher-half starts at PML4 index 256 (0xffff_8000_0000_0000 >> 39 = 256)
     const HIGHER_HALF_START: usize = 256;
 
-    let current_pml4 = current_page_table();
-    unsafe {
-        let src_table = &*current_pml4;
-        let dst_table = &mut *new_pml4;
+    // Access current PML4 via recursive mapping
+    let current_pml4 = recursive::pml4();
 
-        // Zero the entire table first
-        core::ptr::write_bytes(dst_table, 0, 1);
+    unsafe {
+        let dst_table = &mut *new_pml4;
 
         // Copy only higher-half kernel entries (256-511)
         // Lower half (0-255) is left empty for userspace
+        // Skip the recursive entry (510) - we'll set it up for the new table
         for i in HIGHER_HALF_START..512 {
-            dst_table[i] = src_table[i].clone();
+            if i != recursive::RECURSIVE_INDEX {
+                dst_table[i] = current_pml4[i].clone();
+            }
         }
+
+        // Set up recursive entry for the new page table
+        dst_table[recursive::RECURSIVE_INDEX].set_addr(
+            frame_phys,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE,
+        );
     }
 
-    frame.start_address()
+    // Leak the frame - it's now owned by the process
+    core::mem::forget(frame);
+
+    frame_phys
 }
 
 /// Execute a closure with write protection disabled.
@@ -125,10 +136,11 @@ pub fn update_permissions(
 /// Check if a virtual address is already mapped (including via huge pages).
 /// Returns true if the address can be accessed without a page fault.
 fn is_mapped(addr: VirtAddr) -> bool {
-    let mut page_table = unsafe { &*current_page_table() };
     let mut level = PageTableLevel::Four;
 
     loop {
+        // Access page table at current level via recursive mapping
+        let page_table = unsafe { recursive::table_for_addr(addr, level) };
         let entry = &page_table[addr.page_table_index(level)];
 
         if !entry.flags().contains(PageTableFlags::PRESENT) {
@@ -142,14 +154,11 @@ fn is_mapped(addr: VirtAddr) -> bool {
             return true; // Huge page covers this address
         }
 
-        let next_level = PageTableLevel::next_lower_level(level);
-        if next_level.is_none() {
+        let Some(next_level) = level.next_lower_level() else {
             return true; // Reached L1, address is mapped
-        }
+        };
 
-        level = next_level.unwrap();
-        page_table =
-            unsafe { &*super::physical_address_to_virtual(entry.addr()).as_ptr::<PageTable>() };
+        level = next_level;
     }
 }
 
@@ -242,19 +251,19 @@ fn leaf_page_table_entry(
     addr: VirtAddr,
     flags: PageTableFlags,
 ) -> (*mut PageTableEntry, PageTableLevel) {
-    let mut page_table = unsafe { &mut *current_page_table() };
     let mut level = PageTableLevel::Four;
 
     loop {
+        // Access page table at current level via recursive mapping
+        let page_table = unsafe { recursive::table_for_addr_mut(addr, level) };
         let entry = &mut page_table[addr.page_table_index(level)];
         if entry.addr() == PhysAddr::zero() {
             return (entry, level);
         }
 
-        let next_level = PageTableLevel::next_lower_level(level);
-        if next_level == None {
+        let Some(next_level) = level.next_lower_level() else {
             return (entry, level);
-        }
+        };
 
         if level == PageTableLevel::Two && entry.flags().contains(PageTableFlags::HUGE_PAGE) {
             return (entry, level);
@@ -265,10 +274,7 @@ fn leaf_page_table_entry(
             return (entry, level);
         }
 
-        level = next_level.unwrap();
-        page_table = unsafe {
-            &mut *super::physical_address_to_virtual(entry.addr()).as_mut_ptr::<PageTable>()
-        };
+        level = next_level;
     }
 }
 
@@ -318,96 +324,93 @@ pub fn unmap_region(base_virt: VirtAddr, size_bytes: usize) {
 
 /// Unmap a single page and free empty intermediate page tables.
 pub fn unmap_page(virt_addr: VirtAddr) {
-    let page_table = current_page_table();
-
-    // Walk down to find all tables in the path
-    let mut tables: [Option<(*mut PageTable, usize)>; 4] = [None; 4];
-    let mut table = page_table;
-
-    for (i, level) in [
+    let levels = [
         PageTableLevel::Four,
         PageTableLevel::Three,
         PageTableLevel::Two,
         PageTableLevel::One,
-    ]
-    .iter()
-    .enumerate()
-    {
+    ];
+
+    // Walk down to find the depth we can reach
+    let mut max_depth = 0;
+    for (i, level) in levels.iter().enumerate() {
+        let table = unsafe { recursive::table_for_addr(virt_addr, *level) };
         let index = virt_addr.page_table_index(*level);
-        let entry = unsafe { &(&*table)[index] };
+        let entry = &table[index];
 
         if !entry.flags().contains(PageTableFlags::PRESENT) {
             return; // Already unmapped
         }
 
-        tables[i] = Some((table, index.into()));
-
-        if *level == PageTableLevel::One {
-            break;
-        }
+        max_depth = i;
 
         // Handle huge pages at level 2
         if *level == PageTableLevel::Two && entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-            // Clear the huge page entry
+            let table = unsafe { recursive::table_for_addr_mut(virt_addr, *level) };
             without_write_protection(|| {
-                unsafe { &mut (&mut *table)[index] }.set_unused();
+                table[index].set_unused();
             });
             tlb::flush(virt_addr);
             return;
         }
 
-        table = super::physical_address_to_virtual(entry.addr()).as_mut_ptr::<PageTable>();
+        if *level == PageTableLevel::One {
+            break;
+        }
     }
 
     // Clear the L1 entry
-    if let Some((l1_table, l1_index)) = tables[3] {
+    if max_depth == 3 {
+        let l1_table = unsafe { recursive::table_for_addr_mut(virt_addr, PageTableLevel::One) };
+        let l1_index = virt_addr.page_table_index(PageTableLevel::One);
         without_write_protection(|| {
-            unsafe { &mut (&mut *l1_table)[l1_index] }.set_unused();
+            l1_table[l1_index].set_unused();
         });
         tlb::flush(virt_addr);
     }
 
     // Walk back up and free empty intermediate tables
-    // Start from L1 (index 3), check if empty, then free and clear L2 entry, etc.
-    for level_idx in (0..3).rev() {
-        let Some((child_table, _)) = tables[level_idx + 1] else {
-            break;
-        };
-        let Some((parent_table, parent_index)) = tables[level_idx] else {
-            break;
-        };
+    // Check L1 -> L2 -> L3 (don't free PML4 entries)
+    for level in [
+        PageTableLevel::One,
+        PageTableLevel::Two,
+        PageTableLevel::Three,
+    ] {
+        let child_table = unsafe { recursive::table_for_addr(virt_addr, level) };
 
         // Check if child table is completely empty
-        let is_empty = unsafe {
-            (*child_table)
-                .iter()
-                .all(|entry| !entry.flags().contains(PageTableFlags::PRESENT))
-        };
+        let is_empty = child_table
+            .iter()
+            .all(|entry| !entry.flags().contains(PageTableFlags::PRESENT));
 
-        if is_empty {
-            // Get the physical address of the child table before clearing entry
-            let child_frame_addr = unsafe { (&*parent_table)[parent_index].addr() };
-            let child_frame = PhysFrame::from_start_address(child_frame_addr).unwrap();
-
-            // Clear the parent entry
-            without_write_protection(|| {
-                unsafe { &mut (&mut *parent_table)[parent_index] }.set_unused();
-            });
-
-            // Deallocate the empty child table
-            unsafe {
-                deallocate_frame_raw(child_frame);
-            }
-
-            debug!(
-                "Freed empty page table at {:?} (level {})",
-                child_frame_addr,
-                3 - level_idx
-            );
-        } else {
+        if !is_empty {
             // If this table isn't empty, higher levels won't be either
             break;
         }
+
+        // Safe to unwrap: levels 1, 2, 3 all have a higher level
+        let parent_level = level.next_higher_level().unwrap();
+        let parent_table = unsafe { recursive::table_for_addr_mut(virt_addr, parent_level) };
+        let parent_index = virt_addr.page_table_index(parent_level);
+
+        // Get the physical address of the child table before clearing entry
+        let child_frame_addr = parent_table[parent_index].addr();
+        let child_frame = PhysFrame::from_start_address(child_frame_addr).unwrap();
+
+        // Clear the parent entry
+        without_write_protection(|| {
+            parent_table[parent_index].set_unused();
+        });
+
+        // Deallocate the empty child table
+        unsafe {
+            deallocate_frame_raw(child_frame);
+        }
+
+        debug!(
+            "Freed empty page table at {:?} (level {:?})",
+            child_frame_addr, level
+        );
     }
 }
 
@@ -424,29 +427,22 @@ pub fn free_region(base_virt: VirtAddr, size_bytes: usize) {
 /// Free a single page: deallocate its frame (if mapped) and clear the PTE.
 /// Unlike unmap_page, this also deallocates the physical frame.
 fn free_page(virt_addr: VirtAddr) {
-    let page_table = current_page_table();
-
-    // Walk down to find the L1 entry
-    let mut tables: [Option<(*mut PageTable, usize)>; 4] = [None; 4];
-    let mut table = page_table;
-
-    for (i, level) in [
+    let levels = [
         PageTableLevel::Four,
         PageTableLevel::Three,
         PageTableLevel::Two,
         PageTableLevel::One,
-    ]
-    .iter()
-    .enumerate()
-    {
+    ];
+
+    // Walk down to find the L1 entry
+    for level in levels.iter() {
+        let table = unsafe { recursive::table_for_addr(virt_addr, *level) };
         let index = virt_addr.page_table_index(*level);
-        let entry = unsafe { &(&*table)[index] };
+        let entry = &table[index];
 
         if !entry.flags().contains(PageTableFlags::PRESENT) {
             return; // Not mapped, nothing to free
         }
-
-        tables[i] = Some((table, index.into()));
 
         if *level == PageTableLevel::One {
             // Found L1 entry - get the frame address before clearing
@@ -454,8 +450,9 @@ fn free_page(virt_addr: VirtAddr) {
             let frame = PhysFrame::from_start_address(frame_addr).unwrap();
 
             // Clear the entry
+            let table = unsafe { recursive::table_for_addr_mut(virt_addr, *level) };
             without_write_protection(|| {
-                unsafe { &mut (&mut *table)[index] }.set_unused();
+                table[index].set_unused();
             });
             tlb::flush(virt_addr);
 
@@ -468,45 +465,46 @@ fn free_page(virt_addr: VirtAddr) {
 
         // Handle huge pages at level 2 (not expected for heap, but handle anyway)
         if *level == PageTableLevel::Two && entry.flags().contains(PageTableFlags::HUGE_PAGE) {
+            let table = unsafe { recursive::table_for_addr_mut(virt_addr, *level) };
             without_write_protection(|| {
-                unsafe { &mut (&mut *table)[index] }.set_unused();
+                table[index].set_unused();
             });
             tlb::flush(virt_addr);
             // Note: huge page frame deallocation not implemented
             return;
         }
-
-        table = super::physical_address_to_virtual(entry.addr()).as_mut_ptr::<PageTable>();
     }
 
     // Walk back up and free empty intermediate tables (same as unmap_page)
-    for level_idx in (0..3).rev() {
-        let Some((child_table, _)) = tables[level_idx + 1] else {
+    for level in [
+        PageTableLevel::One,
+        PageTableLevel::Two,
+        PageTableLevel::Three,
+    ] {
+        let child_table = unsafe { recursive::table_for_addr(virt_addr, level) };
+
+        let is_empty = child_table
+            .iter()
+            .all(|entry| !entry.flags().contains(PageTableFlags::PRESENT));
+
+        if !is_empty {
             break;
-        };
-        let Some((parent_table, parent_index)) = tables[level_idx] else {
-            break;
-        };
+        }
 
-        let is_empty = unsafe {
-            (*child_table)
-                .iter()
-                .all(|entry| !entry.flags().contains(PageTableFlags::PRESENT))
-        };
+        // Safe to unwrap: levels 1, 2, 3 all have a higher level
+        let parent_level = level.next_higher_level().unwrap();
+        let parent_table = unsafe { recursive::table_for_addr_mut(virt_addr, parent_level) };
+        let parent_index = virt_addr.page_table_index(parent_level);
 
-        if is_empty {
-            let child_frame_addr = unsafe { (&*parent_table)[parent_index].addr() };
-            let child_frame = PhysFrame::from_start_address(child_frame_addr).unwrap();
+        let child_frame_addr = parent_table[parent_index].addr();
+        let child_frame = PhysFrame::from_start_address(child_frame_addr).unwrap();
 
-            without_write_protection(|| {
-                unsafe { &mut (&mut *parent_table)[parent_index] }.set_unused();
-            });
+        without_write_protection(|| {
+            parent_table[parent_index].set_unused();
+        });
 
-            unsafe {
-                deallocate_frame_raw(child_frame);
-            }
-        } else {
-            break;
+        unsafe {
+            deallocate_frame_raw(child_frame);
         }
     }
 }

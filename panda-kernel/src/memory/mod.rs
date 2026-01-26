@@ -18,26 +18,22 @@ pub mod heap_allocator;
 mod mapping;
 mod mmio;
 mod paging;
-mod phys;
+pub mod recursive;
 
-pub use address::{
-    get_phys_map_base, inspect_virtual_address, physical_address_to_virtual, set_phys_map_base,
-    virtual_address_to_physical,
-};
+pub use address::{inspect_virtual_address, virtual_address_to_physical};
 pub use address_space::{
-    KERNEL_HEAP_BASE, KERNEL_IMAGE_BASE, MMIO_REGION_BASE, PHYS_WINDOW_BASE,
-    get_kernel_image_phys_base, identity_to_higher_half, jump_to_higher_half,
-    relocate_kernel_to_higher_half, remove_identity_mapping,
+    KERNEL_HEAP_BASE, KERNEL_IMAGE_BASE, MMIO_REGION_BASE, get_kernel_image_phys_base,
+    identity_to_higher_half, jump_to_higher_half, relocate_kernel_to_higher_half,
+    remove_identity_mapping,
 };
 pub use frame::Frame;
 pub use mapping::{Mapping, MappingBacking};
-pub use mmio::MmioMapping;
+pub use mmio::PhysicalMapping;
 pub use paging::{
     allocate_and_map, create_user_page_table, current_page_table_phys, free_region, map_external,
     switch_page_table, try_handle_heap_page_fault, try_handle_stack_page_fault, unmap_page,
     unmap_region, update_permissions, without_write_protection,
 };
-pub use phys::{PhysicalMapping, PhysicalSlice};
 
 /// Mapping options for memory regions.
 #[derive(Clone, Copy)]
@@ -46,6 +42,9 @@ pub struct MemoryMappingOptions {
     pub executable: bool,
     pub writable: bool,
 }
+
+/// Size of memory reserved for early page table allocations before heap is ready.
+const EARLY_RESERVE: usize = 2 * 1024 * 1024;
 
 /// Initialize memory subsystem from UEFI info.
 ///
@@ -58,21 +57,23 @@ pub unsafe fn init_from_uefi(uefi_info: &crate::uefi::UefiInfo) {
             efer.insert(x86_64::registers::control::EferFlags::NO_EXECUTE_ENABLE)
         });
 
+        // Set up recursive page tables FIRST, before anything else.
+        // This is needed because map_heap_region and other functions use
+        // current_page_table() which relies on recursive page table mapping.
+        address_space::init(&uefi_info.memory_map);
+
         // Store heap physical base for address translation
         address::set_heap_phys_base(heap_phys_base as u64);
 
         // Map heap to KERNEL_HEAP_BASE before initializing the allocator.
         // This way the heap uses higher-half addresses from the start.
-        // Reserve 2MB at the end for early page table allocations.
-        const EARLY_RESERVE: usize = 2 * 1024 * 1024;
+        // Reserve memory at the end for early page table allocations.
         address_space::map_heap_region(heap_phys_base as u64, heap_size as u64);
+
         global_alloc::init(
             address_space::KERNEL_HEAP_BASE as usize,
             heap_size - EARLY_RESERVE,
         );
-
-        // Create the physical memory window in higher-half address space
-        address_space::init(&uefi_info.memory_map);
 
         // Relocate kernel to higher-half (Phase 4)
         address_space::relocate_kernel_to_higher_half(&uefi_info.kernel_image);

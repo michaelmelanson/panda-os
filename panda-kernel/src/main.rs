@@ -14,6 +14,7 @@ use panda_kernel::{
     syscall::gdt::SYSCALL_STACK,
     uefi, vfs,
 };
+use spinning_top::Spinlock;
 
 /// ACPI2 RSDP address, stored before higher-half jump for use after.
 static ACPI2_RSDP: AtomicU64 = AtomicU64::new(0);
@@ -21,6 +22,9 @@ static ACPI2_RSDP: AtomicU64 = AtomicU64::new(0);
 /// Initrd data pointer, stored before higher-half jump.
 static INITRD_DATA: AtomicU64 = AtomicU64::new(0);
 static INITRD_LEN: AtomicU64 = AtomicU64::new(0);
+
+/// Initrd physical mapping (persists for kernel lifetime).
+static INITRD_MAPPING: Spinlock<Option<memory::PhysicalMapping>> = Spinlock::new(None);
 
 #[entry]
 fn main() -> Status {
@@ -55,17 +59,25 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
     let acpi2_rsdp = x86_64::PhysAddr::new(ACPI2_RSDP.load(Ordering::SeqCst));
     panda_kernel::init_after_higher_half_jump(acpi2_rsdp);
 
-    // Reconstruct initrd pointer - translate from identity-mapped to physical window
+    // Reconstruct initrd pointer - map via PhysicalMapping
     // The identity-mapped address IS the physical address, so we can use it directly
     let initrd_phys = INITRD_DATA.load(Ordering::SeqCst);
     let initrd_len = INITRD_LEN.load(Ordering::SeqCst) as usize;
-    let initrd_virt = memory::physical_address_to_virtual(x86_64::PhysAddr::new(initrd_phys));
+    let initrd_mapping =
+        memory::PhysicalMapping::new(x86_64::PhysAddr::new(initrd_phys), initrd_len);
+    let initrd_virt = initrd_mapping.virt_addr();
+    // Store the mapping - initrd persists for kernel lifetime
+    *INITRD_MAPPING.lock() = Some(initrd_mapping);
     let initrd_data: *const [u8] =
         core::ptr::slice_from_raw_parts(initrd_virt.as_ptr(), initrd_len);
 
     // Remove identity mapping now that we're running in higher-half
-    // and all pointers have been translated to use the physical window
+    // and all pointers have been translated
     unsafe { memory::remove_identity_mapping() };
+
+    // Note: Early reserve memory (2MB) could be released back to heap here,
+    // but linked_list_allocator's extend() has strict requirements about
+    // contiguity that make it fragile. The 2MB is a small price for stability.
 
     initrd::init(initrd_data);
 

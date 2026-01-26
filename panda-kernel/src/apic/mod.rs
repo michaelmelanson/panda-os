@@ -15,7 +15,7 @@ use log::debug;
 use spinning_top::Spinlock;
 use x86_64::{PhysAddr, VirtAddr};
 
-use crate::memory::physical_address_to_virtual;
+use crate::memory::PhysicalMapping;
 
 /// Local APIC register offsets
 #[allow(dead_code)]
@@ -65,33 +65,34 @@ const IA32_APIC_BASE_MSR: u32 = 0x1B;
 
 /// Local APIC driver
 pub struct LocalApic {
-    base_virt: VirtAddr,
+    /// MMIO mapping for APIC registers (kept alive for kernel lifetime).
+    mapping: PhysicalMapping,
 }
 
 impl LocalApic {
     /// Create a new Local APIC instance at the default base address.
     pub fn new() -> Self {
         let base_phys = PhysAddr::new(DEFAULT_APIC_BASE);
-        let base_virt = physical_address_to_virtual(base_phys);
-        Self { base_virt }
+        // Map 4KB for APIC registers
+        let mapping = PhysicalMapping::new(base_phys, 4096);
+        Self { mapping }
+    }
+
+    /// Get the base virtual address of the APIC registers.
+    fn base_virt(&self) -> VirtAddr {
+        self.mapping.virt_addr()
     }
 
     /// Read a 32-bit register from the Local APIC.
     #[inline]
     pub fn read(&self, offset: u32) -> u32 {
-        unsafe {
-            let ptr = (self.base_virt.as_u64() + offset as u64) as *const u32;
-            core::ptr::read_volatile(ptr)
-        }
+        self.mapping.read(offset as usize)
     }
 
     /// Write a 32-bit value to a Local APIC register.
     #[inline]
     pub fn write(&self, offset: u32, value: u32) {
-        unsafe {
-            let ptr = (self.base_virt.as_u64() + offset as u64) as *mut u32;
-            core::ptr::write_volatile(ptr, value);
-        }
+        self.mapping.write(offset as usize, value)
     }
 
     /// Get the Local APIC ID.
@@ -167,7 +168,7 @@ pub fn init() {
     apic.enable(0xFF);
 
     // Store the base address for lock-free EOI
-    APIC_BASE_VIRT.store(apic.base_virt.as_u64(), Ordering::Release);
+    APIC_BASE_VIRT.store(apic.base_virt().as_u64(), Ordering::Release);
 
     *LOCAL_APIC.lock() = Some(apic);
 

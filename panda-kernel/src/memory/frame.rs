@@ -53,6 +53,14 @@ impl Frame {
         self.inner.frame.start_address()
     }
 
+    /// Get the virtual address where the frame is mapped in kernel space.
+    ///
+    /// This returns the heap address where the frame was allocated, which can be
+    /// used for direct CPU access without going through the physical memory window.
+    pub fn virtual_address(&self) -> VirtAddr {
+        self.inner.virt_addr
+    }
+
     /// Get the size of the frame in bytes.
     pub fn size(&self) -> u64 {
         self.inner.layout.size() as u64

@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::VirtAddr;
 
-use super::{Frame, free_region, physical_address_to_virtual, unmap_region};
+use super::{Frame, free_region, unmap_region};
 
 /// What backs the mapped memory region.
 pub enum MappingBacking {
@@ -105,11 +105,14 @@ impl Mapping {
         }
     }
 
-    /// Write data to the mapping at a given offset via the physical window.
+    /// Write data to the mapping at a given offset.
     ///
     /// This allows the kernel to write to userspace mappings without needing
     /// direct access to userspace virtual addresses. Only works for mappings
     /// backed by frames (not MMIO or demand-paged).
+    ///
+    /// Uses the frame's heap virtual address directly, avoiding the physical
+    /// memory window which could alias with other mappings.
     ///
     /// # Safety
     /// The caller must ensure the offset and data length don't exceed the mapping size.
@@ -127,8 +130,9 @@ impl Mapping {
             let bytes_in_frame = (4096 - offset_in_frame).min(remaining.len());
 
             let frame = &frames[frame_idx];
-            let phys_virt = physical_address_to_virtual(frame.start_address());
-            let dst = unsafe { phys_virt.as_mut_ptr::<u8>().add(offset_in_frame) };
+            // Use the frame's heap address directly instead of physical window
+            let frame_virt = frame.virtual_address();
+            let dst = unsafe { frame_virt.as_mut_ptr::<u8>().add(offset_in_frame) };
 
             unsafe {
                 core::ptr::copy_nonoverlapping(remaining.as_ptr(), dst, bytes_in_frame);

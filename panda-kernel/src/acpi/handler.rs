@@ -1,8 +1,14 @@
 use core::ptr::NonNull;
 
+use alloc::collections::BTreeMap;
+use spinning_top::Spinlock;
 use x86_64::PhysAddr;
 
-use crate::memory;
+use crate::memory::PhysicalMapping;
+
+/// Tracks ACPI physical mappings by their virtual address.
+/// When unmap_physical_region is called, we look up and drop the mapping.
+static ACPI_MAPPINGS: Spinlock<BTreeMap<usize, PhysicalMapping>> = Spinlock::new(BTreeMap::new());
 
 #[derive(Clone, Copy)]
 pub struct AcpiHandler;
@@ -15,25 +21,27 @@ impl ::acpi::Handler for AcpiHandler {
     ) -> acpi::PhysicalMapping<Self, T> {
         let physical_start = PhysAddr::new(physical_address as u64);
 
-        let virtual_start = unsafe {
-            let virtual_start = memory::physical_address_to_virtual(physical_start);
-            NonNull::new_unchecked(virtual_start.as_u64() as *mut _)
-        };
+        // Create a PhysicalMapping and store it for later cleanup
+        let mapping = PhysicalMapping::new(physical_start, size);
+        let virt_addr = mapping.virt_addr().as_u64() as usize;
+        let virtual_start = unsafe { NonNull::new_unchecked(virt_addr as *mut _) };
 
-        let region_length = size;
-        let mapped_length = size;
+        // Store the mapping so it can be dropped in unmap_physical_region
+        ACPI_MAPPINGS.lock().insert(virt_addr, mapping);
 
         acpi::PhysicalMapping {
             physical_start: physical_start.as_u64() as usize,
             virtual_start,
-            region_length,
-            mapped_length,
+            region_length: size,
+            mapped_length: size,
             handler: *self,
         }
     }
 
-    fn unmap_physical_region<T>(_region: &acpi::PhysicalMapping<Self, T>) {
-        // nothing needed
+    fn unmap_physical_region<T>(region: &acpi::PhysicalMapping<Self, T>) {
+        // Remove and drop the mapping
+        let virt_addr = region.virtual_start.as_ptr() as usize;
+        ACPI_MAPPINGS.lock().remove(&virt_addr);
     }
 
     fn read_u8(&self, _address: usize) -> u8 {
