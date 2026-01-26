@@ -22,7 +22,8 @@ Working:
 - **Add high-level wrappers around `panda-abi` primitives**: The API for operations in `panda-abi` should have well-designed, idiomatic Rust wrappers around the current low-level operations and system calls.
 
 - **Large files needing refactoring**: Several files have grown large and would benefit from splitting:
-  - `scheduler/mod.rs` (699 lines) - Could extract deadline.rs, async_poll.rs
+  - `memory/paging.rs` (588 lines) - Could extract demand_paging.rs
+  - `pci/device.rs` (531 lines) - Could extract msix.rs, virtio_config.rs
 
 ## Next steps
 
