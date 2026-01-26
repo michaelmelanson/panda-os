@@ -1,13 +1,13 @@
 //! Process scheduler with preemptive multitasking and kernel task scheduling.
 
 mod context_switch;
+mod deadline;
 mod rtc;
 
 use core::cmp::Reverse;
 
 use alloc::collections::{BTreeMap, BinaryHeap};
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use log::{debug, info};
 use spinning_top::RwSpinlock;
 
@@ -51,8 +51,8 @@ pub(crate) struct Scheduler {
     current_process: ProcessId,
     /// Kernel task last-scheduled times (for fair scheduling)
     kernel_task_rtc: BTreeMap<executor::TaskId, RTC>,
-    /// Deadline tracking: maps deadline_ms -> list of tasks to wake
-    deadlines: BTreeMap<u64, Vec<executor::TaskId>>,
+    /// Deadline tracking for kernel tasks
+    deadline_tracker: deadline::DeadlineTracker,
 }
 
 impl Scheduler {
@@ -218,7 +218,7 @@ impl Scheduler {
             current: SchedulableEntity::Process(init_pid),
             current_process: init_pid,
             kernel_task_rtc: Default::default(),
-            deadlines: Default::default(),
+            deadline_tracker: deadline::DeadlineTracker::new(),
         };
         scheduler.add(init_process);
         scheduler
@@ -282,49 +282,23 @@ impl Scheduler {
     /// Register a deadline for a kernel task.
     /// When the deadline arrives, the task will be woken (moved to Runnable state).
     pub fn register_deadline(&mut self, task_id: executor::TaskId, deadline_ms: u64) {
-        self.deadlines
-            .entry(deadline_ms)
-            .or_insert_with(Vec::new)
-            .push(task_id);
+        self.deadline_tracker.register(task_id, deadline_ms);
     }
 
     /// Wake tasks whose deadlines have arrived.
     /// Returns the number of tasks woken.
     pub fn wake_deadline_tasks(&mut self, now_ms: u64) -> usize {
-        let mut tasks_to_wake = Vec::new();
-        let mut expired_deadlines = Vec::new();
-
-        // Collect expired deadlines and tasks (BTreeMap is sorted)
-        for (&deadline, tasks) in &self.deadlines {
-            if deadline <= now_ms {
-                tasks_to_wake.extend(tasks.iter().copied());
-                expired_deadlines.push(deadline);
-            } else {
-                break; // BTreeMap is sorted, no more expired deadlines
-            }
+        let tasks = self.deadline_tracker.collect_expired(now_ms);
+        let count = tasks.len();
+        for task_id in tasks {
+            self.change_kernel_task_state(task_id, ProcessState::Runnable);
         }
-
-        // Wake all collected tasks
-        for task_id in &tasks_to_wake {
-            self.change_kernel_task_state(*task_id, ProcessState::Runnable);
-        }
-
-        // Remove expired deadlines
-        for deadline in expired_deadlines {
-            self.deadlines.remove(&deadline);
-        }
-
-        let woken_count = tasks_to_wake.len();
-        if woken_count > 0 {
-            debug!("Woke {} kernel tasks at deadline {}", woken_count, now_ms);
-        }
-
-        woken_count
+        count
     }
 
     /// Get the next deadline time (for timer calculation).
     pub fn next_deadline(&self) -> Option<u64> {
-        self.deadlines.keys().next().copied()
+        self.deadline_tracker.next_deadline()
     }
 }
 
