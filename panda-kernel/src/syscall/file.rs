@@ -11,7 +11,7 @@ use crate::resource::VfsFile;
 use crate::scheduler;
 use crate::vfs::SeekFrom;
 
-use super::SyscallContext;
+use super::{SyscallContext, VfsFileWrapper};
 
 /// Handle file read operation.
 ///
@@ -106,19 +106,6 @@ fn handle_read_vfs(
 
     ctx.yield_for_async()
 }
-
-/// Wrapper to allow holding an Arc<dyn Resource> as Arc<dyn VfsFile>
-struct VfsFileWrapper(Arc<dyn crate::resource::Resource>);
-
-impl VfsFile for VfsFileWrapper {
-    fn file(&self) -> &spinning_top::Spinlock<Box<dyn crate::vfs::File>> {
-        self.0.as_vfs_file().unwrap().file()
-    }
-}
-
-// Safety: VfsFileWrapper just holds an Arc which is Send+Sync
-unsafe impl Send for VfsFileWrapper {}
-unsafe impl Sync for VfsFileWrapper {}
 
 /// Synchronous read path for non-VFS resources (event sources, etc.).
 ///

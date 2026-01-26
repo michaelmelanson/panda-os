@@ -8,7 +8,7 @@ use crate::resource::{Buffer, SharedBuffer, VfsFile};
 use crate::scheduler;
 use crate::vfs::SeekFrom;
 
-use super::SyscallContext;
+use super::{SyscallContext, VfsFileWrapper};
 
 /// Handle buffer allocation.
 /// Returns handle_id on success, negative on error.
@@ -155,18 +155,6 @@ pub fn handle_free(handle_id: u32) -> isize {
         0
     })
 }
-
-/// Wrapper to allow holding an Arc<dyn Resource> as Arc<dyn VfsFile>
-struct VfsFileWrapper(Arc<dyn crate::resource::Resource>);
-
-impl VfsFile for VfsFileWrapper {
-    fn file(&self) -> &spinning_top::Spinlock<Box<dyn crate::vfs::File>> {
-        self.0.as_vfs_file().unwrap().file()
-    }
-}
-
-unsafe impl Send for VfsFileWrapper {}
-unsafe impl Sync for VfsFileWrapper {}
 
 /// Handle reading from file into buffer.
 /// Returns bytes read on success, negative on error.

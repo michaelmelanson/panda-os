@@ -19,12 +19,29 @@ mod surface;
 use log::{debug, error};
 use x86_64::VirtAddr;
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use crate::{
     process::{SavedState, waker::Waker},
+    resource::VfsFile,
     scheduler,
 };
+
+/// Wrapper to allow holding an Arc<dyn Resource> as Arc<dyn VfsFile>.
+///
+/// Used by syscall handlers to convert Resource handles to VfsFile trait objects.
+pub(crate) struct VfsFileWrapper(pub Arc<dyn crate::resource::Resource>);
+
+impl VfsFile for VfsFileWrapper {
+    fn file(&self) -> &spinning_top::Spinlock<Box<dyn crate::vfs::File>> {
+        self.0.as_vfs_file().unwrap().file()
+    }
+}
+
+// Safety: VfsFileWrapper just holds an Arc which is Send+Sync
+unsafe impl Send for VfsFileWrapper {}
+unsafe impl Sync for VfsFileWrapper {}
 
 /// Callee-saved registers that must be preserved across syscalls.
 /// These are saved by syscall_entry and passed to syscall_handler for use
