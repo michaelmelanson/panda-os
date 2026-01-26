@@ -23,8 +23,6 @@ Working:
 
 - **`Event` structure should be organized around resources and their events**: e.g. `Key(KeyEvent)` -> `Input(InputEvent::Key(KeyEvent))`
 
-- **Framebuffer should recomposite dirty regions from scratch**: Currently it's painting over the existing content, rather than clearing it and repainting from scratch.
-
 ## Next steps
 
 ### 1. Terminal IPC protocol (see plans/TERMINAL_IPC.md)

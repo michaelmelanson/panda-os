@@ -41,7 +41,7 @@ pub fn handle_open(
         Err(_) => return -1,
     };
 
-    info!(
+    debug!(
         "handle_open: uri={}, mailbox={}, event_mask={:#x}",
         uri, mailbox_handle, event_mask
     );
@@ -49,10 +49,10 @@ pub fn handle_open(
     // Create a future for the open operation
     let uri_owned = String::from(uri);
     let future = Box::pin(async move {
-        info!("handle_open future: opening {}", uri_owned);
+        debug!("handle_open future: opening {}", uri_owned);
         match resource::open(&uri_owned).await {
             Some(resource) => {
-                info!("handle_open future: opened {} successfully", uri_owned);
+                debug!("handle_open future: opened {} successfully", uri_owned);
                 let handle_id = scheduler::with_current_process(|proc| {
                     let handle_id = proc.handles_mut().insert(Arc::from(resource));
 

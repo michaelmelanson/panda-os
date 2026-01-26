@@ -442,7 +442,7 @@ pub unsafe fn exec_next_runnable() -> ! {
                             (ip, sp, page_table)
                         };
 
-                        info!(
+                        debug!(
                             "exec_next_runnable: async syscall completed (pid={:?}, result={}, ip={:#x}, sp={:#x})",
                             pid,
                             result,
