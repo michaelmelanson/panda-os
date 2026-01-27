@@ -113,21 +113,6 @@ impl Events {
         self.0 & EVENT_PROCESS_EXITED != 0
     }
 
-    /// Convert to a single Event enum for simple dispatch.
-    ///
-    /// This returns the highest-priority event if multiple are set.
-    /// Priority is defined by [`EVENT_TYPES`].
-    ///
-    /// For handling multiple events, use [`iter()`](Self::iter) instead.
-    pub fn to_event(&self) -> Event {
-        for &(flag, event) in EVENT_TYPES {
-            if self.0 & flag != 0 {
-                return event;
-            }
-        }
-        Event::Unknown(self.0)
-    }
-
     /// Iterate over all set events.
     ///
     /// This yields each event that is set in the flags.

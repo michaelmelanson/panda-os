@@ -703,19 +703,21 @@ libpanda::main! {
     loop {
         let (handle, events) = term.mailbox.recv();
 
-        match events.to_event() {
-            Event::Input(InputEvent::Keyboard) => {
-                input::process_keyboard_events(&mut term, &mut shift_pressed);
+        for event in events {
+            match event {
+                Event::Input(InputEvent::Keyboard) => {
+                    input::process_keyboard_events(&mut term, &mut shift_pressed);
+                }
+                Event::Channel(ChannelEvent::Readable) => {
+                    // Child process sent a message
+                    term.process_child_messages(handle);
+                }
+                Event::Process(ProcessEvent::Exited) => {
+                    term.handle_child_exit(handle);
+                    term.write_str("> ");
+                }
+                _ => {}
             }
-            Event::Channel(ChannelEvent::Readable) => {
-                // Child process sent a message
-                term.process_child_messages(handle);
-            }
-            Event::Process(ProcessEvent::Exited) => {
-                term.handle_child_exit(handle);
-                term.write_str("> ");
-            }
-            _ => {}
         }
     }
 }

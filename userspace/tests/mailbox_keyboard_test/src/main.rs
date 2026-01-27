@@ -99,14 +99,16 @@ libpanda::main! {
     while events_read < 10 {
         let (_handle, events) = mailbox.recv();
 
-        match events.to_event() {
-            Event::Input(InputEvent::Keyboard) => {
-                // Keyboard has events - read them with non-blocking reads
-                process_keyboard_events(keyboard, &mut events_read);
-            }
-            _ => {
-                // Unexpected event type
-                environment::log("Unexpected event type received");
+        for event in events {
+            match event {
+                Event::Input(InputEvent::Keyboard) => {
+                    // Keyboard has events - read them with non-blocking reads
+                    process_keyboard_events(keyboard, &mut events_read);
+                }
+                _ => {
+                    // Unexpected event type
+                    environment::log("Unexpected event type received");
+                }
             }
         }
     }

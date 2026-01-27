@@ -43,28 +43,30 @@ libpanda::main! {
         let (handle, events) = mailbox.recv();
 
         if handle.as_raw() == child_handle.as_raw() {
-            match events.to_event() {
-                Event::Channel(ChannelEvent::Readable) => {
-                    environment::log("Mailbox test: got ChannelReadable event!");
-                    got_readable = true;
+            for event in events {
+                match event {
+                    Event::Channel(ChannelEvent::Readable) => {
+                        environment::log("Mailbox test: got ChannelReadable event!");
+                        got_readable = true;
 
-                    // Read the message
-                    let mut buf = [0u8; 64];
-                    if let Ok(len) = channel.recv(&mut buf) {
-                        if &buf[..len] == b"hello from child" {
-                            environment::log("Mailbox test: message content correct");
-                        } else {
-                            environment::log("FAIL: unexpected message content");
-                            return 1;
+                        // Read the message
+                        let mut buf = [0u8; 64];
+                        if let Ok(len) = channel.recv(&mut buf) {
+                            if &buf[..len] == b"hello from child" {
+                                environment::log("Mailbox test: message content correct");
+                            } else {
+                                environment::log("FAIL: unexpected message content");
+                                return 1;
+                            }
                         }
                     }
-                }
-                Event::Channel(ChannelEvent::Closed) => {
-                    environment::log("Mailbox test: got ChannelClosed event!");
-                    got_closed = true;
-                }
-                _ => {
-                    environment::log("Mailbox test: got unexpected event type");
+                    Event::Channel(ChannelEvent::Closed) => {
+                        environment::log("Mailbox test: got ChannelClosed event!");
+                        got_closed = true;
+                    }
+                    _ => {
+                        environment::log("Mailbox test: got unexpected event type");
+                    }
                 }
             }
         } else {
