@@ -13,13 +13,11 @@ Working:
 - Virtio block device driver with async I/O (interrupt-driven, non-blocking)
 - Process handles: spawn returns handle, OP_PROCESS_WAIT blocks until child exits
 - Message-passing IPC: channels (bidirectional, 1KB messages, 16 depth) and mailboxes (event aggregation)
-- Userspace: libpanda, init, terminal (with command execution), hello/ls/cat utilities, 25 test suites
+- Userspace: libpanda (two-layer architecture: sys:: low-level + high-level RAII wrappers), init, terminal, hello/ls/cat utilities, 25 test suites
 - Unified device paths with class-based addressing (`keyboard:/pci/input/0`, `block:/pci/storage/0`)
 - Cross-scheme device discovery via `*:` prefix (`*:/pci/storage/0` lists supporting schemes)
   
 ## Bugs / technical debt
-
-- **Add high-level wrappers around `panda-abi` primitives**: The API for operations in `panda-abi` should have well-designed, idiomatic Rust wrappers around the current low-level operations and system calls.
 
 - **Better userspace heap allocator**: The current allocator in `libpanda/src/heap.rs` is a simple bump allocator that grows the heap via `brk()` but never reuses freed memory. Replace with a proper allocator (e.g., linked-list, buddy, or dlmalloc-style) that tracks free blocks and reuses them.
 
