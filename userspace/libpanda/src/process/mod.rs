@@ -1,7 +1,23 @@
 //! Process operations.
 //!
-//! This module provides process control operations using the low-level `sys::process` functions.
-//! For RAII child process management, see `crate::process::Child` (coming soon).
+//! This module provides both low-level process control operations and
+//! high-level RAII wrappers.
+//!
+//! ## Low-level functions
+//!
+//! - [`yield_now()`] - Yield the CPU to other processes
+//! - [`exit()`] - Exit the current process
+//! - [`getpid()`] - Get the current process ID
+//! - [`wait()`] - Wait for a child process to exit
+//! - [`signal()`] - Send a signal to a process
+//!
+//! ## High-level types
+//!
+//! - [`Child`] - RAII wrapper for spawned child processes
+
+mod child;
+
+pub use child::{Child, ChildBuilder, ExitStatus};
 
 use crate::Handle;
 use crate::sys;

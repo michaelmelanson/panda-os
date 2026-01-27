@@ -1,0 +1,218 @@
+//! Child process management.
+
+use alloc::vec::Vec;
+
+use crate::error::{Error, Result};
+use crate::handle::Handle;
+use crate::ipc::Channel;
+use crate::sys;
+use panda_abi::MAX_MESSAGE_SIZE;
+
+/// A handle to a spawned child process.
+///
+/// `Child` provides RAII management of child processes. When dropped, it waits
+/// for the child to exit (unless `into_handle()` is called first).
+///
+/// # Example
+///
+/// ```
+/// // Spawn a child process
+/// let mut child = Child::spawn("file:/initrd/hello")?;
+///
+/// // Communicate via channel
+/// child.channel().send(b"message")?;
+///
+/// // Wait for exit
+/// let status = child.wait()?;
+/// assert!(status.success());
+/// ```
+pub struct Child {
+    handle: Handle,
+    /// Whether we've already waited for the child.
+    waited: bool,
+}
+
+impl Child {
+    /// Spawn a new child process from an executable path.
+    ///
+    /// This is a convenience wrapper around `ChildBuilder::new(path).spawn()`.
+    pub fn spawn(path: &str) -> Result<Self> {
+        ChildBuilder::new(path).spawn()
+    }
+
+    /// Spawn a new child process with arguments.
+    ///
+    /// This is a convenience wrapper for common use cases.
+    pub fn spawn_with_args(path: &str, args: &[&str]) -> Result<Self> {
+        ChildBuilder::new(path).args(args).spawn()
+    }
+
+    /// Create a builder for spawning a child process with custom options.
+    pub fn builder(path: &str) -> ChildBuilder<'_> {
+        ChildBuilder::new(path)
+    }
+
+    /// Get the underlying handle.
+    ///
+    /// This can be used for mailbox operations or low-level control.
+    pub fn handle(&self) -> Handle {
+        self.handle
+    }
+
+    /// Get a channel for communicating with the child.
+    ///
+    /// The returned channel borrows the handle and won't close it on drop.
+    pub fn channel(&self) -> Channel {
+        Channel::from_handle_borrowed(self.handle)
+    }
+
+    /// Wait for the child process to exit.
+    ///
+    /// This is a blocking call that waits until the child terminates.
+    /// Returns the exit status of the child.
+    pub fn wait(&mut self) -> Result<ExitStatus> {
+        if self.waited {
+            return Err(Error::InvalidArgument);
+        }
+
+        let code = sys::process::wait(self.handle);
+        self.waited = true;
+        Ok(ExitStatus(code))
+    }
+
+    /// Send a signal to the child process.
+    pub fn signal(&mut self, sig: Signal) -> Result<()> {
+        let result = sys::process::signal(self.handle, sig as u32);
+        if result < 0 {
+            Err(Error::from_code(result))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Kill the child process (send SIGKILL equivalent).
+    pub fn kill(&mut self) -> Result<()> {
+        self.signal(Signal::Kill)
+    }
+
+    /// Consume the Child and return the underlying handle without waiting.
+    ///
+    /// After calling this, the child process will continue running
+    /// independently. You are responsible for managing the handle.
+    pub fn into_handle(self) -> Handle {
+        let handle = self.handle;
+        core::mem::forget(self);
+        handle
+    }
+}
+
+impl Drop for Child {
+    fn drop(&mut self) {
+        if !self.waited {
+            // Wait for child to exit to avoid zombies
+            let _ = sys::process::wait(self.handle);
+        }
+    }
+}
+
+/// Builder for spawning child processes with custom options.
+///
+/// # Example
+///
+/// ```
+/// let child = Child::builder("file:/initrd/worker")
+///     .args(&["worker", "--verbose"])
+///     .mailbox(mailbox.handle(), EVENT_CHANNEL_READABLE)
+///     .spawn()?;
+/// ```
+pub struct ChildBuilder<'a> {
+    path: &'a str,
+    args: Vec<&'a str>,
+    mailbox: u32,
+    event_mask: u32,
+}
+
+impl<'a> ChildBuilder<'a> {
+    /// Create a new builder for spawning a process at the given path.
+    pub fn new(path: &'a str) -> Self {
+        Self {
+            path,
+            args: Vec::new(),
+            mailbox: 0,
+            event_mask: 0,
+        }
+    }
+
+    /// Set the command-line arguments.
+    ///
+    /// The first argument is conventionally the program name.
+    pub fn args(mut self, args: &[&'a str]) -> Self {
+        self.args = args.iter().copied().collect();
+        self
+    }
+
+    /// Add a single argument.
+    pub fn arg(mut self, arg: &'a str) -> Self {
+        self.args.push(arg);
+        self
+    }
+
+    /// Attach the child's channel to a mailbox for event notifications.
+    ///
+    /// # Arguments
+    /// * `mailbox` - Handle to the mailbox (use `mailbox.handle().as_raw()`)
+    /// * `event_mask` - Events to listen for (e.g., `EVENT_CHANNEL_READABLE`)
+    pub fn mailbox(mut self, mailbox: u32, event_mask: u32) -> Self {
+        self.mailbox = mailbox;
+        self.event_mask = event_mask;
+        self
+    }
+
+    /// Spawn the child process.
+    pub fn spawn(self) -> Result<Child> {
+        let result = sys::env::spawn(self.path, self.mailbox, self.event_mask);
+        if result < 0 {
+            return Err(Error::from_code(result));
+        }
+
+        let handle = Handle::from(result as u32);
+
+        // Send startup message with arguments
+        let mut buf = [0u8; MAX_MESSAGE_SIZE];
+        if let Ok(len) = crate::startup::encode(&self.args, &mut buf) {
+            // Best effort - ignore send errors
+            let _ = sys::channel::send_msg(handle, &buf[..len]);
+        }
+
+        Ok(Child {
+            handle,
+            waited: false,
+        })
+    }
+}
+
+/// The exit status of a child process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitStatus(i32);
+
+impl ExitStatus {
+    /// Returns `true` if the process exited successfully (exit code 0).
+    pub fn success(&self) -> bool {
+        self.0 == 0
+    }
+
+    /// Returns the exit code of the process.
+    pub fn code(&self) -> i32 {
+        self.0
+    }
+}
+
+/// Signals that can be sent to a process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Signal {
+    /// Terminate the process gracefully.
+    Term = 0,
+    /// Kill the process immediately.
+    Kill = 1,
+}
