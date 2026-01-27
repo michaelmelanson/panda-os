@@ -70,6 +70,8 @@ impl VirtioToken {
 /// This is wrapped by `VirtioBlockDevice` which provides the public async API.
 pub(crate) struct VirtioBlockDeviceInner {
     pub(crate) device: VirtIOBlk<VirtioHal, MsixPciTransport>,
+    /// Device address (stored for future device management APIs)
+    #[allow(dead_code)]
     address: DeviceAddress,
     capacity_sectors: u64,
     sector_size: u32,
@@ -87,26 +89,31 @@ pub(crate) struct VirtioBlockDeviceInner {
 
 impl VirtioBlockDeviceInner {
     /// Get the device address.
+    #[allow(dead_code)]
     pub fn address(&self) -> &DeviceAddress {
         &self.address
     }
 
     /// Get the sector size in bytes.
+    #[allow(dead_code)]
     pub fn sector_size(&self) -> u32 {
         self.sector_size
     }
 
     /// Get the total capacity in sectors.
+    #[allow(dead_code)]
     pub fn capacity_sectors(&self) -> u64 {
         self.capacity_sectors
     }
 
     /// Disable device interrupts (for sync I/O to avoid deadlock).
+    #[allow(dead_code)]
     pub fn disable_interrupts(&mut self) {
         self.device.disable_interrupts();
     }
 
     /// Enable device interrupts.
+    #[allow(dead_code)]
     pub fn enable_interrupts(&mut self) {
         self.device.enable_interrupts();
     }

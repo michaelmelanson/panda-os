@@ -17,14 +17,16 @@ pub enum BlockRequestOperation {
 }
 
 /// A pending request that has been submitted to the virtio device.
+///
+/// Some fields are stored for use when the async I/O completes but aren't
+/// directly read by code (they're passed to virtio's complete_* functions).
+#[allow(dead_code)]
 pub(super) struct PendingBlockRequest {
     /// Virtio descriptor token (stored for reference, used as map key).
-    #[allow(dead_code)]
     pub token: VirtioToken,
     /// Operation type.
     pub operation: BlockRequestOperation,
     /// Starting sector (stored for debugging/future use).
-    #[allow(dead_code)]
     pub sector: u64,
     /// Process ID of the requesting process.
     pub process_id: ProcessId,

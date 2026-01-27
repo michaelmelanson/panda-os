@@ -84,8 +84,8 @@ impl RedirectionEntry {
 struct IoApic {
     /// MMIO mapping for IOAPIC registers (kept alive for kernel lifetime).
     mapping: PhysicalMapping,
-    /// Global System Interrupt base for this IOAPIC
-    gsi_base: u32,
+    /// Global System Interrupt base for this IOAPIC (for future multi-IOAPIC support)
+    _gsi_base: u32,
     /// Number of redirection entries
     max_entries: u8,
 }
@@ -98,7 +98,7 @@ impl IoApic {
 
         let mut ioapic = Self {
             mapping,
-            gsi_base,
+            _gsi_base: gsi_base,
             max_entries: 0,
         };
 

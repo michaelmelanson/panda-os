@@ -73,7 +73,7 @@ impl<Op: IoOperation> Unpin for VirtioBlockFuture<Op> {}
 
 impl VirtioBlockFuture<ReadOp> {
     /// Create a new async read operation.
-    pub fn new_read(
+    pub(crate) fn new_read(
         device: Arc<Spinlock<VirtioBlockDeviceInner>>,
         sector: u64,
         buf: &mut [u8],
@@ -96,7 +96,7 @@ impl VirtioBlockFuture<WriteOp> {
     /// Create a new async write operation.
     ///
     /// The data is copied to a DMA buffer immediately.
-    pub fn new_write(
+    pub(crate) fn new_write(
         device: Arc<Spinlock<VirtioBlockDeviceInner>>,
         sector: u64,
         buf: &[u8],
