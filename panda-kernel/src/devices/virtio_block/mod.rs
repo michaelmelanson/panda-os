@@ -34,7 +34,8 @@ use crate::apic;
 use crate::device_address::DeviceAddress;
 use crate::interrupts::{self, IrqHandlerFunc};
 use crate::memory::dma::DmaBuffer;
-use crate::pci::device::{PciDevice, VirtioCommonConfig};
+use crate::pci::VirtioCommonConfig;
+use crate::pci::device::PciDevice;
 use crate::resource::{BlockDevice, BlockError};
 
 use super::virtio_hal::VirtioHal;

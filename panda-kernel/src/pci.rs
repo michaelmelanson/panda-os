@@ -1,4 +1,9 @@
 pub mod device;
+mod msix;
+mod virtio_config;
+
+pub use msix::MsixCapability;
+pub use virtio_config::{VIRTIO_MSI_NO_VECTOR, VirtioCommonConfig};
 
 use ::acpi::sdt::mcfg::Mcfg;
 use alloc::collections::BTreeMap;

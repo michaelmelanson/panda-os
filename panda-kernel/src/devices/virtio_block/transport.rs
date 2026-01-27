@@ -11,7 +11,7 @@ use virtio_drivers::{
     transport::{DeviceStatus, DeviceType, Transport},
 };
 
-use crate::pci::device::VirtioCommonConfig;
+use crate::pci::VirtioCommonConfig;
 
 /// A wrapper around PciTransport that configures MSI-X vectors before enabling queues.
 pub struct MsixPciTransport {
