@@ -2,8 +2,8 @@
 #![no_main]
 
 use libpanda::{
-    channel, environment,
-    mailbox::{ChannelEvent, Event, Mailbox},
+    environment,
+    ipc::{Channel, ChannelEvent, Event, Mailbox},
     process,
 };
 use panda_abi::{EVENT_CHANNEL_CLOSED, EVENT_CHANNEL_READABLE};
@@ -26,6 +26,9 @@ libpanda::main! {
         return 1;
     };
 
+    // Wrap the child handle in a Channel for receiving messages
+    let channel = Channel::from_handle_borrowed(child_handle.into());
+
     environment::log("Mailbox test: child spawned, waiting for events...");
 
     // The child will send us a message, then exit (which closes the channel)
@@ -47,7 +50,7 @@ libpanda::main! {
 
                     // Read the message
                     let mut buf = [0u8; 64];
-                    if let Ok(len) = channel::recv(child_handle, &mut buf) {
+                    if let Ok(len) = channel.recv(&mut buf) {
                         if &buf[..len] == b"hello from child" {
                             environment::log("Mailbox test: message content correct");
                         } else {

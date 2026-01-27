@@ -45,6 +45,20 @@ impl Handle {
     /// Well-known handle to the channel connected to the parent process.
     /// Only valid if this process was spawned by another process.
     pub const PARENT: Handle = Handle(panda_abi::HANDLE_PARENT);
+
+    /// Get the parent channel handle, if this process has a parent.
+    ///
+    /// Returns `Some(Handle::PARENT)` for processes spawned by another process,
+    /// or `None` for the init process.
+    ///
+    /// Note: Currently this always returns `Some` - the caller should handle
+    /// communication failures gracefully if there is no actual parent.
+    #[inline]
+    pub fn parent() -> Option<Self> {
+        // For now, we assume HANDLE_PARENT is always valid
+        // The init process should handle communication errors gracefully
+        Some(Self::PARENT)
+    }
 }
 
 impl From<Handle> for u32 {

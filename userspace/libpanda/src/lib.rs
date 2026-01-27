@@ -28,6 +28,7 @@ pub mod sys;
 pub mod error;
 pub mod graphics;
 pub mod io;
+pub mod ipc;
 
 // High-level modules (these use sys:: internally)
 pub mod buffer;

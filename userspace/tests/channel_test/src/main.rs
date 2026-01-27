@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use libpanda::{channel, environment, process, Handle};
+use libpanda::{environment, ipc::Channel, process};
 
 libpanda::main! {
     environment::log("Channel test: starting");
@@ -12,11 +12,13 @@ libpanda::main! {
         return 1;
     };
 
+    // Wrap the child handle in a Channel (borrowed - we still need the handle for wait)
+    let channel = Channel::from_handle_borrowed(child_handle.into());
+
     environment::log("Channel test: child spawned, sending ping...");
 
     // Send a message to the child
-    let msg = b"ping";
-    if let Err(e) = channel::send(child_handle, msg) {
+    if channel.send(b"ping").is_err() {
         environment::log("FAIL: send failed");
         return 1;
     }
@@ -25,7 +27,7 @@ libpanda::main! {
 
     // Receive response from child
     let mut buf = [0u8; 64];
-    match channel::recv(child_handle, &mut buf) {
+    match channel.recv(&mut buf) {
         Ok(len) => {
             if len == 4 && &buf[..4] == b"pong" {
                 environment::log("Channel test: received pong!");
@@ -34,7 +36,7 @@ libpanda::main! {
                 return 1;
             }
         }
-        Err(e) => {
+        Err(_) => {
             environment::log("FAIL: recv failed");
             return 1;
         }
