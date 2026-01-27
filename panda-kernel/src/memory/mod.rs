@@ -11,6 +11,7 @@ use x86_64::structures::paging::PhysFrame;
 
 mod address;
 mod address_space;
+mod demand_paging;
 pub mod dma;
 mod frame;
 pub mod global_alloc;
@@ -26,13 +27,13 @@ pub use address_space::{
     identity_to_higher_half, jump_to_higher_half, relocate_kernel_to_higher_half,
     remove_identity_mapping,
 };
+pub use demand_paging::{free_region, try_handle_heap_page_fault, try_handle_stack_page_fault};
 pub use frame::Frame;
 pub use mapping::{Mapping, MappingBacking};
 pub use mmio::PhysicalMapping;
 pub use paging::{
-    allocate_and_map, create_user_page_table, current_page_table_phys, free_region, map_external,
-    switch_page_table, try_handle_heap_page_fault, try_handle_stack_page_fault, unmap_page,
-    unmap_region, update_permissions, without_write_protection,
+    allocate_and_map, create_user_page_table, current_page_table_phys, map_external,
+    switch_page_table, unmap_page, unmap_region, update_permissions, without_write_protection,
 };
 
 /// Mapping options for memory regions.
