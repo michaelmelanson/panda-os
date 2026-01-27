@@ -701,9 +701,9 @@ libpanda::main! {
     let mut shift_pressed = false;
 
     loop {
-        let (handle, event) = term.mailbox.recv();
+        let (handle, events) = term.mailbox.recv();
 
-        match event {
+        match events.to_event() {
             Event::Input(InputEvent::Keyboard) => {
                 input::process_keyboard_events(&mut term, &mut shift_pressed);
             }

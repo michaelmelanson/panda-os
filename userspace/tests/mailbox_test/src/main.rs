@@ -40,10 +40,10 @@ libpanda::main! {
     while iterations < MAX_ITERATIONS && (!got_readable || !got_closed) {
         iterations += 1;
 
-        let (handle, event) = mailbox.recv();
+        let (handle, events) = mailbox.recv();
 
         if handle.as_raw() == child_handle.as_raw() {
-            match event {
+            match events.to_event() {
                 Event::Channel(ChannelEvent::Readable) => {
                     environment::log("Mailbox test: got ChannelReadable event!");
                     got_readable = true;

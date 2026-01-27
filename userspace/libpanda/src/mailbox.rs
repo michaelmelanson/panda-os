@@ -45,26 +45,101 @@ impl Mailbox {
 
     /// Wait for the next event (blocking).
     ///
-    /// Returns `(handle, event)` when an event is available.
+    /// Returns `(handle, events)` when an event is available.
+    /// The `Events` struct may contain multiple event flags.
     #[inline(always)]
-    pub fn recv(&self) -> (Handle, Event) {
+    pub fn recv(&self) -> (Handle, Events) {
         let result = sys::mailbox::wait(self.handle);
-        let (handle_id, events) = sys::mailbox::unpack_result(result);
-        (Handle::from(handle_id), Event::decode(events))
+        let (handle_id, flags) = sys::mailbox::unpack_result(result);
+        (Handle::from(handle_id), Events(flags))
     }
 
     /// Poll for an event (non-blocking).
     ///
-    /// Returns `Some((handle, event))` if available, `None` otherwise.
+    /// Returns `Some((handle, events))` if available, `None` otherwise.
     #[inline(always)]
-    pub fn try_recv(&self) -> Option<(Handle, Event)> {
+    pub fn try_recv(&self) -> Option<(Handle, Events)> {
         let result = sys::mailbox::poll(self.handle);
         if result == 0 {
             None
         } else {
-            let (handle_id, events) = sys::mailbox::unpack_result(result);
-            Some((Handle::from(handle_id), Event::decode(events)))
+            let (handle_id, flags) = sys::mailbox::unpack_result(result);
+            Some((Handle::from(handle_id), Events(flags)))
         }
+    }
+}
+
+/// A set of event flags from a mailbox.
+///
+/// Multiple events can be signalled at once, so use the `is_*` methods
+/// to check for specific events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Events(u32);
+
+impl Events {
+    /// Get the raw event flags.
+    #[inline(always)]
+    pub fn raw(&self) -> u32 {
+        self.0
+    }
+
+    /// Check if keyboard input is available.
+    #[inline(always)]
+    pub fn is_keyboard(&self) -> bool {
+        self.0 & EVENT_KEYBOARD_KEY != 0
+    }
+
+    /// Check if a channel message is available to receive.
+    #[inline(always)]
+    pub fn is_channel_readable(&self) -> bool {
+        self.0 & EVENT_CHANNEL_READABLE != 0
+    }
+
+    /// Check if a channel has space to send.
+    #[inline(always)]
+    pub fn is_channel_writable(&self) -> bool {
+        self.0 & EVENT_CHANNEL_WRITABLE != 0
+    }
+
+    /// Check if a channel peer has closed their endpoint.
+    #[inline(always)]
+    pub fn is_channel_closed(&self) -> bool {
+        self.0 & EVENT_CHANNEL_CLOSED != 0
+    }
+
+    /// Check if a child process has exited.
+    #[inline(always)]
+    pub fn is_process_exited(&self) -> bool {
+        self.0 & EVENT_PROCESS_EXITED != 0
+    }
+
+    /// Convert to a single Event enum for simple dispatch.
+    ///
+    /// This returns the highest-priority event if multiple are set.
+    /// Priority order: Closed > Readable > Writable > Exited > Keyboard.
+    ///
+    /// For handling multiple events, use the `is_*` methods instead.
+    pub fn to_event(&self) -> Event {
+        // Check channel events first (most common for IPC)
+        if self.is_channel_closed() {
+            return Event::Channel(ChannelEvent::Closed);
+        }
+        if self.is_channel_readable() {
+            return Event::Channel(ChannelEvent::Readable);
+        }
+        if self.is_channel_writable() {
+            return Event::Channel(ChannelEvent::Writable);
+        }
+        // Check process events
+        if self.is_process_exited() {
+            return Event::Process(ProcessEvent::Exited);
+        }
+        // Check input events
+        if self.is_keyboard() {
+            return Event::Input(InputEvent::Keyboard);
+        }
+        // Fallback for unknown events
+        Event::Unknown(self.0)
     }
 }
 
@@ -95,7 +170,9 @@ pub enum ProcessEvent {
     Exited,
 }
 
-/// Events that can be received from handles, organised by resource type.
+/// A single event type for simple dispatch.
+///
+/// For handling multiple simultaneous events, use [`Events`] directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     /// Input device events (keyboard, mouse).
@@ -104,35 +181,6 @@ pub enum Event {
     Channel(ChannelEvent),
     /// Process events (exited).
     Process(ProcessEvent),
-    /// Unknown or combined event flags.
+    /// Unknown or unhandled event flags.
     Unknown(u32),
-}
-
-impl Event {
-    /// Decode raw event flags into an Event.
-    ///
-    /// Returns the most specific event type. For combined flags,
-    /// the mailbox will return them as separate recv() calls.
-    pub fn decode(flags: u32) -> Self {
-        // Check channel events first (most common for IPC)
-        if flags & EVENT_CHANNEL_CLOSED != 0 {
-            return Event::Channel(ChannelEvent::Closed);
-        }
-        if flags & EVENT_CHANNEL_READABLE != 0 {
-            return Event::Channel(ChannelEvent::Readable);
-        }
-        if flags & EVENT_CHANNEL_WRITABLE != 0 {
-            return Event::Channel(ChannelEvent::Writable);
-        }
-        // Check process events
-        if flags & EVENT_PROCESS_EXITED != 0 {
-            return Event::Process(ProcessEvent::Exited);
-        }
-        // Check input events
-        if flags & EVENT_KEYBOARD_KEY != 0 {
-            return Event::Input(InputEvent::Keyboard);
-        }
-        // Fallback for unknown events
-        Event::Unknown(flags)
-    }
 }

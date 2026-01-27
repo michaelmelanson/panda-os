@@ -10,7 +10,7 @@ mod channel;
 pub use channel::Channel;
 
 // Re-export mailbox types for convenience
-pub use crate::mailbox::{ChannelEvent, Event, InputEvent, Mailbox, ProcessEvent};
+pub use crate::mailbox::{ChannelEvent, Event, Events, InputEvent, Mailbox, ProcessEvent};
 
 /// Maximum size of a single channel message.
 pub use panda_abi::MAX_MESSAGE_SIZE;

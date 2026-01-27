@@ -97,9 +97,9 @@ libpanda::main! {
 
     // Event loop - wait for mailbox notifications, then read from keyboard
     while events_read < 10 {
-        let (_handle, event) = mailbox.recv();
+        let (_handle, events) = mailbox.recv();
 
-        match event {
+        match events.to_event() {
             Event::Input(InputEvent::Keyboard) => {
                 // Keyboard has events - read them with non-blocking reads
                 process_keyboard_events(keyboard, &mut events_read);
