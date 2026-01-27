@@ -116,29 +116,15 @@ impl Events {
     /// Convert to a single Event enum for simple dispatch.
     ///
     /// This returns the highest-priority event if multiple are set.
-    /// Priority order: Closed > Readable > Writable > Exited > Keyboard.
+    /// Priority is defined by [`EVENT_TYPES`].
     ///
     /// For handling multiple events, use [`iter()`](Self::iter) instead.
     pub fn to_event(&self) -> Event {
-        // Check channel events first (most common for IPC)
-        if self.is_channel_closed() {
-            return Event::Channel(ChannelEvent::Closed);
+        for &(flag, event) in EVENT_TYPES {
+            if self.0 & flag != 0 {
+                return event;
+            }
         }
-        if self.is_channel_readable() {
-            return Event::Channel(ChannelEvent::Readable);
-        }
-        if self.is_channel_writable() {
-            return Event::Channel(ChannelEvent::Writable);
-        }
-        // Check process events
-        if self.is_process_exited() {
-            return Event::Process(ProcessEvent::Exited);
-        }
-        // Check input events
-        if self.is_keyboard() {
-            return Event::Input(InputEvent::Keyboard);
-        }
-        // Fallback for unknown events
         Event::Unknown(self.0)
     }
 
@@ -159,7 +145,10 @@ impl Events {
     /// }
     /// ```
     pub fn iter(&self) -> EventIter {
-        EventIter { flags: self.0 }
+        EventIter {
+            flags: self.0,
+            index: 0,
+        }
     }
 }
 
@@ -172,36 +161,43 @@ impl IntoIterator for Events {
     }
 }
 
+/// Event types with their corresponding flag bits, in priority order.
+///
+/// This defines the iteration order for [`EventIter`] and the priority
+/// for [`Events::to_event()`].
+const EVENT_TYPES: &[(u32, Event)] = &[
+    (EVENT_CHANNEL_CLOSED, Event::Channel(ChannelEvent::Closed)),
+    (
+        EVENT_CHANNEL_READABLE,
+        Event::Channel(ChannelEvent::Readable),
+    ),
+    (
+        EVENT_CHANNEL_WRITABLE,
+        Event::Channel(ChannelEvent::Writable),
+    ),
+    (EVENT_PROCESS_EXITED, Event::Process(ProcessEvent::Exited)),
+    (EVENT_KEYBOARD_KEY, Event::Input(InputEvent::Keyboard)),
+];
+
 /// Iterator over events in an [`Events`] set.
 #[derive(Debug, Clone)]
 pub struct EventIter {
     flags: u32,
+    index: usize,
 }
 
 impl Iterator for EventIter {
     type Item = Event;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Check each event type and clear the flag when yielded
-        if self.flags & EVENT_CHANNEL_CLOSED != 0 {
-            self.flags &= !EVENT_CHANNEL_CLOSED;
-            return Some(Event::Channel(ChannelEvent::Closed));
-        }
-        if self.flags & EVENT_CHANNEL_READABLE != 0 {
-            self.flags &= !EVENT_CHANNEL_READABLE;
-            return Some(Event::Channel(ChannelEvent::Readable));
-        }
-        if self.flags & EVENT_CHANNEL_WRITABLE != 0 {
-            self.flags &= !EVENT_CHANNEL_WRITABLE;
-            return Some(Event::Channel(ChannelEvent::Writable));
-        }
-        if self.flags & EVENT_PROCESS_EXITED != 0 {
-            self.flags &= !EVENT_PROCESS_EXITED;
-            return Some(Event::Process(ProcessEvent::Exited));
-        }
-        if self.flags & EVENT_KEYBOARD_KEY != 0 {
-            self.flags &= !EVENT_KEYBOARD_KEY;
-            return Some(Event::Input(InputEvent::Keyboard));
+        // Check each known event type in priority order
+        while self.index < EVENT_TYPES.len() {
+            let (flag, event) = EVENT_TYPES[self.index];
+            self.index += 1;
+            if self.flags & flag != 0 {
+                self.flags &= !flag;
+                return Some(event);
+            }
         }
         // Any remaining unknown flags
         if self.flags != 0 {
