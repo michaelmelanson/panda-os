@@ -118,7 +118,7 @@ impl Events {
     /// This returns the highest-priority event if multiple are set.
     /// Priority order: Closed > Readable > Writable > Exited > Keyboard.
     ///
-    /// For handling multiple events, use the `is_*` methods instead.
+    /// For handling multiple events, use [`iter()`](Self::iter) instead.
     pub fn to_event(&self) -> Event {
         // Check channel events first (most common for IPC)
         if self.is_channel_closed() {
@@ -140,6 +140,76 @@ impl Events {
         }
         // Fallback for unknown events
         Event::Unknown(self.0)
+    }
+
+    /// Iterate over all set events.
+    ///
+    /// This yields each event that is set in the flags.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let (handle, events) = mailbox.recv();
+    /// for event in events.iter() {
+    ///     match event {
+    ///         Event::Channel(ChannelEvent::Readable) => { /* ... */ }
+    ///         Event::Process(ProcessEvent::Exited) => { /* ... */ }
+    ///         _ => {}
+    ///     }
+    /// }
+    /// ```
+    pub fn iter(&self) -> EventIter {
+        EventIter { flags: self.0 }
+    }
+}
+
+impl IntoIterator for Events {
+    type Item = Event;
+    type IntoIter = EventIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// Iterator over events in an [`Events`] set.
+#[derive(Debug, Clone)]
+pub struct EventIter {
+    flags: u32,
+}
+
+impl Iterator for EventIter {
+    type Item = Event;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Check each event type and clear the flag when yielded
+        if self.flags & EVENT_CHANNEL_CLOSED != 0 {
+            self.flags &= !EVENT_CHANNEL_CLOSED;
+            return Some(Event::Channel(ChannelEvent::Closed));
+        }
+        if self.flags & EVENT_CHANNEL_READABLE != 0 {
+            self.flags &= !EVENT_CHANNEL_READABLE;
+            return Some(Event::Channel(ChannelEvent::Readable));
+        }
+        if self.flags & EVENT_CHANNEL_WRITABLE != 0 {
+            self.flags &= !EVENT_CHANNEL_WRITABLE;
+            return Some(Event::Channel(ChannelEvent::Writable));
+        }
+        if self.flags & EVENT_PROCESS_EXITED != 0 {
+            self.flags &= !EVENT_PROCESS_EXITED;
+            return Some(Event::Process(ProcessEvent::Exited));
+        }
+        if self.flags & EVENT_KEYBOARD_KEY != 0 {
+            self.flags &= !EVENT_KEYBOARD_KEY;
+            return Some(Event::Input(InputEvent::Keyboard));
+        }
+        // Any remaining unknown flags
+        if self.flags != 0 {
+            let unknown = self.flags;
+            self.flags = 0;
+            return Some(Event::Unknown(unknown));
+        }
+        None
     }
 }
 
