@@ -24,6 +24,9 @@ extern crate alloc;
 // Low-level syscall wrappers
 pub mod sys;
 
+// Core types
+pub mod error;
+
 // High-level modules (these use sys:: internally)
 pub mod buffer;
 pub mod channel;
