@@ -11,10 +11,10 @@
 #![no_main]
 
 use core::arch::asm;
+use libpanda::Handle;
 use libpanda::environment;
 use libpanda::file;
 use libpanda::process;
-use libpanda::Handle;
 
 /// Test that callee-saved registers are preserved across a simple (non-blocking) syscall.
 fn test_registers_preserved_simple_syscall() {
@@ -291,14 +291,7 @@ fn test_syscall_return_values() {
     environment::log("TEST: syscall_return_values");
 
     // Test that yield returns 0
-    let ret = libpanda::syscall::send(
-        Handle::SELF,
-        panda_abi::OP_PROCESS_YIELD,
-        0,
-        0,
-        0,
-        0,
-    );
+    let ret = libpanda::sys::send(Handle::SELF, panda_abi::OP_PROCESS_YIELD, 0, 0, 0, 0);
     if ret != 0 {
         environment::log("FAIL: yield should return 0");
         process::exit(1);

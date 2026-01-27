@@ -44,21 +44,6 @@ pub mod process;
 pub mod startup;
 pub mod terminal;
 
-// Legacy re-export: syscall module now forwards to sys
-pub mod syscall {
-    //! Legacy syscall module - use `sys` instead.
-    pub use crate::sys::{
-        HANDLE_ENVIRONMENT, HANDLE_SELF, SEEK_CUR, SEEK_END, SEEK_SET, SYSCALL_SEND,
-    };
-    pub use crate::sys::{Handle, send};
-    pub use panda_abi::{
-        FileStat, OP_ENVIRONMENT_LOG, OP_ENVIRONMENT_OPEN, OP_ENVIRONMENT_SPAWN,
-        OP_ENVIRONMENT_TIME, OP_FILE_CLOSE, OP_FILE_READ, OP_FILE_SEEK, OP_FILE_STAT,
-        OP_FILE_WRITE, OP_PROCESS_BRK, OP_PROCESS_EXIT, OP_PROCESS_GET_PID, OP_PROCESS_SIGNAL,
-        OP_PROCESS_WAIT, OP_PROCESS_YIELD,
-    };
-}
-
 // Re-export alloc types for convenience
 pub use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 

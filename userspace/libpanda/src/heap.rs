@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use panda_abi::{HEAP_BASE, HEAP_MAX_SIZE, OP_PROCESS_BRK};
 
 use crate::handle::Handle;
-use crate::syscall::send;
+use crate::sys::send;
 
 /// Simple bump allocator for userspace heap.
 ///

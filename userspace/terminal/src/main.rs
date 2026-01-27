@@ -14,7 +14,7 @@ use libpanda::{
     buffer::Buffer,
     channel, environment,
     mailbox::{ChannelEvent, Event, InputEvent, Mailbox, ProcessEvent},
-    syscall::send,
+    sys::send,
     Handle,
 };
 use panda_abi::{
