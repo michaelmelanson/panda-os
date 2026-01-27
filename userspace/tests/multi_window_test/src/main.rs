@@ -1,156 +1,72 @@
 #![no_std]
 #![no_main]
 
-use libpanda::buffer::Buffer;
 use libpanda::environment;
-use libpanda::syscall;
-use panda_abi::{
-    BlitParams, UpdateParamsIn, OP_SURFACE_BLIT, OP_SURFACE_FLUSH, OP_SURFACE_UPDATE_PARAMS,
-};
+use libpanda::graphics::{Colour, PixelBuffer, Window};
 
 libpanda::main! {
     environment::log("Multi-window test starting");
 
     // Create window 1 - Red window at (50, 50), size 300x200
-    let Ok(window1) = environment::open("surface:/window", 0, 0) else {
-        environment::log("FAIL: Could not open window 1");
-        return 1;
-    };
-
-    let update_params1 = UpdateParamsIn {
-        x: 50,
-        y: 50,
-        width: 300,
-        height: 200,
-        visible: 1,
-    };
-
-    let result = syscall::send(
-        window1.into(),
-        OP_SURFACE_UPDATE_PARAMS,
-        &update_params1 as *const UpdateParamsIn as usize,
-        0,
-        0,
-        0,
-    );
-
-    if result < 0 {
-        environment::log("FAIL: Could not update window 1 params");
-        return 1;
-    }
-
-    // Allocate buffer for window 1 (red)
-    let buffer_size1 = (300 * 200 * 4) as usize;
-    let Some(mut buffer1) = Buffer::alloc(buffer_size1) else {
-        environment::log("FAIL: Could not allocate buffer 1");
-        return 1;
-    };
-
-    // Fill buffer1 with red color
-    let buffer1_slice = buffer1.as_mut_slice();
-    let buffer1_ptr = buffer1_slice.as_mut_ptr() as *mut u32;
-    unsafe {
-        for i in 0..(300 * 200) {
-            *buffer1_ptr.offset(i as isize) = 0xFFFF0000; // Red
+    let mut window1 = match Window::builder()
+        .size(300, 200)
+        .position(50, 50)
+        .visible(true)
+        .build()
+    {
+        Ok(w) => w,
+        Err(_) => {
+            environment::log("FAIL: Could not open window 1");
+            return 1;
         }
-    }
-
-    // Blit buffer1 to window 1
-    let blit_params1 = BlitParams {
-        x: 0,
-        y: 0,
-        width: 300,
-        height: 200,
-        buffer_handle: buffer1.handle().into(),
     };
 
-    let result = syscall::send(
-        window1.into(),
-        OP_SURFACE_BLIT,
-        &blit_params1 as *const BlitParams as usize,
-        0,
-        0,
-        0,
-    );
+    // Create and fill buffer for window 1 (red)
+    let mut buffer1 = match PixelBuffer::new(300, 200) {
+        Ok(b) => b,
+        Err(_) => {
+            environment::log("FAIL: Could not allocate buffer 1");
+            return 1;
+        }
+    };
 
-    if result < 0 {
-        environment::log("FAIL: Could not blit buffer 1");
+    buffer1.clear(Colour::RED);
+
+    if window1.blit(&buffer1, 0, 0).is_err() || window1.flush().is_err() {
+        environment::log("FAIL: Could not render window 1");
         return 1;
     }
-
-    // Flush window 1
-    syscall::send(window1.into(), OP_SURFACE_FLUSH, 0, 0, 0, 0);
     environment::log("PASS: Created and rendered red window at (50, 50)");
 
     // Create window 2 - Blue window at (150, 100), size 300x200 (overlaps window 1)
-    let Ok(window2) = environment::open("surface:/window", 0, 0) else {
-        environment::log("FAIL: Could not open window 2");
-        return 1;
-    };
-
-    let update_params2 = UpdateParamsIn {
-        x: 150,
-        y: 100,
-        width: 300,
-        height: 200,
-        visible: 1,
-    };
-
-    let result = syscall::send(
-        window2.into(),
-        OP_SURFACE_UPDATE_PARAMS,
-        &update_params2 as *const UpdateParamsIn as usize,
-        0,
-        0,
-        0,
-    );
-
-    if result < 0 {
-        environment::log("FAIL: Could not update window 2 params");
-        return 1;
-    }
-
-    // Allocate buffer for window 2 (blue)
-    let buffer_size2 = (300 * 200 * 4) as usize;
-    let Some(mut buffer2) = Buffer::alloc(buffer_size2) else {
-        environment::log("FAIL: Could not allocate buffer 2");
-        return 1;
-    };
-
-    // Fill buffer2 with blue color
-    let buffer2_slice = buffer2.as_mut_slice();
-    let buffer2_ptr = buffer2_slice.as_mut_ptr() as *mut u32;
-    unsafe {
-        for i in 0..(300 * 200) {
-            *buffer2_ptr.offset(i as isize) = 0xFF0000FF; // Blue
+    let mut window2 = match Window::builder()
+        .size(300, 200)
+        .position(150, 100)
+        .visible(true)
+        .build()
+    {
+        Ok(w) => w,
+        Err(_) => {
+            environment::log("FAIL: Could not open window 2");
+            return 1;
         }
-    }
-
-    // Blit buffer2 to window 2
-    let blit_params2 = BlitParams {
-        x: 0,
-        y: 0,
-        width: 300,
-        height: 200,
-        buffer_handle: buffer2.handle().into(),
     };
 
-    let result = syscall::send(
-        window2.into(),
-        OP_SURFACE_BLIT,
-        &blit_params2 as *const BlitParams as usize,
-        0,
-        0,
-        0,
-    );
+    // Create and fill buffer for window 2 (blue)
+    let mut buffer2 = match PixelBuffer::new(300, 200) {
+        Ok(b) => b,
+        Err(_) => {
+            environment::log("FAIL: Could not allocate buffer 2");
+            return 1;
+        }
+    };
 
-    if result < 0 {
-        environment::log("FAIL: Could not blit buffer 2");
+    buffer2.clear(Colour::BLUE);
+
+    if window2.blit(&buffer2, 0, 0).is_err() || window2.flush().is_err() {
+        environment::log("FAIL: Could not render window 2");
         return 1;
     }
-
-    // Flush window 2
-    syscall::send(window2.into(), OP_SURFACE_FLUSH, 0, 0, 0, 0);
     environment::log("PASS: Created and rendered blue window at (150, 100)");
 
     environment::log("PASS: Multi-window test complete - blue should overlap red");
