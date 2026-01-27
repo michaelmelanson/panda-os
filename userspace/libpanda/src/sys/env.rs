@@ -1,0 +1,97 @@
+//! Low-level environment operations.
+//!
+//! These functions provide direct syscall access for system-level operations
+//! like opening files, spawning processes, and logging.
+
+use super::{Handle, send};
+use panda_abi::*;
+
+/// Open a file by path.
+///
+/// Returns file handle on success, or negative error code.
+///
+/// To attach the handle to a mailbox for event notifications, pass the
+/// mailbox handle and event mask. Pass `(0, 0)` for no mailbox attachment.
+#[inline(always)]
+pub fn open(path: &str, mailbox: u32, event_mask: u32) -> isize {
+    send(
+        Handle::ENVIRONMENT,
+        OP_ENVIRONMENT_OPEN,
+        path.as_ptr() as usize,
+        path.len(),
+        mailbox as usize,
+        event_mask as usize,
+    )
+}
+
+/// Spawn a new process from an executable path.
+///
+/// Returns process handle on success, or negative error code.
+///
+/// To attach the handle to a mailbox for event notifications, pass the
+/// mailbox handle and event mask. Pass `(0, 0)` for no mailbox attachment.
+///
+/// Note: This is the raw spawn syscall. Use `crate::environment::spawn` for
+/// the higher-level version that also sends startup arguments.
+#[inline(always)]
+pub fn spawn(path: &str, mailbox: u32, event_mask: u32) -> isize {
+    send(
+        Handle::ENVIRONMENT,
+        OP_ENVIRONMENT_SPAWN,
+        path.as_ptr() as usize,
+        path.len(),
+        mailbox as usize,
+        event_mask as usize,
+    )
+}
+
+/// Log a message to the system console.
+#[inline(always)]
+pub fn log(msg: &str) {
+    let _ = send(
+        Handle::ENVIRONMENT,
+        OP_ENVIRONMENT_LOG,
+        msg.as_ptr() as usize,
+        msg.len(),
+        0,
+        0,
+    );
+}
+
+/// Get the current system time.
+///
+/// Returns a timestamp, or negative error code.
+#[inline(always)]
+pub fn time() -> isize {
+    send(Handle::ENVIRONMENT, OP_ENVIRONMENT_TIME, 0, 0, 0, 0)
+}
+
+/// Open a directory for iteration.
+///
+/// Returns directory handle on success, or negative error code.
+#[inline(always)]
+pub fn opendir(path: &str) -> isize {
+    send(
+        Handle::ENVIRONMENT,
+        OP_ENVIRONMENT_OPENDIR,
+        path.as_ptr() as usize,
+        path.len(),
+        0,
+        0,
+    )
+}
+
+/// Mount a filesystem.
+///
+/// Returns 0 on success, or negative error code.
+#[inline(always)]
+pub fn mount(fstype: &str, mountpoint: &str) -> isize {
+    send(
+        Handle::ENVIRONMENT,
+        OP_ENVIRONMENT_MOUNT,
+        fstype.as_ptr() as usize,
+        fstype.len(),
+        mountpoint.as_ptr() as usize,
+        mountpoint.len(),
+    )
+}

@@ -4,12 +4,9 @@
 //! shared between userspace and kernel for zero-copy I/O operations.
 
 use crate::handle::Handle;
-use crate::syscall::send;
+use crate::sys;
 use core::slice;
-use panda_abi::{
-    OP_BUFFER_ALLOC, OP_BUFFER_FREE, OP_BUFFER_RESIZE, OP_FILE_READ_BUFFER,
-    OP_FILE_WRITE_BUFFER,
-};
+use panda_abi::BufferAllocInfo;
 
 /// A shared buffer for zero-copy I/O operations.
 ///
@@ -27,17 +24,8 @@ impl Buffer {
     /// The actual size may be rounded up to page alignment.
     /// Returns `None` if allocation fails.
     pub fn alloc(size: usize) -> Option<Self> {
-        use panda_abi::BufferAllocInfo;
-
         let mut info = BufferAllocInfo { addr: 0, size: 0 };
-        let result = send(
-            Handle::ENVIRONMENT,
-            OP_BUFFER_ALLOC,
-            size,
-            &mut info as *mut BufferAllocInfo as usize,
-            0,
-            0,
-        );
+        let result = sys::buffer::alloc(size, Some(&mut info));
 
         if result < 0 {
             return None;
@@ -75,17 +63,8 @@ impl Buffer {
     /// Returns the new address on success. The buffer contents may be moved,
     /// so any existing slices become invalid.
     pub fn resize(&mut self, new_size: usize) -> Option<()> {
-        use panda_abi::BufferAllocInfo;
-
         let mut info = BufferAllocInfo { addr: 0, size: 0 };
-        let result = send(
-            self.handle,
-            OP_BUFFER_RESIZE,
-            new_size,
-            &mut info as *mut BufferAllocInfo as usize,
-            0,
-            0,
-        );
+        let result = sys::buffer::resize(self.handle, new_size, Some(&mut info));
 
         if result < 0 {
             return None;
@@ -101,14 +80,7 @@ impl Buffer {
     ///
     /// Returns the number of bytes read.
     pub fn read_from(&mut self, file_handle: Handle) -> Option<usize> {
-        let result = send(
-            file_handle,
-            OP_FILE_READ_BUFFER,
-            u32::from(self.handle) as usize,
-            0,
-            0,
-            0,
-        );
+        let result = sys::buffer::read_from_file(file_handle, self.handle);
         if result < 0 {
             None
         } else {
@@ -120,14 +92,7 @@ impl Buffer {
     ///
     /// Returns the number of bytes written.
     pub fn write_to(&self, file_handle: Handle, len: usize) -> Option<usize> {
-        let result = send(
-            file_handle,
-            OP_FILE_WRITE_BUFFER,
-            u32::from(self.handle) as usize,
-            len,
-            0,
-            0,
-        );
+        let result = sys::buffer::write_to_file(file_handle, self.handle, len);
         if result < 0 {
             None
         } else {
@@ -138,6 +103,6 @@ impl Buffer {
 
 impl Drop for Buffer {
     fn drop(&mut self) {
-        let _ = send(self.handle, OP_BUFFER_FREE, 0, 0, 0, 0);
+        let _ = sys::buffer::free(self.handle);
     }
 }

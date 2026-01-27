@@ -4,7 +4,7 @@
 //! to wait on any of them with a single blocking call.
 
 use crate::handle::Handle;
-use crate::syscall::send;
+use crate::sys;
 use panda_abi::*;
 
 /// A mailbox for receiving events from attached handles.
@@ -27,14 +27,7 @@ impl Mailbox {
     /// Create a new mailbox.
     #[inline(always)]
     pub fn create() -> Result<Self, isize> {
-        let result = send(
-            Handle::from(0), // handle arg unused for create
-            OP_MAILBOX_CREATE,
-            0,
-            0,
-            0,
-            0,
-        );
+        let result = sys::mailbox::create();
         if result < 0 {
             Err(result)
         } else {
@@ -55,10 +48,8 @@ impl Mailbox {
     /// Returns `(handle, event)` when an event is available.
     #[inline(always)]
     pub fn recv(&self) -> (Handle, Event) {
-        let result = send(self.handle, OP_MAILBOX_WAIT, 0, 0, 0, 0);
-        // Result is packed as (handle_id << 32) | events
-        let handle_id = (result >> 32) as u32;
-        let events = result as u32;
+        let result = sys::mailbox::wait(self.handle);
+        let (handle_id, events) = sys::mailbox::unpack_result(result);
         (Handle::from(handle_id), Event::decode(events))
     }
 
@@ -67,12 +58,11 @@ impl Mailbox {
     /// Returns `Some((handle, event))` if available, `None` otherwise.
     #[inline(always)]
     pub fn try_recv(&self) -> Option<(Handle, Event)> {
-        let result = send(self.handle, OP_MAILBOX_POLL, 0, 0, 0, 0);
+        let result = sys::mailbox::poll(self.handle);
         if result == 0 {
             None
         } else {
-            let handle_id = (result >> 32) as u32;
-            let events = result as u32;
+            let (handle_id, events) = sys::mailbox::unpack_result(result);
             Some((Handle::from(handle_id), Event::decode(events)))
         }
     }
@@ -105,7 +95,7 @@ pub enum ProcessEvent {
     Exited,
 }
 
-/// Events that can be received from handles, organized by resource type.
+/// Events that can be received from handles, organised by resource type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     /// Input device events (keyboard, mouse).
@@ -115,7 +105,7 @@ pub enum Event {
     /// Process events (exited).
     Process(ProcessEvent),
     /// Unknown or combined event flags.
-    Raw(u32),
+    Unknown(u32),
 }
 
 impl Event {
@@ -143,6 +133,6 @@ impl Event {
             return Event::Input(InputEvent::Keyboard);
         }
         // Fallback for unknown events
-        Event::Raw(flags)
+        Event::Unknown(flags)
     }
 }

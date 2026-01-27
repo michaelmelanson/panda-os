@@ -1,10 +1,10 @@
-//! Environment operations using the send-based API
+//! Environment operations.
 //!
 //! The environment handle provides access to system-level operations
 //! like opening files, spawning processes, and logging.
 
 use crate::handle::Handle;
-use crate::syscall::send;
+use crate::sys;
 use panda_abi::*;
 
 /// Open a file by path.
@@ -28,14 +28,7 @@ use panda_abi::*;
 /// ```
 #[inline(always)]
 pub fn open(path: &str, mailbox: u32, event_mask: u32) -> Result<Handle, isize> {
-    let result = send(
-        Handle::ENVIRONMENT,
-        OP_ENVIRONMENT_OPEN,
-        path.as_ptr() as usize,
-        path.len(),
-        mailbox as usize,
-        event_mask as usize,
-    );
+    let result = sys::env::open(path, mailbox, event_mask);
     if result < 0 {
         Err(result)
     } else {
@@ -76,14 +69,7 @@ pub fn open(path: &str, mailbox: u32, event_mask: u32) -> Result<Handle, isize> 
 /// )?;
 /// ```
 pub fn spawn(path: &str, args: &[&str], mailbox: u32, event_mask: u32) -> Result<Handle, isize> {
-    let result = send(
-        Handle::ENVIRONMENT,
-        OP_ENVIRONMENT_SPAWN,
-        path.as_ptr() as usize,
-        path.len(),
-        mailbox as usize,
-        event_mask as usize,
-    );
+    let result = sys::env::spawn(path, mailbox, event_mask);
     if result < 0 {
         return Err(result);
     }
@@ -100,40 +86,26 @@ pub fn spawn(path: &str, args: &[&str], mailbox: u32, event_mask: u32) -> Result
     Ok(handle)
 }
 
-/// Log a message to the system console
+/// Log a message to the system console.
 #[inline(always)]
 pub fn log(msg: &str) {
-    let _ = send(
-        Handle::ENVIRONMENT,
-        OP_ENVIRONMENT_LOG,
-        msg.as_ptr() as usize,
-        msg.len(),
-        0,
-        0,
-    );
+    sys::env::log(msg);
 }
 
-/// Get the current system time
+/// Get the current system time.
 ///
-/// Returns a timestamp, or negative error code
+/// Returns a timestamp, or negative error code.
 #[inline(always)]
 pub fn time() -> isize {
-    send(Handle::ENVIRONMENT, OP_ENVIRONMENT_TIME, 0, 0, 0, 0)
+    sys::env::time()
 }
 
-/// Open a directory for iteration
+/// Open a directory for iteration.
 ///
-/// Returns a directory handle on success, or error code
+/// Returns a directory handle on success, or error code.
 #[inline(always)]
 pub fn opendir(path: &str) -> Result<Handle, isize> {
-    let result = send(
-        Handle::ENVIRONMENT,
-        OP_ENVIRONMENT_OPENDIR,
-        path.as_ptr() as usize,
-        path.len(),
-        0,
-        0,
-    );
+    let result = sys::env::opendir(path);
     if result < 0 {
         Err(result)
     } else {
@@ -153,27 +125,20 @@ pub fn screenshot_ready() {
     log("<<<SCREENSHOT_READY>>>");
 }
 
-/// Mount a filesystem
+/// Mount a filesystem.
 ///
 /// # Arguments
 /// * `fstype` - Filesystem type (e.g., "ext2")
 /// * `mountpoint` - Path where the filesystem should be mounted (e.g., "/mnt")
 ///
-/// Returns 0 on success, or negative error code
+/// Returns 0 on success, or negative error code.
 #[inline(always)]
 pub fn mount(fstype: &str, mountpoint: &str) -> Result<(), isize> {
-    let result = send(
-        Handle::ENVIRONMENT,
-        OP_ENVIRONMENT_MOUNT,
-        fstype.as_ptr() as usize,
-        fstype.len(),
-        mountpoint.as_ptr() as usize,
-        mountpoint.len(),
-    );
+    let result = sys::env::mount(fstype, mountpoint);
     if result < 0 { Err(result) } else { Ok(()) }
 }
 
-/// Check if a file or directory exists at the given path
+/// Check if a file or directory exists at the given path.
 ///
 /// Returns Ok(FileStat) if the path exists, Err otherwise.
 /// This is useful for checking file existence before opening.

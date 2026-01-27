@@ -1,10 +1,9 @@
-//! File operations.
+//! Low-level file operations.
 //!
-//! This module provides file I/O operations using the low-level `sys::file` functions.
-//! For RAII wrappers with automatic cleanup, see `crate::io::File` (coming soon).
+//! These functions provide direct syscall access for file I/O.
+//! For RAII wrappers with automatic cleanup, use `crate::io::File`.
 
-use crate::handle::Handle;
-use crate::sys;
+use super::{Handle, send};
 use panda_abi::*;
 
 /// Read from a file handle into a buffer (blocking).
@@ -12,7 +11,14 @@ use panda_abi::*;
 /// Returns number of bytes read, or negative error code.
 #[inline(always)]
 pub fn read(handle: Handle, buf: &mut [u8]) -> isize {
-    sys::file::read(handle, buf)
+    send(
+        handle,
+        OP_FILE_READ,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        0,
+        0,
+    )
 }
 
 /// Try to read from a file handle (non-blocking).
@@ -21,7 +27,14 @@ pub fn read(handle: Handle, buf: &mut [u8]) -> isize {
 /// Unlike `read`, this never blocks waiting for data.
 #[inline(always)]
 pub fn try_read(handle: Handle, buf: &mut [u8]) -> isize {
-    sys::file::try_read(handle, buf)
+    send(
+        handle,
+        OP_FILE_READ,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        FILE_NONBLOCK as usize,
+        0,
+    )
 }
 
 /// Write to a file handle from a buffer.
@@ -29,7 +42,14 @@ pub fn try_read(handle: Handle, buf: &mut [u8]) -> isize {
 /// Returns number of bytes written, or negative error code.
 #[inline(always)]
 pub fn write(handle: Handle, buf: &[u8]) -> isize {
-    sys::file::write(handle, buf)
+    send(
+        handle,
+        OP_FILE_WRITE,
+        buf.as_ptr() as usize,
+        buf.len(),
+        0,
+        0,
+    )
 }
 
 /// Seek within a file.
@@ -37,7 +57,7 @@ pub fn write(handle: Handle, buf: &[u8]) -> isize {
 /// Returns new position, or negative error code.
 #[inline(always)]
 pub fn seek(handle: Handle, offset: i64, whence: u32) -> isize {
-    sys::file::seek(handle, offset, whence)
+    send(handle, OP_FILE_SEEK, offset as usize, whence as usize, 0, 0)
 }
 
 /// Get file statistics.
@@ -45,7 +65,14 @@ pub fn seek(handle: Handle, offset: i64, whence: u32) -> isize {
 /// Returns 0 on success, or negative error code.
 #[inline(always)]
 pub fn stat(handle: Handle, stat_buf: &mut FileStat) -> isize {
-    sys::file::stat(handle, stat_buf)
+    send(
+        handle,
+        OP_FILE_STAT,
+        stat_buf as *mut FileStat as usize,
+        0,
+        0,
+        0,
+    )
 }
 
 /// Close a file handle.
@@ -53,7 +80,7 @@ pub fn stat(handle: Handle, stat_buf: &mut FileStat) -> isize {
 /// Returns 0 on success, or negative error code.
 #[inline(always)]
 pub fn close(handle: Handle) -> isize {
-    sys::file::close(handle)
+    send(handle, OP_FILE_CLOSE, 0, 0, 0, 0)
 }
 
 /// Read the next directory entry from a directory handle.
@@ -61,5 +88,12 @@ pub fn close(handle: Handle) -> isize {
 /// Returns 1 if an entry was read, 0 if end of directory, or negative error code.
 #[inline(always)]
 pub fn readdir(handle: Handle, entry: &mut DirEntry) -> isize {
-    sys::file::readdir(handle, entry)
+    send(
+        handle,
+        OP_FILE_READDIR,
+        entry as *mut DirEntry as usize,
+        0,
+        0,
+        0,
+    )
 }

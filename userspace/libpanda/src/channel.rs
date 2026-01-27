@@ -6,12 +6,10 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use panda_abi::{
-    CHANNEL_NONBLOCK, MAX_MESSAGE_SIZE, MessageHeader, OP_CHANNEL_RECV, OP_CHANNEL_SEND,
-};
+use panda_abi::{MAX_MESSAGE_SIZE, MessageHeader};
 
 use crate::handle::Handle;
-use crate::syscall::send as syscall_send;
+use crate::sys;
 
 /// A unique identifier for a pending request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -163,14 +161,7 @@ impl StreamFile {
 /// Returns Ok(()) on success, or error code on failure.
 #[inline(always)]
 pub fn send(handle: Handle, msg: &[u8]) -> Result<(), isize> {
-    let result = syscall_send(
-        handle,
-        OP_CHANNEL_SEND,
-        msg.as_ptr() as usize,
-        msg.len(),
-        0, // flags = 0, blocking
-        0,
-    );
+    let result = sys::channel::send_msg(handle, msg);
     if result < 0 { Err(result) } else { Ok(()) }
 }
 
@@ -179,14 +170,7 @@ pub fn send(handle: Handle, msg: &[u8]) -> Result<(), isize> {
 /// Returns Ok(()) on success, Err(-1) if queue is full, or other error code.
 #[inline(always)]
 pub fn try_send(handle: Handle, msg: &[u8]) -> Result<(), isize> {
-    let result = syscall_send(
-        handle,
-        OP_CHANNEL_SEND,
-        msg.as_ptr() as usize,
-        msg.len(),
-        CHANNEL_NONBLOCK as usize,
-        0,
-    );
+    let result = sys::channel::try_send_msg(handle, msg);
     if result < 0 { Err(result) } else { Ok(()) }
 }
 
@@ -196,14 +180,7 @@ pub fn try_send(handle: Handle, msg: &[u8]) -> Result<(), isize> {
 /// The buffer should be at least MAX_MESSAGE_SIZE bytes.
 #[inline(always)]
 pub fn recv(handle: Handle, buf: &mut [u8]) -> Result<usize, isize> {
-    let result = syscall_send(
-        handle,
-        OP_CHANNEL_RECV,
-        buf.as_mut_ptr() as usize,
-        buf.len(),
-        0, // flags = 0, blocking
-        0,
-    );
+    let result = sys::channel::recv_msg(handle, buf);
     if result < 0 {
         Err(result)
     } else {
@@ -217,14 +194,7 @@ pub fn recv(handle: Handle, buf: &mut [u8]) -> Result<usize, isize> {
 /// or other error code.
 #[inline(always)]
 pub fn try_recv(handle: Handle, buf: &mut [u8]) -> Result<usize, isize> {
-    let result = syscall_send(
-        handle,
-        OP_CHANNEL_RECV,
-        buf.as_mut_ptr() as usize,
-        buf.len(),
-        CHANNEL_NONBLOCK as usize,
-        0,
-    );
+    let result = sys::channel::try_recv_msg(handle, buf);
     if result < 0 {
         Err(result)
     } else {
