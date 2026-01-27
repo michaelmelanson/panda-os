@@ -26,6 +26,7 @@ pub mod sys;
 
 // Core types
 pub mod error;
+pub mod io;
 
 // High-level modules (these use sys:: internally)
 pub mod buffer;
