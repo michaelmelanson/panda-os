@@ -53,10 +53,18 @@ pub use handle::Handle;
 // Re-export ABI types
 pub use panda_abi::DirEntry;
 
+/// Special exit codes used by the runtime.
+pub mod exit_code {
+    /// Exit code for unhandled panic.
+    pub const PANIC: i32 = 101;
+    /// Exit code for allocation failure (out of memory).
+    pub const ALLOC_ERROR: i32 = 102;
+}
+
 #[alloc_error_handler]
 fn alloc_error_handler(_layout: core::alloc::Layout) -> ! {
     environment::log("ALLOC ERROR: out of memory");
-    process::exit(102_i32);
+    process::exit(exit_code::ALLOC_ERROR);
 }
 
 /// Entry point macro for userspace programs.
@@ -163,7 +171,7 @@ macro_rules! __main_impl {
 
             drop(w);
 
-            $crate::process::exit(101_i32);
+            $crate::process::exit($crate::exit_code::PANIC);
         }
     };
 }
