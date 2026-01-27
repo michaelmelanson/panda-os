@@ -50,11 +50,7 @@ A structured message-passing protocol between terminal and child processes, repl
 
 - **Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
 
-### 5. Type safety improvements
-
-- **Convert panda-abi constants to enums**: The syscall opcodes, event flags, channel flags, and handle constants are all raw `u32`/`usize` values. Should use proper enums with `#[repr(u32)]` for type safety. This would catch misuse at compile time (e.g., passing an event flag where a syscall opcode is expected).
-
-### 6. Future work
+### 5. Future work
 
 - **IPC/Pipes**: Implement pipe support for shell pipelines.
 
