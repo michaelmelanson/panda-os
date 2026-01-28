@@ -7,6 +7,7 @@
 
 pub mod encoding;
 pub mod terminal;
+pub mod value;
 
 // =============================================================================
 // Syscall numbers

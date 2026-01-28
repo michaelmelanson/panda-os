@@ -12,10 +12,11 @@ Working:
 - Virtio GPU with Surface API (blit, fill, flush), virtio keyboard with blocking reads
 - Virtio block device driver with async I/O (interrupt-driven, non-blocking)
 - Process handles: spawn returns handle, OP_PROCESS_WAIT blocks until child exits
-- Message-passing IPC: channels (bidirectional, 1KB messages, 16 depth) and mailboxes (event aggregation)
+- Message-passing IPC: channels (bidirectional, 4KB messages, 16 depth) and mailboxes (event aggregation)
 - Userspace: libpanda (two-layer architecture: sys:: low-level + high-level RAII wrappers), init, terminal, hello/ls/cat utilities, 25 test suites
 - Unified device paths with class-based addressing (`keyboard:/pci/input/0`, `block:/pci/storage/0`)
 - Cross-scheme device discovery via `*:` prefix (`*:/pci/storage/0` lists supporting schemes)
+- Stdio handle infrastructure: STDIN=0, STDOUT=1, STDERR=2, with spawn supporting stdin/stdout redirection
   
 ## Bugs / technical debt
 
@@ -24,13 +25,46 @@ Working:
 
 ## Next steps
 
-### 1. Terminal IPC protocol (see plans/TERMINAL_IPC.md)
+### 1. Structured pipelines (see plans/STRUCTURED_PIPELINES.md)
 
-A structured message-passing protocol between terminal and child processes, replacing character-oriented VT100/ANSI. Key features:
-- Typed messages over channels (Write, SetStyle, RequestInput, etc.)
-- Generic `Output` enum: `Text`, `StyledText`, `Image`, `Table`, `Link`, etc.
-- ANSI compatibility layer for legacy software
-- Clean libpanda::terminal API for common operations
+Enable shell pipelines (`cmd1 | cmd2 | cmd3`) where tools exchange structured `Value` objects rather than raw bytes. PowerShell-style object pipeline with Unix compatibility.
+
+**Phase 1: Create Value type and restructure protocol**
+- [ ] Create `panda-abi/src/value.rs` with `Value` enum (Null, Bool, Int, Float, String, Bytes, Array, Map, Styled, Link, Table)
+- [ ] Create `Table` struct with `cols: u16`, `headers: Option<Vec<Value>>`, `cells: Vec<Value>`
+- [ ] Implement `Encode`/`Decode` traits for `Value` and `Table`
+- [ ] Add `Value::to_bytes()` / `Value::from_bytes()` helpers
+- [ ] Rename `TerminalOutput` -> `Request`, `TerminalInput` -> `Event`
+- [ ] Remove `Request::Write(Output)` - data goes through STDOUT
+- [ ] Add `Request::Error(Value)` and `Request::Warning(Value)` for side-band errors
+- [ ] Remove `Output`, `StyledText`, `StyledSpan` (subsumed by `Value`)
+
+**Phase 2: Add channel create syscall**
+- [ ] Add `OP_CHANNEL_CREATE` to `panda-abi/src/lib.rs`
+- [ ] Implement `handle_create()` in `panda-kernel/src/syscall/channel.rs`
+- [ ] Wire up in syscall dispatcher
+
+**Phase 3: Update libpanda**
+- [ ] Update `terminal.rs` to use `Request`/`Event` via PARENT only
+- [ ] Update `stdio.rs`: `write_value(Value)` with STDOUT->PARENT fallback
+- [ ] Update `print.rs`: `print!`/`println!` send `Value::String`
+- [ ] Add `Channel::create_pair()` to `ipc/channel.rs`
+
+**Phase 4: Update terminal emulator**
+- [ ] Parse `|` in command lines
+- [ ] Create data channels between pipeline stages
+- [ ] Spawn processes with STDIN/STDOUT redirection
+- [ ] Handle `Request` from any child, render `Value` from final stage
+- [ ] Implement rendering for all `Value` variants
+
+**Phase 5: Update tools**
+- [ ] Update `cat` to output `Value::String` (or `Value::Map` for JSON)
+- [ ] Update `ls` to output `Value::Table` with styled cells
+
+**Phase 6: Add tests**
+- [ ] `value_test/` - Value serialization, Table validation
+- [ ] `pipeline_test/` - Multi-stage pipeline with Value flow
+- [ ] `control_plane_test/` - Request/Event via PARENT
 
 ### 2. Missing syscalls
 
@@ -52,8 +86,6 @@ A structured message-passing protocol between terminal and child processes, repl
 
 ### 5. Future work
 
-- **IPC/Pipes**: Implement pipe support for shell pipelines.
-
 - **Environment variables**: Support for PATH, HOME, etc. needed for proper shell operation.
 
 - **Ext2 write support**: Currently ext2 is read-only.
@@ -73,4 +105,4 @@ A structured message-passing protocol between terminal and child processes, repl
 ## Design documents
 
 - [plans/DEVICE_PATHS.md](plans/DEVICE_PATHS.md) - Unified device path scheme with human-friendly names
-- [plans/TERMINAL_IPC.md](plans/TERMINAL_IPC.md) - Structured terminal IPC protocol (replacing VT100/ANSI)
+- [plans/STRUCTURED_PIPELINES.md](plans/STRUCTURED_PIPELINES.md) - Structured Value-based pipelines (replacing TERMINAL_IPC.md)

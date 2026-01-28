@@ -113,6 +113,16 @@ impl Encoder {
         self.buf.extend_from_slice(&value.to_le_bytes());
     }
 
+    /// Write an i64 (little-endian).
+    pub fn write_i64(&mut self, value: i64) {
+        self.buf.extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// Write an f64 (little-endian).
+    pub fn write_f64(&mut self, value: f64) {
+        self.buf.extend_from_slice(&value.to_le_bytes());
+    }
+
     /// Write a length-prefixed string (u16 length + utf8 bytes).
     pub fn write_string(&mut self, s: &str) {
         let bytes = s.as_bytes();
@@ -231,6 +241,44 @@ impl<'a> Decoder<'a> {
             self.buf[self.pos + 3],
         ]);
         self.pos += 4;
+        Ok(value)
+    }
+
+    /// Read an i64 (little-endian).
+    pub fn read_i64(&mut self) -> Result<i64, DecodeError> {
+        if self.remaining() < 8 {
+            return Err(DecodeError::Truncated);
+        }
+        let value = i64::from_le_bytes([
+            self.buf[self.pos],
+            self.buf[self.pos + 1],
+            self.buf[self.pos + 2],
+            self.buf[self.pos + 3],
+            self.buf[self.pos + 4],
+            self.buf[self.pos + 5],
+            self.buf[self.pos + 6],
+            self.buf[self.pos + 7],
+        ]);
+        self.pos += 8;
+        Ok(value)
+    }
+
+    /// Read an f64 (little-endian).
+    pub fn read_f64(&mut self) -> Result<f64, DecodeError> {
+        if self.remaining() < 8 {
+            return Err(DecodeError::Truncated);
+        }
+        let value = f64::from_le_bytes([
+            self.buf[self.pos],
+            self.buf[self.pos + 1],
+            self.buf[self.pos + 2],
+            self.buf[self.pos + 3],
+            self.buf[self.pos + 4],
+            self.buf[self.pos + 5],
+            self.buf[self.pos + 6],
+            self.buf[self.pos + 7],
+        ]);
+        self.pos += 8;
         Ok(value)
     }
 
