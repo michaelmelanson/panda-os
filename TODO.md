@@ -65,7 +65,8 @@ Working:
 
 - **ACPI handler incomplete**: 27 `todo!()` macros in acpi/handler.rs for memory read/write operations. Not needed for current boot path.
 
-## Design documents
+## Documentation
 
-- [plans/DEVICE_PATHS.md](plans/DEVICE_PATHS.md) - Unified device path scheme with human-friendly names
-- [plans/STRUCTURED_PIPELINES.md](plans/STRUCTURED_PIPELINES.md) - Structured Value-based pipelines (replacing TERMINAL_IPC.md)
+- [docs/DEVICE_PATHS.md](docs/DEVICE_PATHS.md) - Unified device path scheme with human-friendly names
+- [docs/PIPELINES.md](docs/PIPELINES.md) - Structured Value-based pipelines
+- [docs/IPC.md](docs/IPC.md) - Channels, mailboxes, and process communication
