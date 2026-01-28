@@ -24,11 +24,6 @@ Working:
 
 - **Better userspace heap allocator**: The current allocator in `libpanda/src/heap.rs` is a simple bump allocator that grows the heap via `brk()` but never reuses freed memory. Replace with a proper allocator (e.g., linked-list, buddy, or dlmalloc-style) that tracks free blocks and reuses them.
 
-- **Missing error case tests**: Most error paths now tested (error_test), but some edge cases remain:
-  - Buffer overflow in startup message encoding
-  - Environment variable edge cases (empty string, max length)
-
-
 - **Simplify startup message encoding**: The 160+ lines of repetitive byte-packing in `startup.rs` could use helper functions like `write_length_prefixed_strings()`.
 
 - **Document magic numbers**: Several hardcoded values lack explanation:
