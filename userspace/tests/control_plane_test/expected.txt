@@ -1,0 +1,20 @@
+# Control plane test: verifies Request/Event messages via PARENT channel
+# @unordered
+control_plane_test: starting
+control_plane_test: spawned child
+control_plane_child: starting
+# @barrier
+# Child sends all messages, test receives them (order may vary due to scheduling)
+control_plane_child: sent Write request
+control_plane_child: sent Error request
+control_plane_child: sent Warning request
+control_plane_child: done
+control_plane_test: received Write request
+control_plane_test: Write content correct
+control_plane_test: received Error request
+control_plane_test: Error content correct
+control_plane_test: received Warning request
+control_plane_test: Warning content correct
+# @barrier
+control_plane_test: child exited with code 0
+PASS

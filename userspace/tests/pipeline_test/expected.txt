@@ -1,0 +1,20 @@
+# Pipeline test: verifies Value flow through producer -> consumer pipeline
+# @unordered
+pipeline_test: starting
+pipeline_test: created channel pair
+pipeline_test: spawned consumer
+pipeline_consumer: starting
+pipeline_test: spawned producer
+pipeline_test: closed write_end
+pipeline_test: closed read_end
+# @barrier
+# Producer and consumer run concurrently
+pipeline_producer: starting
+pipeline_producer: done, sent 10 values
+pipeline_consumer: received 10 values, sum = 55
+pipeline_consumer: done
+# @barrier
+pipeline_test: producer exited with code 0
+pipeline_test: received sum = 55
+pipeline_test: consumer exited with code 0
+PASS

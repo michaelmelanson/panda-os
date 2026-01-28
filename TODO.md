@@ -62,10 +62,10 @@ Enable shell pipelines (`cmd1 | cmd2 | cmd3`) where tools exchange structured `V
 - [x] Update `cat` to output `Value::String` (or `Value::Bytes` for binary)
 - [x] Update `ls` to output `Value::Table` with Name, Type, Size columns
 
-**Phase 6: Add tests**
+**Phase 6: Add tests** ✓
 - [x] Value serialisation tests (in panda-abi unit tests)
-- [ ] `pipeline_test/` - Multi-stage pipeline with Value flow
-- [ ] `control_plane_test/` - Request/Event via PARENT
+- [x] `pipeline_test/` - Multi-stage pipeline with Value flow
+- [x] `control_plane_test/` - Request/Event via PARENT
 
 ### 2. Missing syscalls
 

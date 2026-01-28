@@ -1,0 +1,8 @@
+[package]
+name = "pipeline_producer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+libpanda = { path = "../../libpanda" }
+panda-abi = { path = "../../../panda-abi" }
