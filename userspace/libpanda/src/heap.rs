@@ -114,5 +114,6 @@ unsafe impl GlobalAlloc for BumpAllocator {
     }
 }
 
+#[cfg(feature = "os")]
 #[global_allocator]
 static ALLOCATOR: BumpAllocator = BumpAllocator::new();

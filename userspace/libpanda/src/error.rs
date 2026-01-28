@@ -44,6 +44,7 @@ impl Error {
     /// Convert a raw syscall error code to an Error.
     ///
     /// Syscall error codes are negative `isize` values.
+    ///
     pub fn from_code(code: isize) -> Self {
         // Map based on panda_abi::ErrorCode values
         match code {
@@ -63,6 +64,19 @@ impl Error {
     }
 
     /// Convert an Error back to a raw error code.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use libpanda::error::Error;
+    ///
+    /// assert_eq!(Error::NotFound.to_code(), -1);
+    /// assert_eq!(Error::WouldBlock.to_code(), -9);
+    ///
+    /// // Roundtrip
+    /// let err = Error::PermissionDenied;
+    /// assert_eq!(Error::from_code(err.to_code()), err);
+    /// ```
     pub fn to_code(self) -> isize {
         match self {
             Error::NotFound => -1,

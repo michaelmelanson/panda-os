@@ -41,6 +41,25 @@ pub enum StartupError {
 /// Encode arguments into a startup message (no environment variables).
 ///
 /// Returns the number of bytes written to `buf`.
+///
+/// # Examples
+///
+/// ```
+/// use libpanda::startup::{encode, decode, StartupError};
+///
+/// let mut buf = [0u8; 256];
+/// let len = encode(&["hello", "world"], &mut buf).unwrap();
+/// let args = decode(&buf[..len]).unwrap();
+/// assert_eq!(args, vec!["hello", "world"]);
+/// ```
+///
+/// ```
+/// use libpanda::startup::{encode, StartupError};
+///
+/// // Buffer too small
+/// let mut buf = [0u8; 4];
+/// assert_eq!(encode(&["test"], &mut buf), Err(StartupError::BufferTooSmall));
+/// ```
 pub fn encode(args: &[&str], buf: &mut [u8]) -> Result<usize, StartupError> {
     encode_with_env(args, &[], buf)
 }
@@ -48,6 +67,23 @@ pub fn encode(args: &[&str], buf: &mut [u8]) -> Result<usize, StartupError> {
 /// Encode arguments and environment variables into a startup message.
 ///
 /// Returns the number of bytes written to `buf`.
+///
+/// # Examples
+///
+/// ```
+/// use libpanda::startup::{encode_with_env, decode_full};
+///
+/// let mut buf = [0u8; 256];
+/// let len = encode_with_env(
+///     &["prog", "arg1"],
+///     &[("KEY", "value")],
+///     &mut buf
+/// ).unwrap();
+///
+/// let (args, env) = decode_full(&buf[..len]).unwrap();
+/// assert_eq!(args, vec!["prog", "arg1"]);
+/// assert_eq!(env, vec![("KEY".into(), "value".into())]);
+/// ```
 pub fn encode_with_env(
     args: &[&str],
     env: &[(&str, &str)],

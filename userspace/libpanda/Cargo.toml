@@ -3,6 +3,18 @@ name = "libpanda"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["os"]
+# Enable the OS-specific parts (allocator, _start, panic handler).
+# Disable for doctests which run with std.
+os = []
+
 [dependencies]
 panda-abi = { path = "../../panda-abi" }
 spinning_top = { workspace = true }
+
+[dev-dependencies]
+
+[package.metadata.docs.rs]
+# Disable "os" feature when building docs
+no-default-features = true

@@ -16,8 +16,10 @@
 //! The root-level modules (`file`, `process`, `environment`, etc.) provide
 //! ergonomic APIs with `Result` types and RAII wrappers.
 
-#![no_std]
-#![feature(alloc_error_handler)]
+// When the "os" feature is enabled, use no_std with custom allocator.
+// Disable "os" for doctests which run with std.
+#![cfg_attr(feature = "os", no_std)]
+#![cfg_attr(feature = "os", feature(alloc_error_handler))]
 
 extern crate alloc;
 
@@ -72,6 +74,7 @@ pub mod exit_code {
     pub const ALLOC_ERROR: i32 = 102;
 }
 
+#[cfg(feature = "os")]
 #[alloc_error_handler]
 fn alloc_error_handler(_layout: core::alloc::Layout) -> ! {
     environment::log("ALLOC ERROR: out of memory");
