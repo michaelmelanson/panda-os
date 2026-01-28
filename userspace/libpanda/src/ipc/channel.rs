@@ -137,3 +137,72 @@ impl Drop for Channel {
         }
     }
 }
+
+// =============================================================================
+// Standalone channel functions (for use with raw handles)
+// =============================================================================
+
+/// Send a message on a channel (blocking if queue full).
+#[inline(always)]
+pub fn send(handle: Handle, msg: &[u8]) -> Result<()> {
+    let result = sys::channel::send_msg(handle, msg);
+    if result < 0 {
+        Err(Error::from_code(result))
+    } else {
+        Ok(())
+    }
+}
+
+/// Send a message on a channel (non-blocking).
+///
+/// Returns `Err(Error::WouldBlock)` if the queue is full.
+#[inline(always)]
+pub fn try_send(handle: Handle, msg: &[u8]) -> Result<()> {
+    let result = sys::channel::try_send_msg(handle, msg);
+    if result < 0 {
+        Err(Error::from_code(result))
+    } else {
+        Ok(())
+    }
+}
+
+/// Receive a message from a channel (blocking if queue empty).
+///
+/// Returns the number of bytes received on success.
+#[inline(always)]
+pub fn recv(handle: Handle, buf: &mut [u8]) -> Result<usize> {
+    let result = sys::channel::recv_msg(handle, buf);
+    if result < 0 {
+        Err(Error::from_code(result))
+    } else {
+        Ok(result as usize)
+    }
+}
+
+/// Receive a message from a channel (non-blocking).
+///
+/// Returns `Ok(len)` on success, `Err(Error::WouldBlock)` if queue is empty.
+#[inline(always)]
+pub fn try_recv(handle: Handle, buf: &mut [u8]) -> Result<usize> {
+    let result = sys::channel::try_recv_msg(handle, buf);
+    if result < 0 {
+        Err(Error::from_code(result))
+    } else {
+        Ok(result as usize)
+    }
+}
+
+/// Create a new channel pair.
+///
+/// Returns handles to both endpoints: `(endpoint_a, endpoint_b)`.
+/// Messages sent on endpoint_a are received by endpoint_b, and vice versa.
+pub fn create_pair() -> Result<(Handle, Handle)> {
+    let result = sys::channel::create_raw();
+    if result < 0 {
+        return Err(Error::from_code(result));
+    }
+    // Result encodes both handles: high 32 bits = handle_a, low 32 bits = handle_b
+    let handle_a = Handle::from((result >> 32) as u32);
+    let handle_b = Handle::from((result & 0xFFFFFFFF) as u32);
+    Ok((handle_a, handle_b))
+}

@@ -130,10 +130,10 @@ pub struct ChildBuilder<'a> {
     args: Vec<&'a str>,
     env: Vec<(&'a str, &'a str)>,
     inherit_env: bool,
-    mailbox: u32,
+    mailbox: Option<Handle>,
     event_mask: u32,
-    stdin: u32,
-    stdout: u32,
+    stdin: Option<Handle>,
+    stdout: Option<Handle>,
 }
 
 impl<'a> ChildBuilder<'a> {
@@ -144,10 +144,10 @@ impl<'a> ChildBuilder<'a> {
             args: Vec::new(),
             env: Vec::new(),
             inherit_env: true,
-            mailbox: 0,
+            mailbox: None,
             event_mask: 0,
-            stdin: 0,
-            stdout: 0,
+            stdin: None,
+            stdout: None,
         }
     }
 
@@ -192,40 +192,48 @@ impl<'a> ChildBuilder<'a> {
     /// Attach the child's channel to a mailbox for event notifications.
     ///
     /// # Arguments
-    /// * `mailbox` - Handle to the mailbox (use `mailbox.handle().as_raw()`)
+    /// * `mailbox` - The mailbox handle
     /// * `event_mask` - Events to listen for (e.g., `EVENT_CHANNEL_READABLE`)
-    pub fn mailbox(mut self, mailbox: u32, event_mask: u32) -> Self {
-        self.mailbox = mailbox;
+    pub fn mailbox(mut self, mailbox: Handle, event_mask: u32) -> Self {
+        self.mailbox = Some(mailbox);
         self.event_mask = event_mask;
         self
     }
 
     /// Set the child's stdin to read from the given handle.
     ///
-    /// The handle should be a channel endpoint. If not set, the child's
-    /// stdin will be invalid and it will use HANDLE_PARENT for input.
+    /// The handle should be a channel endpoint. If not set, the child
+    /// uses HANDLE_PARENT for input.
     pub fn stdin(mut self, handle: Handle) -> Self {
-        self.stdin = handle.as_raw();
+        self.stdin = Some(handle);
         self
     }
 
     /// Set the child's stdout to write to the given handle.
     ///
-    /// The handle should be a channel endpoint. If not set, the child's
-    /// stdout will be invalid and it will use HANDLE_PARENT for output.
+    /// The handle should be a channel endpoint. If not set, the child
+    /// uses HANDLE_PARENT for output.
     pub fn stdout(mut self, handle: Handle) -> Self {
-        self.stdout = handle.as_raw();
+        self.stdout = Some(handle);
         self
     }
 
-    /// Spawn the child process.
-    pub fn spawn(self) -> Result<Child> {
+    /// Spawn the child process and return the raw handle.
+    ///
+    /// Use this when you need the handle for manual management (e.g., pipelines).
+    /// For automatic cleanup, use `spawn()` which returns a `Child`.
+    pub fn spawn_handle(self) -> Result<Handle> {
+        // Convert Option<Handle> to raw u32 at syscall boundary (0 = no redirection)
+        let mailbox_raw = self.mailbox.map_or(0, |h| h.as_raw());
+        let stdin_raw = self.stdin.map_or(0, |h| h.as_raw());
+        let stdout_raw = self.stdout.map_or(0, |h| h.as_raw());
+
         let result = sys::env::spawn(
             self.path,
-            self.mailbox,
+            mailbox_raw,
             self.event_mask,
-            self.stdin,
-            self.stdout,
+            stdin_raw,
+            stdout_raw,
         );
         if result < 0 {
             return Err(Error::from_code(result));
@@ -269,6 +277,14 @@ impl<'a> ChildBuilder<'a> {
             let _ = sys::channel::send_msg(handle, &buf[..len]);
         }
 
+        Ok(handle)
+    }
+
+    /// Spawn the child process with RAII management.
+    ///
+    /// Returns a `Child` that will automatically wait for the process on drop.
+    pub fn spawn(self) -> Result<Child> {
+        let handle = self.spawn_handle()?;
         Ok(Child {
             handle,
             waited: false,

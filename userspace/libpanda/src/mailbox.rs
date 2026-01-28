@@ -3,6 +3,7 @@
 //! A mailbox aggregates events from multiple handles, allowing a process
 //! to wait on any of them with a single blocking call.
 
+use crate::error::{self, Result};
 use crate::handle::Handle;
 use crate::sys;
 use panda_abi::*;
@@ -26,15 +27,9 @@ impl Mailbox {
 
     /// Create a new mailbox.
     #[inline(always)]
-    pub fn create() -> Result<Self, isize> {
-        let result = sys::mailbox::create();
-        if result < 0 {
-            Err(result)
-        } else {
-            Ok(Self {
-                handle: Handle::from(result as u32),
-            })
-        }
+    pub fn create() -> Result<Self> {
+        let handle = error::from_syscall_handle(sys::mailbox::create())?;
+        Ok(Self { handle })
     }
 
     /// Get the raw handle for this mailbox.

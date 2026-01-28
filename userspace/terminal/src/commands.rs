@@ -2,11 +2,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use libpanda::{
-    channel,
-    environment::{self, SpawnParams},
-    process, Handle,
-};
+use libpanda::{channel, environment, process, process::ChildBuilder, Handle};
 use panda_abi::terminal::Request;
 use panda_abi::value::Value;
 use panda_abi::{EVENT_CHANNEL_READABLE, EVENT_PROCESS_EXITED, MAX_MESSAGE_SIZE};
@@ -134,10 +130,10 @@ impl Terminal {
         let arg_refs: Vec<&str> = stage.args.iter().map(|s| s.as_str()).collect();
         let events = EVENT_PROCESS_EXITED | EVENT_CHANNEL_READABLE;
 
-        match SpawnParams::new(&path)
+        match ChildBuilder::new(&path)
             .args(&arg_refs)
-            .mailbox(self.mailbox.handle().as_raw(), events)
-            .spawn()
+            .mailbox(self.mailbox.handle(), events)
+            .spawn_handle()
         {
             Ok(child_handle) => {
                 self.child = Some(child_handle);
@@ -164,7 +160,11 @@ impl Terminal {
         // For n stages, we need n-1 channels
         let mut channels: Vec<(Handle, Handle)> = Vec::new();
         for _ in 0..(n - 1) {
-            channels.push(channel::create_pair());
+            let Ok(pair) = channel::create_pair() else {
+                self.write_line("failed to create pipeline channel");
+                return;
+            };
+            channels.push(pair);
         }
 
         let events = EVENT_PROCESS_EXITED | EVENT_CHANNEL_READABLE;
@@ -184,28 +184,24 @@ impl Terminal {
 
             let arg_refs: Vec<&str> = stage.args.iter().map(|s| s.as_str()).collect();
 
-            // Determine stdin/stdout for this stage
-            let stdin = if i == 0 {
-                0 // First stage: no stdin redirection
-            } else {
-                // Use read end of previous channel
-                channels[i - 1].0.as_raw()
-            };
-
-            let stdout = if i == n - 1 {
-                0 // Last stage: no stdout redirection (output goes to terminal)
-            } else {
-                // Use write end of next channel
-                channels[i].1.as_raw()
-            };
-
-            match SpawnParams::new(&path)
+            // Build spawn command with optional stdin/stdout redirection
+            let mut builder = ChildBuilder::new(&path)
                 .args(&arg_refs)
-                .mailbox(self.mailbox.handle().as_raw(), events)
-                .stdin(stdin)
-                .stdout(stdout)
-                .spawn()
-            {
+                .mailbox(self.mailbox.handle(), events);
+
+            // First stage: no stdin redirection
+            // Middle/last stages: use read end of previous channel
+            if i > 0 {
+                builder = builder.stdin(channels[i - 1].0);
+            }
+
+            // Last stage: no stdout redirection (output goes to terminal)
+            // First/middle stages: use write end of next channel
+            if i < n - 1 {
+                builder = builder.stdout(channels[i].1);
+            }
+
+            match builder.spawn_handle() {
                 Ok(child_handle) => {
                     self.pipeline_children.push(child_handle);
                 }

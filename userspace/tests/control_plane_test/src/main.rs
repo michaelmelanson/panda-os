@@ -4,11 +4,7 @@
 extern crate alloc;
 
 use alloc::format;
-use libpanda::{
-    channel,
-    environment::{self, SpawnParams},
-    process,
-};
+use libpanda::{channel, environment, process, process::ChildBuilder};
 use panda_abi::MAX_MESSAGE_SIZE;
 use panda_abi::terminal::Request;
 use panda_abi::value::Value;
@@ -17,9 +13,9 @@ libpanda::main! {
     environment::log("control_plane_test: starting");
 
     // Spawn child process
-    let Ok(child) = SpawnParams::new("file:/initrd/control_plane_child")
+    let Ok(child) = ChildBuilder::new("file:/initrd/control_plane_child")
         .args(&["control_plane_child"])
-        .spawn()
+        .spawn_handle()
     else {
         environment::log("FAIL: failed to spawn child");
         return 1;

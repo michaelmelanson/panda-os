@@ -4,20 +4,19 @@
 extern crate alloc;
 
 use alloc::format;
-use libpanda::{
-    channel,
-    environment::{self, SpawnParams},
-    file, process,
-};
+use libpanda::{channel, environment, file, process, process::ChildBuilder};
+use panda_abi::MAX_MESSAGE_SIZE;
 use panda_abi::terminal::Request;
 use panda_abi::value::Value;
-use panda_abi::{EVENT_PROCESS_EXITED, MAX_MESSAGE_SIZE};
 
 libpanda::main! {
     environment::log("pipeline_test: starting");
 
     // Create a channel pair for the pipeline: producer -> consumer
-    let (read_end, write_end) = channel::create_pair();
+    let Ok((read_end, write_end)) = channel::create_pair() else {
+        environment::log("FAIL: failed to create channel pair");
+        return 1;
+    };
     environment::log(&format!(
         "pipeline_test: created channel pair: read={}, write={}",
         read_end.as_raw(),
@@ -26,11 +25,11 @@ libpanda::main! {
 
     // Spawn consumer FIRST with stdin connected to read_end
     // This ensures consumer is ready to receive before producer sends
-    // stdout=0 means output goes to parent channel
-    let Ok(consumer) = SpawnParams::new("file:/initrd/pipeline_consumer")
+    // stdout not set means output goes to parent channel
+    let Ok(consumer) = ChildBuilder::new("file:/initrd/pipeline_consumer")
         .args(&["pipeline_consumer"])
-        .stdin(read_end.as_raw())
-        .spawn()
+        .stdin(read_end)
+        .spawn_handle()
     else {
         environment::log("FAIL: failed to spawn consumer");
         return 1;
@@ -38,12 +37,11 @@ libpanda::main! {
     environment::log(&format!("pipeline_test: spawned consumer, handle={}", consumer.as_raw()));
 
     // Spawn producer with stdout connected to write_end
-    // stdin=0 means no stdin redirection
-    let Ok(producer) = SpawnParams::new("file:/initrd/pipeline_producer")
+    // stdin not set means no stdin redirection
+    let Ok(producer) = ChildBuilder::new("file:/initrd/pipeline_producer")
         .args(&["pipeline_producer"])
-        .mailbox(0, EVENT_PROCESS_EXITED)
-        .stdout(write_end.as_raw())
-        .spawn()
+        .stdout(write_end)
+        .spawn_handle()
     else {
         environment::log("FAIL: failed to spawn producer");
         return 1;

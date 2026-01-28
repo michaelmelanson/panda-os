@@ -32,7 +32,6 @@ pub mod ipc;
 
 // High-level modules (these use sys:: internally)
 pub mod buffer;
-pub mod channel;
 pub mod env;
 pub mod environment;
 pub mod file;
@@ -45,6 +44,16 @@ pub mod process;
 pub mod startup;
 pub mod stdio;
 pub mod terminal;
+
+// Re-export ipc::channel functions at top level for convenience
+pub use ipc::{create_pair, recv, send, try_recv, try_send};
+
+/// Channel functions for IPC.
+///
+/// This module re-exports the channel functions from `ipc` for backwards compatibility.
+pub mod channel {
+    pub use crate::ipc::{Channel, create_pair, recv, send, try_recv, try_send};
+}
 
 // Re-export alloc types for convenience
 pub use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
