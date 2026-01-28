@@ -120,15 +120,17 @@ EVENT_PROCESS_EXITED    // Child process exited
 
 ## Well-Known Handles
 
-```rust
-HANDLE_STDIN       = 0    // Data input (pipeline)
-HANDLE_STDOUT      = 1    // Data output (pipeline)
-HANDLE_STDERR      = 2    // Reserved
-HANDLE_PROCESS     = 3    // Current process resource
-HANDLE_ENVIRONMENT = 4    // System environment
-HANDLE_MAILBOX     = 5    // Default mailbox
-HANDLE_PARENT      = 6    // Channel to parent process
-```
+Every process has these pre-allocated handles. Handle values encode a type tag in the high 8 bits and an ID in the low 24 bits.
+
+| Constant | Type | ID | Description |
+|----------|------|-----|-------------|
+| `HANDLE_STDIN` | Channel (0x10) | 0 | Data input (pipeline) |
+| `HANDLE_STDOUT` | Channel (0x10) | 1 | Data output (pipeline) |
+| `HANDLE_STDERR` | Channel (0x10) | 2 | Reserved for error output |
+| `HANDLE_PROCESS` | Process (0x11) | 3 | Current process resource |
+| `HANDLE_ENVIRONMENT` | Special | 4 | System environment |
+| `HANDLE_MAILBOX` | Mailbox (0x20) | 5 | Default mailbox |
+| `HANDLE_PARENT` | Channel (0x10) | 6 | Channel to parent process |
 
 ## Startup Message Protocol
 

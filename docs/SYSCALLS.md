@@ -5,7 +5,7 @@ The kernel uses a resource-oriented syscall design with a single entry point.
 ## Design
 
 - Single `send(handle, operation, args...)` syscall
-- Well-known handles: `HANDLE_SELF` (0), `HANDLE_ENVIRONMENT` (1)
+- Well-known handles for standard resources
 - Operation codes grouped by resource type
 - Type-safe handle table in kernel prevents wrong operations on handles
 
@@ -45,6 +45,22 @@ When a syscall cannot complete immediately (e.g., `OP_FILE_READ` on a keyboard w
 4. When data becomes available, the device calls `waker.wake()`
 5. The process resumes and the syscall is re-polled
 
+## Well-known handles
+
+Every process has these pre-allocated handles. Handle values encode a type tag in the high 8 bits and an ID in the low 24 bits.
+
+| Handle | Type | ID | Description |
+|--------|------|-----|-------------|
+| `HANDLE_STDIN` | Channel (0x10) | 0 | Standard input channel (pipeline) |
+| `HANDLE_STDOUT` | Channel (0x10) | 1 | Standard output channel (pipeline) |
+| `HANDLE_STDERR` | Channel (0x10) | 2 | Standard error channel (reserved) |
+| `HANDLE_PROCESS` | Process (0x11) | 3 | Current process resource |
+| `HANDLE_ENVIRONMENT` | Special | 4 | System environment |
+| `HANDLE_MAILBOX` | Mailbox (0x20) | 5 | Default mailbox |
+| `HANDLE_PARENT` | Channel (0x10) | 6 | Channel to parent process |
+
+See `HandleType` in panda-abi for all type tags.
+
 ## Operation codes
 
 ### File operations (0x1_0000 - 0x1_FFFF)
@@ -53,7 +69,7 @@ When a syscall cannot complete immediately (e.g., `OP_FILE_READ` on a keyboard w
 |-----------|------|-----------|---------|
 | `OP_FILE_READ` | 0x1_0000 | (buf_ptr, buf_len) | bytes_read |
 | `OP_FILE_WRITE` | 0x1_0001 | (buf_ptr, buf_len) | bytes_written |
-| `OP_FILE_SEEK` | 0x1_0002 | (offset, whence) | new_position |
+| `OP_FILE_SEEK` | 0x1_0002 | (offset_lo, offset_hi, whence) | new_position |
 | `OP_FILE_STAT` | 0x1_0003 | (stat_ptr) | 0 or error |
 | `OP_FILE_CLOSE` | 0x1_0004 | () | 0 or error |
 | `OP_FILE_READDIR` | 0x1_0005 | (entry_ptr) | 1=entry, 0=end, <0=error |
@@ -73,8 +89,8 @@ When a syscall cannot complete immediately (e.g., `OP_FILE_READ` on a keyboard w
 
 | Operation | Code | Arguments | Returns |
 |-----------|------|-----------|---------|
-| `OP_ENVIRONMENT_OPEN` | 0x3_0000 | (path_ptr, path_len, flags) | handle |
-| `OP_ENVIRONMENT_SPAWN` | 0x3_0001 | (path_ptr, path_len) | process_handle |
+| `OP_ENVIRONMENT_OPEN` | 0x3_0000 | (path_ptr, path_len, mailbox, event_mask) | handle |
+| `OP_ENVIRONMENT_SPAWN` | 0x3_0001 | (path_ptr, path_len, mailbox, event_mask, stdin, stdout) | process_handle |
 | `OP_ENVIRONMENT_LOG` | 0x3_0002 | (msg_ptr, msg_len) | 0 |
 | `OP_ENVIRONMENT_TIME` | 0x3_0003 | () | timestamp |
 | `OP_ENVIRONMENT_OPENDIR` | 0x3_0004 | (path_ptr, path_len) | dir_handle |
@@ -105,21 +121,48 @@ When a syscall cannot complete immediately (e.g., `OP_FILE_READ` on a keyboard w
 | `OP_SURFACE_FLUSH` | 0x6_0003 | (rect_ptr) | 0 or error |
 | `OP_SURFACE_UPDATE_PARAMS` | 0x6_0004 | (params_ptr) | 0 or error |
 
+### Mailbox operations (0x7_0000 - 0x7_0FFF)
+
+| Operation | Code | Arguments | Returns |
+|-----------|------|-----------|---------|
+| `OP_MAILBOX_CREATE` | 0x7_0000 | () | mailbox_handle |
+| `OP_MAILBOX_WAIT` | 0x7_0001 | () | (handle << 32) \| events |
+| `OP_MAILBOX_POLL` | 0x7_0002 | () | (handle << 32) \| events, or 0 |
+
+### Channel operations (0x7_1000 - 0x7_1FFF)
+
+| Operation | Code | Arguments | Returns |
+|-----------|------|-----------|---------|
+| `OP_CHANNEL_CREATE` | 0x7_1000 | () | (handle_a << 32) \| handle_b |
+| `OP_CHANNEL_SEND` | 0x7_1001 | (buf_ptr, buf_len, flags) | 0 or error |
+| `OP_CHANNEL_RECV` | 0x7_1002 | (buf_ptr, buf_len, flags) | msg_len or error |
+
+## Event flags
+
+Used with mailbox operations and open/spawn event_mask:
+
+| Flag | Value | Description |
+|------|-------|-------------|
+| `EVENT_CHANNEL_READABLE` | 1 << 0 | Message available to receive |
+| `EVENT_CHANNEL_WRITABLE` | 1 << 1 | Space available to send |
+| `EVENT_CHANNEL_CLOSED` | 1 << 2 | Peer closed their endpoint |
+| `EVENT_PROCESS_EXITED` | 1 << 3 | Child process has exited |
+| `EVENT_KEYBOARD_KEY` | 1 << 4 | Key event available |
+
 ## Userspace API
 
-Use libpanda rather than raw syscalls. The API is organised by module:
+Use libpanda rather than raw syscalls. See [IPC.md](IPC.md) for channel and mailbox APIs.
 
 ### environment
 
 ```rust
 use libpanda::environment;
 
-environment::log("message");                    // Log to console
-environment::open("/path", flags) -> Handle;    // Open file
-environment::opendir("/path") -> Handle;        // Open directory
-environment::spawn("/path") -> Handle;          // Spawn process
-environment::time() -> isize;                   // Get system time
-environment::mount("ext2", "/mnt");             // Mount filesystem
+environment::log("message");                              // Log to console
+environment::open("/path", mailbox, events) -> Handle;    // Open file
+environment::opendir("/path") -> Handle;                  // Open directory
+environment::spawn("/path", mailbox, events) -> Handle;   // Spawn process
+environment::mount("ext2", "/mnt");                       // Mount filesystem
 ```
 
 ### file
@@ -147,18 +190,26 @@ process::wait(child_handle) -> i32;             // Wait for child
 process::signal(handle, sig) -> isize;          // Send signal
 ```
 
-### buffer
+### channel
 
 ```rust
-use libpanda::buffer::Buffer;
+use libpanda::ipc::{channel, Channel};
 
-let buf = Buffer::alloc(size)?;                 // Allocate shared buffer
-buf.as_slice();                                 // Get buffer contents
-buf.as_mut_slice();                             // Get mutable contents
-buf.resize(new_size)?;                          // Resize buffer
-buf.read_from(file_handle)?;                    // Read file into buffer
-buf.write_to(file_handle, len)?;                // Write buffer to file
-// Buffer is freed on drop
+Channel::create_pair() -> (ChannelHandle, ChannelHandle);  // Create pair
+channel::send(handle, &data) -> Result<()>;                // Send (blocking)
+channel::try_send(handle, &data) -> Result<()>;            // Send (non-blocking)
+channel::recv(handle, &mut buf) -> Result<usize>;          // Receive (blocking)
+channel::try_recv(handle, &mut buf) -> Result<usize>;      // Receive (non-blocking)
+```
+
+### mailbox
+
+```rust
+use libpanda::mailbox::Mailbox;
+
+let mailbox = Mailbox::default();               // Get default mailbox
+let (handle, events) = mailbox.wait();          // Wait for event (blocking)
+let result = mailbox.poll();                    // Poll for event (non-blocking)
 ```
 
 ## Shared types
@@ -189,6 +240,9 @@ pub struct BufferAllocInfo {
 pub const SEEK_SET: u32 = 0;
 pub const SEEK_CUR: u32 = 1;
 pub const SEEK_END: u32 = 2;
+
+/// Maximum channel message size
+pub const MAX_MESSAGE_SIZE: usize = 4096;
 ```
 
 ## Error codes
@@ -197,13 +251,14 @@ Negative return values indicate errors. See `panda_abi::ErrorCode`:
 
 | Code | Name | Description |
 |------|------|-------------|
-| 0 | Ok | Success |
-| 1 | NotFound | Resource not found |
-| 2 | InvalidOffset | Invalid seek position |
-| 3 | NotReadable | Resource is not readable |
-| 4 | NotWritable | Resource is not writable |
-| 5 | NotSeekable | Resource is not seekable |
-| 6 | NotSupported | Operation not supported |
-| 7 | PermissionDenied | Permission denied |
-| 8 | IoError | I/O error |
-| 10 | InvalidArgument | Invalid argument |
+| -1 | NotFound | Resource not found |
+| -2 | InvalidOffset | Invalid seek position |
+| -3 | NotReadable | Resource is not readable |
+| -4 | NotWritable | Resource is not writable |
+| -5 | NotSeekable | Resource is not seekable |
+| -6 | NotSupported | Operation not supported |
+| -7 | PermissionDenied | Permission denied |
+| -8 | IoError | I/O error |
+| -10 | InvalidArgument | Invalid argument |
+| -11 | WouldBlock | Operation would block (with NONBLOCK flag) |
+| -12 | ChannelClosed | Channel peer has closed |

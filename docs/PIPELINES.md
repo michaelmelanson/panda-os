@@ -79,40 +79,45 @@ Key design points:
 **Request (program -> terminal via PARENT):**
 ```rust
 enum Request {
-    Error(Value),
-    Warning(Value),
-    RequestInput(InputRequest),
-    Query(Query),
-    Progress { current: u32, total: u32, message: String },
-    SetTitle(String),
-    MoveCursor { row: u16, col: u16 },
-    Clear(ClearRegion),
-    Exit(i32),
+    Write(Value),                                         // Display output
+    Error(Value),                                         // Display error (always shown)
+    Warning(Value),                                       // Display warning (always shown)
+    MoveCursor { row: u16, col: u16 },                    // Move cursor
+    Clear(ClearRegion),                                   // Clear region
+    RequestInput(InputRequest),                           // Request user input
+    SetTitle(String),                                     // Set window title
+    Progress { current: u32, total: u32, message: String }, // Report progress
+    Query(TerminalQuery),                                 // Query terminal state
+    Exit(i32),                                            // Exit with status
 }
 ```
 
 **Event (terminal -> program via PARENT):**
 ```rust
 enum Event {
-    InputResponse(InputResponse),
-    Key(KeyEvent),
-    Resize { cols: u16, rows: u16 },
-    Signal(Signal),
-    QueryResponse(QueryResponse),
+    Input(InputResponse),            // Response to RequestInput
+    Key(KeyEvent),                   // Raw key event
+    Resize { cols: u16, rows: u16 }, // Terminal resized
+    Signal(Signal),                  // User signal (Ctrl+C, etc.)
+    QueryResponse(QueryResponse),    // Response to Query
 }
 ```
 
 ## Handle Layout
 
-```rust
-HANDLE_STDIN  = 0    // Data input from previous pipeline stage
-HANDLE_STDOUT = 1    // Data output to next pipeline stage  
-HANDLE_STDERR = 2    // Reserved for future error stream
-HANDLE_PROCESS     = 3    // Current process resource
-HANDLE_ENVIRONMENT = 4    // System environment
-HANDLE_MAILBOX     = 5    // Default mailbox
-HANDLE_PARENT      = 6    // Control channel to parent (terminal)
-```
+Handle values encode a type tag in the high 8 bits and an ID in the low 24 bits.
+
+| Constant | Type | ID | Purpose |
+|----------|------|-----|---------|
+| `HANDLE_STDIN` | Channel (0x10) | 0 | Data input from previous pipeline stage |
+| `HANDLE_STDOUT` | Channel (0x10) | 1 | Data output to next pipeline stage |
+| `HANDLE_STDERR` | Channel (0x10) | 2 | Reserved for future error stream |
+| `HANDLE_PROCESS` | Process (0x11) | 3 | Current process resource |
+| `HANDLE_ENVIRONMENT` | Special | 4 | System environment |
+| `HANDLE_MAILBOX` | Mailbox (0x20) | 5 | Default mailbox |
+| `HANDLE_PARENT` | Channel (0x10) | 6 | Control channel to parent (terminal) |
+
+See [IPC.md](IPC.md) for details on handle types.
 
 ## Execution Model
 
