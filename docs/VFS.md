@@ -1,6 +1,6 @@
-# Async VFS and Ext2 Filesystem
+# Virtual Filesystem
 
-This document describes the async VFS layer and ext2 filesystem driver implementation.
+This document describes the async VFS layer and filesystem drivers.
 
 ## Design Principles
 
