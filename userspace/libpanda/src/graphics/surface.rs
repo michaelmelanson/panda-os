@@ -29,8 +29,10 @@ impl Surface {
     /// Open a surface by device path.
     ///
     /// # Example
-    /// ```
-    /// let surface = Surface::open("surface:/pci/display/0")?;
+    /// ```no_run
+    /// use libpanda::graphics::Surface;
+    ///
+    /// let surface = Surface::open("surface:/pci/display/0").unwrap();
     /// ```
     pub fn open(path: &str) -> Result<Self> {
         let result = sys::env::open(path, 0, 0);
@@ -76,8 +78,11 @@ impl Surface {
     /// Fill a rectangle with a solid colour.
     ///
     /// # Example
-    /// ```
-    /// surface.fill(Rect::new(10, 10, 100, 100), Colour::RED)?;
+    /// ```no_run
+    /// use libpanda::graphics::{Colour, Rect, Surface};
+    ///
+    /// let mut surface = Surface::open("surface:/pci/display/0").unwrap();
+    /// surface.fill(Rect::new(10, 10, 100, 100), Colour::RED).unwrap();
     /// ```
     pub fn fill(&mut self, rect: Rect, colour: Colour) -> Result<()> {
         let params = FillParams {
@@ -104,10 +109,13 @@ impl Surface {
     /// Blit a pixel buffer to the surface.
     ///
     /// # Example
-    /// ```
-    /// let mut buffer = PixelBuffer::new(100, 100)?;
+    /// ```no_run
+    /// use libpanda::graphics::{Colour, PixelBuffer, Surface};
+    ///
+    /// let mut surface = Surface::open("surface:/pci/display/0").unwrap();
+    /// let mut buffer = PixelBuffer::new(100, 100).unwrap();
     /// buffer.clear(Colour::BLUE);
-    /// surface.blit(&buffer, 10, 10)?;
+    /// surface.blit(&buffer, 10, 10).unwrap();
     /// ```
     pub fn blit(&mut self, buffer: &PixelBuffer, x: u32, y: u32) -> Result<()> {
         let params = BlitParams {
@@ -184,8 +192,10 @@ impl Window {
     /// Create a new window with the given dimensions.
     ///
     /// # Example
-    /// ```
-    /// let window = Window::new(800, 600)?;
+    /// ```no_run
+    /// use libpanda::graphics::Window;
+    ///
+    /// let window = Window::new(800, 600).unwrap();
     /// ```
     pub fn new(width: u32, height: u32) -> Result<Self> {
         Self::builder().size(width, height).build()

@@ -85,10 +85,13 @@ clean-ext2:
 # All tests
 test: unit-test kernel-test userspace-test
 
-# Rust unit tests (run on host without build-std)
+# Rust unit tests and doctests (run on host without build-std)
 unit-test:
-	@echo "Running Rust unit tests..."
+	@echo "Running panda-abi unit tests..."
 	@cargo test -p panda-abi --features std
+	@echo ""
+	@echo "Running libpanda doctests..."
+	@cargo test -p libpanda --doc --no-default-features
 	@echo ""
 
 # Kernel tests

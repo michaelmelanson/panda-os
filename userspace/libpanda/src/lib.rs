@@ -89,7 +89,7 @@ fn alloc_error_handler(_layout: core::alloc::Layout) -> ! {
 /// Use `|args|` to access command-line arguments:
 ///
 /// # Example
-/// ```
+/// ```ignore
 /// // Without args
 /// libpanda::main! {
 ///     environment::log("Hello!");

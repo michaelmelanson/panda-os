@@ -11,13 +11,15 @@ use crate::sys;
 ///
 /// # Example
 ///
-/// ```
+/// ```no_run
+/// use libpanda::ipc::Channel;
+///
 /// // Get channel to parent process
 /// if let Some(parent) = Channel::parent() {
-///     parent.send(b"hello")?;
+///     parent.send(b"hello").unwrap();
 ///
 ///     let mut buf = [0u8; 256];
-///     let len = parent.recv(&mut buf)?;
+///     let len = parent.recv(&mut buf).unwrap();
 ///     // Process response...
 /// }
 /// ```

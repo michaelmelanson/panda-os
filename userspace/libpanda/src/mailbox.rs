@@ -114,7 +114,10 @@ impl Events {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```no_run
+    /// use libpanda::mailbox::{Mailbox, Event, ChannelEvent, ProcessEvent};
+    ///
+    /// let mailbox = Mailbox::default();
     /// let (handle, events) = mailbox.recv();
     /// for event in events.iter() {
     ///     match event {

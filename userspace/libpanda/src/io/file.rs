@@ -14,12 +14,13 @@ use panda_abi::FileStat;
 /// The file is automatically closed when dropped.
 ///
 /// # Example
-/// ```
-/// use libpanda::io::File;
+/// ```no_run
+/// use libpanda::io::{File, Read};
+/// use libpanda::String;
 ///
-/// let mut file = File::open("file:/initrd/hello.txt")?;
+/// let mut file = File::open("file:/initrd/hello.txt").unwrap();
 /// let mut contents = String::new();
-/// file.read_to_string(&mut contents)?;
+/// file.read_to_string(&mut contents).unwrap();
 /// // File is automatically closed here
 /// ```
 pub struct File {
@@ -30,8 +31,10 @@ impl File {
     /// Open a file by path.
     ///
     /// # Example
-    /// ```
-    /// let file = File::open("file:/initrd/hello.txt")?;
+    /// ```no_run
+    /// use libpanda::io::File;
+    ///
+    /// let file = File::open("file:/initrd/hello.txt").unwrap();
     /// ```
     pub fn open(path: &str) -> Result<Self> {
         let result = sys::env::open(path, 0, 0);
@@ -47,12 +50,16 @@ impl File {
     /// Open a file with mailbox attachment for event notifications.
     ///
     /// # Example
-    /// ```
+    /// ```no_run
+    /// use libpanda::io::File;
+    /// use libpanda::mailbox::Mailbox;
+    ///
+    /// let mailbox = Mailbox::default();
     /// let file = File::open_with_mailbox(
     ///     "keyboard:/pci/input/0",
     ///     mailbox.handle().as_raw(),
     ///     panda_abi::EVENT_KEYBOARD_KEY,
-    /// )?;
+    /// ).unwrap();
     /// ```
     pub fn open_with_mailbox(path: &str, mailbox: u32, event_mask: u32) -> Result<Self> {
         let result = sys::env::open(path, mailbox, event_mask);

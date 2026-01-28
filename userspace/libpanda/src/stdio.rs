@@ -23,14 +23,14 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```no_run
 //! use libpanda::stdio;
 //!
 //! // Simple pipeline-compatible program
 //! let mut buf = [0u8; 4096];
 //! while let Ok(n) = stdio::read(&mut buf) {
 //!     if n == 0 { break; }
-//!     stdio::write(&buf[..n])?;
+//!     let _ = stdio::write(&buf[..n]);
 //! }
 //! ```
 

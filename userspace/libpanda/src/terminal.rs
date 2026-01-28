@@ -5,19 +5,20 @@
 //!
 //! # Example
 //!
-//! ```
-//! use libpanda::terminal;
+//! ```no_run
+//! use libpanda::terminal::{self, Colour, NamedColour};
 //!
 //! // Simple output
 //! terminal::println("Hello, world!");
 //!
 //! // Styled output
-//! terminal::print_styled("Error: ", terminal::Style::fg(terminal::Colour::Named(terminal::NamedColour::Red)));
+//! let red = panda_abi::terminal::Style::fg(Colour::Named(NamedColour::Red));
+//! terminal::print_styled("Error: ", red);
 //! terminal::println("file not found");
 //!
 //! // Input
 //! if let Some(name) = terminal::input("What is your name? ") {
-//!     terminal::println(&format!("Hello, {}!", name));
+//!     terminal::println(&libpanda::format!("Hello, {}!", name));
 //! }
 //! ```
 

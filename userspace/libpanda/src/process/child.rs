@@ -15,15 +15,17 @@ use panda_abi::MAX_MESSAGE_SIZE;
 ///
 /// # Example
 ///
-/// ```
+/// ```no_run
+/// use libpanda::process::Child;
+///
 /// // Spawn a child process
-/// let mut child = Child::spawn("file:/initrd/hello")?;
+/// let mut child = Child::spawn("file:/initrd/hello").unwrap();
 ///
 /// // Communicate via channel
-/// child.channel().send(b"message")?;
+/// child.channel().send(b"message").unwrap();
 ///
 /// // Wait for exit
-/// let status = child.wait()?;
+/// let status = child.wait().unwrap();
 /// assert!(status.success());
 /// ```
 pub struct Child {
@@ -119,11 +121,16 @@ impl Drop for Child {
 ///
 /// # Example
 ///
-/// ```
+/// ```no_run
+/// use libpanda::process::Child;
+/// use libpanda::mailbox::Mailbox;
+///
+/// let mailbox = Mailbox::default();
 /// let child = Child::builder("file:/initrd/worker")
 ///     .args(&["worker", "--verbose"])
-///     .mailbox(mailbox.handle(), EVENT_CHANNEL_READABLE)
-///     .spawn()?;
+///     .mailbox(mailbox.handle(), panda_abi::EVENT_CHANNEL_READABLE)
+///     .spawn()
+///     .unwrap();
 /// ```
 pub struct ChildBuilder<'a> {
     path: &'a str,

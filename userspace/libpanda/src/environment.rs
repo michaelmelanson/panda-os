@@ -16,17 +16,26 @@ use panda_abi::*;
 /// To attach the handle to a mailbox for event notifications, pass the
 /// mailbox handle and event mask. Pass `(0, 0)` for no mailbox attachment.
 ///
-/// # Example
-/// ```
-/// // Simple open, no mailbox
-/// let file = environment::open("file:/initrd/hello.txt", 0, 0)?;
+/// # Examples
 ///
-/// // Open with mailbox attachment
+/// Simple open without mailbox:
+/// ```no_run
+/// use libpanda::environment;
+///
+/// let file = environment::open("file:/initrd/hello.txt", 0, 0).unwrap();
+/// ```
+///
+/// Open with mailbox attachment for events:
+/// ```no_run
+/// use libpanda::environment;
+/// use libpanda::mailbox::Mailbox;
+///
+/// let mailbox = Mailbox::default();
 /// let file = environment::open(
 ///     "keyboard:/pci/00:03.0",
 ///     mailbox.handle().as_raw(),
-///     EVENT_KEYBOARD_KEY,
-/// )?;
+///     panda_abi::EVENT_KEYBOARD_KEY,
+/// ).unwrap();
 /// ```
 #[inline(always)]
 pub fn open(path: &str, mailbox: u32, event_mask: u32) -> Result<Handle> {
@@ -38,16 +47,26 @@ pub fn open(path: &str, mailbox: u32, event_mask: u32) -> Result<Handle> {
 /// Returns a raw handle for manual process management.
 /// For RAII-managed child processes, use `Child::spawn()` or `Child::builder()`.
 ///
-/// # Example
-/// ```
-/// // Simple spawn returning raw handle
-/// let handle = environment::spawn("file:/initrd/hello")?;
+/// # Examples
 ///
-/// // For more options, use Child::builder():
+/// Simple spawn returning raw handle:
+/// ```no_run
+/// use libpanda::environment;
+///
+/// let handle = environment::spawn("file:/initrd/hello").unwrap();
+/// ```
+///
+/// For more options, use `Child::builder()`:
+/// ```no_run
+/// use libpanda::process::Child;
+/// use libpanda::mailbox::Mailbox;
+///
+/// let mb = Mailbox::default();
 /// let child = Child::builder("file:/initrd/cat")
 ///     .args(&["cat", "file.txt"])
-///     .mailbox(mb.handle().as_raw(), EVENT_CHANNEL_READABLE)
-///     .spawn()?;
+///     .mailbox(mb.handle(), panda_abi::EVENT_CHANNEL_READABLE)
+///     .spawn()
+///     .unwrap();
 /// ```
 pub fn spawn(path: &str) -> Result<Handle> {
     ChildBuilder::new(path).spawn_handle()

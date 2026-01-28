@@ -13,11 +13,14 @@ use panda_abi::BufferAllocInfo;
 /// helper methods for drawing operations.
 ///
 /// # Example
-/// ```
-/// let mut buffer = PixelBuffer::new(100, 100)?;
+/// ```no_run
+/// use libpanda::graphics::{Colour, PixelBuffer, Rect, Surface};
+///
+/// let mut buffer = PixelBuffer::new(100, 100).unwrap();
 /// buffer.clear(Colour::BLUE);
 /// buffer.fill_rect(Rect::new(10, 10, 20, 20), Colour::RED);
-/// surface.blit(&buffer, 0, 0)?;
+/// let mut surface = Surface::open("surface:/pci/display/0").unwrap();
+/// surface.blit(&buffer, 0, 0).unwrap();
 /// ```
 pub struct PixelBuffer {
     handle: Handle,
