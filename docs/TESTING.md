@@ -244,6 +244,46 @@ This verifies:
 2. Then all 3 children complete and parent finishes work (any interleaving)
 3. Finally the success message appears last
 
+### Screenshot testing
+
+For GUI tests, you can verify the visual output using screenshot comparison instead of (or in addition to) log matching.
+
+1. Create `userspace/tests/my_test/expected.png` with the expected screenshot.
+
+2. In your test, call `environment::screenshot_ready()` when the display is in the expected state:
+
+```rust
+#![no_std]
+#![no_main]
+
+use libpanda::environment;
+
+libpanda::main! {
+    // Set up GUI, draw to surface, etc.
+    
+    // Signal that the test is ready for screenshot capture
+    environment::screenshot_ready();
+    
+    // The test harness will capture the screenshot and terminate QEMU
+    loop {
+        core::hint::spin_loop();
+    }
+}
+```
+
+The test harness:
+1. Watches for the `<<<SCREENSHOT_READY>>>` marker in the log
+2. Captures a screenshot via the QEMU monitor
+3. Compares against `expected.png` (with 1% fuzz tolerance for anti-aliasing)
+4. Fails if the screenshots differ by more than 1000 pixels
+
+If `expected.png` doesn't exist on the first run, the actual screenshot is saved to `build/utest-<name>/<name>_actual.png` for review. Copy it to `expected.png` if correct.
+
+To update a screenshot after intentional changes:
+```bash
+cp build/utest-my_test/my_test_actual.png userspace/tests/my_test/expected.png
+```
+
 ### Exit codes
 
 - Exit code 0: Test passed
