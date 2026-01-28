@@ -30,6 +30,8 @@ Working:
 
 - **Migrate APIs to typed handles**: ✓ Handles now include 8-bit type tags in high bits for runtime validation. `File` and `Channel` use typed handles internally, and `from_handle()` methods validate types safely without unsafe code.
 
+- **Test build failures should fail `make test`**: ✓ Fixed - build failures now abort `make test` before running tests.
+
 
 ## Next steps
 

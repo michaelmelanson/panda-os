@@ -139,13 +139,23 @@ userspace-test: panda-kernel
 else
 userspace-test: panda-kernel
 	@echo "Building userspace tests..."
-	@for test in $(USERSPACE_TESTS); do \
-		$(CARGO) build $(CARGO_BUILD_STD) --package $$test $(USERSPACE_TARGET); \
+	@build_failed=""; \
+	for test in $(USERSPACE_TESTS); do \
+		if ! $(CARGO) build $(CARGO_BUILD_STD) --package $$test $(USERSPACE_TARGET); then \
+			build_failed="$$build_failed $$test"; \
+		fi; \
 		extras_var=$${test}_EXTRAS; \
 		for extra in $${!extras_var}; do \
-			$(CARGO) build $(CARGO_BUILD_STD) --package $$extra $(USERSPACE_TARGET); \
+			if ! $(CARGO) build $(CARGO_BUILD_STD) --package $$extra $(USERSPACE_TARGET); then \
+				build_failed="$$build_failed $$extra"; \
+			fi; \
 		done; \
-	done
+	done; \
+	if [ -n "$$build_failed" ]; then \
+		echo ""; \
+		echo "BUILD FAILED for:$$build_failed"; \
+		exit 1; \
+	fi
 	@for test in $(USERSPACE_TESTS); do \
 		extras_var=$${test}_EXTRAS; \
 		./scripts/setup-userspace-test.sh $$test $${!extras_var}; \
