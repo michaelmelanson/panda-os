@@ -94,6 +94,9 @@ pub fn encode_with_env(
         env_count: env.len() as u16,
         flags: 0,
     };
+    // SAFETY: StartupMessageHeader is a repr(C) struct of 4 u16 fields (8 bytes
+    // total) with no padding. Transmuting to [u8; 8] gives a well-defined byte
+    // representation for serialization.
     let header_bytes: [u8; 8] = unsafe { core::mem::transmute(header) };
     buf[..header_size].copy_from_slice(&header_bytes);
 
@@ -166,8 +169,13 @@ pub fn decode_full(buf: &[u8]) -> Result<(Vec<String>, Vec<(String, String)>), S
     }
 
     // Read header
+    // SAFETY: We verified buf.len() >= header_size (8 bytes) above.
+    // StartupMessageHeader is repr(C) with defined layout. The pointer is
+    // derived from a valid slice, so alignment is at least 1 (u8). Since
+    // StartupMessageHeader has alignment 2, we use ptr::read_unaligned to
+    // handle potentially unaligned input buffers safely.
     let header: StartupMessageHeader =
-        unsafe { core::ptr::read(buf.as_ptr() as *const StartupMessageHeader) };
+        unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const StartupMessageHeader) };
 
     if header.version != PROTOCOL_VERSION {
         return Err(StartupError::VersionMismatch);

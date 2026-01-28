@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 panda-abi = { path = "../../panda-abi" }
+spinning_top = { workspace = true }

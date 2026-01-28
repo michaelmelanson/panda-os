@@ -315,6 +315,7 @@ name = "libpanda"
 version = "0.1.0"
 dependencies = [
  "panda-abi",
+ "spinning_top 0.3.0",
 ]
 
 [[package]]

@@ -50,11 +50,16 @@ impl Buffer {
 
     /// Get the buffer contents as a slice.
     pub fn as_slice(&self) -> &[u8] {
+        // SAFETY: `addr` and `size` come from a successful kernel allocation
+        // (sys::buffer::alloc returned a positive handle). The kernel guarantees
+        // the memory is valid and mapped for the lifetime of the handle. The
+        // borrow is tied to `&self`, ensuring no mutable access while active.
         unsafe { slice::from_raw_parts(self.addr, self.size) }
     }
 
     /// Get the buffer contents as a mutable slice.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: Same as `as_slice`, plus `&mut self` ensures exclusive access.
         unsafe { slice::from_raw_parts_mut(self.addr, self.size) }
     }
 

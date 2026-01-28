@@ -24,6 +24,24 @@ Working:
 
 - **Better userspace heap allocator**: The current allocator in `libpanda/src/heap.rs` is a simple bump allocator that grows the heap via `brk()` but never reuses freed memory. Replace with a proper allocator (e.g., linked-list, buddy, or dlmalloc-style) that tracks free blocks and reuses them.
 
+- **Missing error case tests**: Tests only cover happy paths. Add tests for:
+  - Error code conversion (`Error::from_code`)
+  - Spawn failure with invalid path
+  - Channel operations on closed channels
+  - Buffer overflow in startup message encoding
+  - Environment variable edge cases (empty string, max length)
+
+
+- **Simplify startup message encoding**: The 160+ lines of repetitive byte-packing in `startup.rs` could use helper functions like `write_length_prefixed_strings()`.
+
+- **Document magic numbers**: Several hardcoded values lack explanation:
+  - `PRINT_BUFFER_SIZE: usize = 256` in print.rs
+  - Keyboard scan codes in keyboard.rs should reference Linux input event codes
+
+- **Migrate APIs to typed handles**: While `TypedHandle<T>` exists, most APIs still use untyped `Handle`. Gradually migrate high-level APIs to return typed handles (e.g., `FileHandle`, `ChannelHandle`).
+
+- **String memory leaking in ChildBuilder**: `process/child.rs:245-251` intentionally leaks strings as a lifetime workaround. Consider using a temporary arena allocator or refactoring to avoid this.
+
 
 ## Next steps
 
@@ -86,8 +104,6 @@ Shell pipelines (`cmd1 | cmd2 | cmd3`) where tools exchange structured `Value` o
 - **Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
 
 ### 5. Future work
-
-- **Environment variables**: Support for PATH, HOME, etc. needed for proper shell operation.
 
 - **Ext2 write support**: Currently ext2 is read-only.
 
