@@ -69,16 +69,62 @@ pub fn open(path: &str, mailbox: u32, event_mask: u32) -> Result<Handle, isize> 
 /// )?;
 /// ```
 pub fn spawn(path: &str, args: &[&str], mailbox: u32, event_mask: u32) -> Result<Handle, isize> {
-    let result = sys::env::spawn(path, mailbox, event_mask, 0, 0);
+    spawn_with_env(path, args, &[], mailbox, event_mask)
+}
+
+/// Spawn a new process with explicit environment variables.
+///
+/// Like `spawn`, but allows specifying environment variables to pass to the child.
+/// If `env` is empty, the current process's environment is inherited.
+/// If `env` is non-empty, it replaces the inherited environment.
+pub fn spawn_with_env(
+    path: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    mailbox: u32,
+    event_mask: u32,
+) -> Result<Handle, isize> {
+    spawn_full(path, args, env, mailbox, event_mask, 0, 0)
+}
+
+/// Internal spawn implementation with all options.
+fn spawn_full(
+    path: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+    mailbox: u32,
+    event_mask: u32,
+    stdin: u32,
+    stdout: u32,
+) -> Result<Handle, isize> {
+    let result = sys::env::spawn(path, mailbox, event_mask, stdin, stdout);
     if result < 0 {
         return Err(result);
     }
 
     let handle = Handle::from(result as u32);
 
-    // Send startup message (always, even with empty args)
+    // Determine environment to send
+    // If explicit env provided, use it; otherwise inherit current environment
+    let inherited_env: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>;
+    let env_refs: alloc::vec::Vec<(&str, &str)>;
+
+    if env.is_empty() {
+        // Inherit current process environment
+        inherited_env = crate::env::vars();
+        env_refs = inherited_env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+    } else {
+        inherited_env = alloc::vec::Vec::new();
+        let _ = &inherited_env; // Suppress unused warning
+        env_refs = env.to_vec();
+    }
+
+    // Send startup message with args and environment
     let mut buf = [0u8; MAX_MESSAGE_SIZE];
-    if let Ok(len) = crate::startup::encode(args, &mut buf) {
+    if let Ok(len) = crate::startup::encode_with_env(args, &env_refs, &mut buf) {
         // Best effort - ignore send errors (child may not be ready or doesn't care)
         let _ = crate::channel::send(handle, &buf[..len]);
     }
@@ -121,20 +167,7 @@ pub fn spawn_with_stdio(
     stdin: u32,
     stdout: u32,
 ) -> Result<Handle, isize> {
-    let result = sys::env::spawn(path, mailbox, event_mask, stdin, stdout);
-    if result < 0 {
-        return Err(result);
-    }
-
-    let handle = Handle::from(result as u32);
-
-    // Send startup message (always, even with empty args)
-    let mut buf = [0u8; MAX_MESSAGE_SIZE];
-    if let Ok(len) = crate::startup::encode(args, &mut buf) {
-        let _ = crate::channel::send(handle, &buf[..len]);
-    }
-
-    Ok(handle)
+    spawn_full(path, args, &[], mailbox, event_mask, stdin, stdout)
 }
 
 /// Log a message to the system console.

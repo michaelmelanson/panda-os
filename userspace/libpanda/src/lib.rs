@@ -33,6 +33,7 @@ pub mod ipc;
 // High-level modules (these use sys:: internally)
 pub mod buffer;
 pub mod channel;
+pub mod env;
 pub mod environment;
 pub mod file;
 pub mod handle;
@@ -107,9 +108,14 @@ macro_rules! __main_impl {
     ($args:ident, $($body:tt)*) => {
         #[unsafe(no_mangle)]
         extern "C" fn _start() -> ! {
-            // Receive startup arguments from parent
+            // Receive startup arguments and environment from parent
+            let (__args, __env) = $crate::startup::receive_startup();
+
+            // Initialize the environment module
+            $crate::env::init(__env);
+
             #[allow(unused_variables)]
-            let $args: $crate::Vec<$crate::String> = $crate::startup::receive_args();
+            let $args: $crate::Vec<$crate::String> = __args;
             let exit_code = (|| -> i32 { $($body)* })();
             $crate::process::exit(exit_code);
         }

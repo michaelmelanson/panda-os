@@ -210,6 +210,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_child"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
+name = "env_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

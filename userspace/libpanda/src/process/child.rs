@@ -128,6 +128,8 @@ impl Drop for Child {
 pub struct ChildBuilder<'a> {
     path: &'a str,
     args: Vec<&'a str>,
+    env: Vec<(&'a str, &'a str)>,
+    inherit_env: bool,
     mailbox: u32,
     event_mask: u32,
     stdin: u32,
@@ -140,6 +142,8 @@ impl<'a> ChildBuilder<'a> {
         Self {
             path,
             args: Vec::new(),
+            env: Vec::new(),
+            inherit_env: true,
             mailbox: 0,
             event_mask: 0,
             stdin: 0,
@@ -158,6 +162,30 @@ impl<'a> ChildBuilder<'a> {
     /// Add a single argument.
     pub fn arg(mut self, arg: &'a str) -> Self {
         self.args.push(arg);
+        self
+    }
+
+    /// Set an environment variable for the child.
+    ///
+    /// By default, the child inherits the parent's environment. Variables
+    /// set via this method are added to (or override) the inherited environment.
+    pub fn env(mut self, key: &'a str, value: &'a str) -> Self {
+        self.env.push((key, value));
+        self
+    }
+
+    /// Set multiple environment variables for the child.
+    pub fn envs(mut self, vars: &[(&'a str, &'a str)]) -> Self {
+        self.env.extend(vars.iter().copied());
+        self
+    }
+
+    /// Clear the inherited environment.
+    ///
+    /// After calling this, only environment variables explicitly set via
+    /// `env()` or `envs()` will be passed to the child.
+    pub fn env_clear(mut self) -> Self {
+        self.inherit_env = false;
         self
     }
 
@@ -205,9 +233,38 @@ impl<'a> ChildBuilder<'a> {
 
         let handle = Handle::from(result as u32);
 
-        // Send startup message with arguments
+        // Build environment: start with inherited if enabled, then add explicit vars
+        let env: Vec<(&str, &str)> = if self.inherit_env {
+            // Get current process environment and merge with explicit vars
+            let inherited = crate::env::vars();
+            let mut env_map: Vec<(&str, &str)> = Vec::new();
+
+            // Add inherited vars (will be overridden by explicit vars with same key)
+            for (k, v) in &inherited {
+                // Check if this key is overridden by explicit env
+                let overridden = self.env.iter().any(|(ek, _)| *ek == k.as_str());
+                if !overridden {
+                    // Leak strings to get static lifetime - this is fine since we're
+                    // about to encode and send them immediately
+                    let k_leaked: &'static str =
+                        alloc::boxed::Box::leak(k.clone().into_boxed_str());
+                    let v_leaked: &'static str =
+                        alloc::boxed::Box::leak(v.clone().into_boxed_str());
+                    env_map.push((k_leaked, v_leaked));
+                }
+            }
+
+            // Add explicit vars (these override inherited)
+            env_map.extend(self.env.iter().copied());
+            env_map
+        } else {
+            // Only use explicitly set environment variables
+            self.env
+        };
+
+        // Send startup message with arguments and environment
         let mut buf = [0u8; MAX_MESSAGE_SIZE];
-        if let Ok(len) = crate::startup::encode(&self.args, &mut buf) {
+        if let Ok(len) = crate::startup::encode_with_env(&self.args, &env, &mut buf) {
             // Best effort - ignore send errors
             let _ = sys::channel::send_msg(handle, &buf[..len]);
         }

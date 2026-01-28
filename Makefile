@@ -2,7 +2,7 @@ SHELL := /bin/bash
 .PHONY: build panda-kernel init run test kernel-test userspace-test unit-test ext2-image clean-ext2
 
 KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic resource block device_path
-USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test keyboard_test mailbox_keyboard_test state_test readdir_test buffer_test surface_test window_test multi_window_test alpha_test partial_refresh_test window_move_test block_test ext2_test device_path_test channel_test mailbox_test args_test pipeline_test control_plane_test
+USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test keyboard_test mailbox_keyboard_test state_test readdir_test buffer_test surface_test window_test multi_window_test alpha_test partial_refresh_test window_move_test block_test ext2_test device_path_test channel_test mailbox_test args_test pipeline_test control_plane_test env_test
 
 # Ext2 test disk image
 EXT2_IMAGE = build/test.ext2
@@ -16,7 +16,8 @@ mailbox_test_EXTRAS := mailbox_child
 args_test_EXTRAS := args_child
 pipeline_test_EXTRAS := pipeline_producer pipeline_consumer
 control_plane_test_EXTRAS := control_plane_child
-export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS
+env_test_EXTRAS := env_child
+export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS
 
 # Cargo commands for custom targets (require build-std for no_std targets)
 CARGO := cargo +nightly

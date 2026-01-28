@@ -738,6 +738,11 @@ impl Terminal {
 libpanda::main! {
     environment::log("terminal: Starting");
 
+    // Set up initial environment variables
+    libpanda::env::set("PATH", "/mnt:/initrd");
+    libpanda::env::set("HOME", "/");
+    libpanda::env::set("TERM", "panda");
+
     let font = Font::from_bytes(FONT_DATA, FontSettings::default())
         .expect("Failed to load font");
 

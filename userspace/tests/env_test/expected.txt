@@ -1,0 +1,11 @@
+env_test: starting
+env_test: set FOO=bar
+env_test: Test 1 - inheritance
+inherit: FOO=bar OK
+env_test: Test 2 - override
+override: FOO=baz OK
+env_test: Test 3 - env_clear
+clear: FOO unset OK
+clear: ONLY=yes OK
+env_test: all tests passed
+PASS
