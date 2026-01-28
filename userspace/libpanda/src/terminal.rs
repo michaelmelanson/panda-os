@@ -6,13 +6,13 @@
 //! # Example
 //!
 //! ```no_run
-//! use libpanda::terminal::{self, Colour, NamedColour};
+//! use libpanda::terminal::{self, Colour, NamedColour, TerminalStyle};
 //!
 //! // Simple output
 //! terminal::println("Hello, world!");
 //!
 //! // Styled output
-//! let red = panda_abi::terminal::Style::fg(Colour::Named(NamedColour::Red));
+//! let red = TerminalStyle::fg(Colour::Named(NamedColour::Red));
 //! terminal::print_styled("Error: ", red);
 //! terminal::println("file not found");
 //!

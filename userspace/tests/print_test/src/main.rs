@@ -1,4 +1,4 @@
-//! Test for print! and println! macros.
+//! Test for print! and println! macros and terminal output.
 //!
 //! Note: print!/println! output goes to the parent channel, not the kernel log.
 //! We use environment::log() for test markers that the test framework checks.
@@ -6,6 +6,7 @@
 #![no_std]
 #![no_main]
 
+use libpanda::terminal::{self, Colour, NamedColour, TerminalStyle};
 use libpanda::{environment, print, println};
 
 libpanda::main! {
@@ -62,6 +63,17 @@ libpanda::main! {
     println!("Test: debug formatting");
     let arr = [1, 2, 3];
     println!("  array: {:?}", arr);
+    println!("  PASS");
+
+    // Test terminal styled output
+    println!("Test: terminal styled output");
+    let red = TerminalStyle::fg(Colour::Named(NamedColour::Red));
+    terminal::print_styled("  RED", red);
+    let green = TerminalStyle::fg(Colour::Named(NamedColour::Green));
+    terminal::print_styled(" GREEN", green);
+    let blue = TerminalStyle::fg(Colour::Named(NamedColour::Blue));
+    terminal::print_styled(" BLUE", blue);
+    terminal::println("");
     println!("  PASS");
 
     environment::log("=== All print tests passed! ===");
