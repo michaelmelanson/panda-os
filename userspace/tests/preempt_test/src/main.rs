@@ -16,7 +16,7 @@ libpanda::main! {
     // Spawn multiple children that do CPU-bound work without yielding
     let mut children: [Option<Handle>; 3] = [None, None, None];
     for child in &mut children {
-        let Ok(handle) = environment::spawn("file:/initrd/preempt_child", &[], 0, 0) else {
+        let Ok(handle) = environment::spawn("file:/initrd/preempt_child") else {
             environment::log("FAIL: spawn returned error");
             return 1;
         };

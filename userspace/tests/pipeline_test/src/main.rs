@@ -4,10 +4,14 @@
 extern crate alloc;
 
 use alloc::format;
-use libpanda::{channel, environment, file, process};
+use libpanda::{
+    channel,
+    environment::{self, SpawnParams},
+    file, process,
+};
 use panda_abi::terminal::Request;
 use panda_abi::value::Value;
-use panda_abi::{EVENT_CHANNEL_READABLE, EVENT_PROCESS_EXITED, MAX_MESSAGE_SIZE};
+use panda_abi::{EVENT_PROCESS_EXITED, MAX_MESSAGE_SIZE};
 
 libpanda::main! {
     environment::log("pipeline_test: starting");
@@ -23,14 +27,11 @@ libpanda::main! {
     // Spawn consumer FIRST with stdin connected to read_end
     // This ensures consumer is ready to receive before producer sends
     // stdout=0 means output goes to parent channel
-    let Ok(consumer) = environment::spawn_with_stdio(
-        "file:/initrd/pipeline_consumer",
-        &["pipeline_consumer"],
-        0,
-        EVENT_PROCESS_EXITED | EVENT_CHANNEL_READABLE,
-        read_end.as_raw(),
-        0,
-    ) else {
+    let Ok(consumer) = SpawnParams::new("file:/initrd/pipeline_consumer")
+        .args(&["pipeline_consumer"])
+        .stdin(read_end.as_raw())
+        .spawn()
+    else {
         environment::log("FAIL: failed to spawn consumer");
         return 1;
     };
@@ -38,14 +39,12 @@ libpanda::main! {
 
     // Spawn producer with stdout connected to write_end
     // stdin=0 means no stdin redirection
-    let Ok(producer) = environment::spawn_with_stdio(
-        "file:/initrd/pipeline_producer",
-        &["pipeline_producer"],
-        0,
-        EVENT_PROCESS_EXITED,
-        0,
-        write_end.as_raw(),
-    ) else {
+    let Ok(producer) = SpawnParams::new("file:/initrd/pipeline_producer")
+        .args(&["pipeline_producer"])
+        .mailbox(0, EVENT_PROCESS_EXITED)
+        .stdout(write_end.as_raw())
+        .spawn()
+    else {
         environment::log("FAIL: failed to spawn producer");
         return 1;
     };

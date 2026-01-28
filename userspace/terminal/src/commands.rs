@@ -2,7 +2,11 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use libpanda::{channel, environment, process, Handle};
+use libpanda::{
+    channel,
+    environment::{self, SpawnParams},
+    process, Handle,
+};
 use panda_abi::terminal::Request;
 use panda_abi::value::Value;
 use panda_abi::{EVENT_CHANNEL_READABLE, EVENT_PROCESS_EXITED, MAX_MESSAGE_SIZE};
@@ -130,7 +134,11 @@ impl Terminal {
         let arg_refs: Vec<&str> = stage.args.iter().map(|s| s.as_str()).collect();
         let events = EVENT_PROCESS_EXITED | EVENT_CHANNEL_READABLE;
 
-        match environment::spawn(&path, &arg_refs, self.mailbox.handle().as_raw(), events) {
+        match SpawnParams::new(&path)
+            .args(&arg_refs)
+            .mailbox(self.mailbox.handle().as_raw(), events)
+            .spawn()
+        {
             Ok(child_handle) => {
                 self.child = Some(child_handle);
                 self.pipeline_children.clear();
@@ -191,14 +199,13 @@ impl Terminal {
                 channels[i].1.as_raw()
             };
 
-            match environment::spawn_with_stdio(
-                &path,
-                &arg_refs,
-                self.mailbox.handle().as_raw(),
-                events,
-                stdin,
-                stdout,
-            ) {
+            match SpawnParams::new(&path)
+                .args(&arg_refs)
+                .mailbox(self.mailbox.handle().as_raw(), events)
+                .stdin(stdin)
+                .stdout(stdout)
+                .spawn()
+            {
                 Ok(child_handle) => {
                     self.pipeline_children.push(child_handle);
                 }

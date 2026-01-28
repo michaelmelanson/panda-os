@@ -2,7 +2,7 @@
 #![no_main]
 
 use libpanda::{
-    environment,
+    environment::{self, SpawnParams},
     ipc::{Channel, ChannelEvent, Event, Mailbox},
     process,
 };
@@ -16,12 +16,10 @@ libpanda::main! {
 
     // Spawn a child with mailbox attachment for channel events
     // We listen for READABLE (message from child) and CLOSED (child exited and dropped channel)
-    let Ok(child_handle) = environment::spawn(
-        "file:/initrd/mailbox_child",
-        &[],
-        mailbox.handle().as_raw(),
-        EVENT_CHANNEL_READABLE | EVENT_CHANNEL_CLOSED,
-    ) else {
+    let Ok(child_handle) = SpawnParams::new("file:/initrd/mailbox_child")
+        .mailbox(mailbox.handle().as_raw(), EVENT_CHANNEL_READABLE | EVENT_CHANNEL_CLOSED)
+        .spawn()
+    else {
         environment::log("FAIL: spawn failed");
         return 1;
     };
