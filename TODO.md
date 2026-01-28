@@ -24,8 +24,6 @@ Working:
 
 - **Better userspace heap allocator**: The current allocator in `libpanda/src/heap.rs` is a simple bump allocator that grows the heap via `brk()` but never reuses freed memory. Replace with a proper allocator (e.g., linked-list, buddy, or dlmalloc-style) that tracks free blocks and reuses them.
 
-- **Simplify startup message encoding**: The 160+ lines of repetitive byte-packing in `startup.rs` could use helper functions like `write_length_prefixed_strings()`.
-
 - **Document magic numbers**: Several hardcoded values lack explanation:
   - `PRINT_BUFFER_SIZE: usize = 256` in print.rs
   - Keyboard scan codes in keyboard.rs should reference Linux input event codes
