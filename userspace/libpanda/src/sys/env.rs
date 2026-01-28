@@ -31,17 +31,28 @@ pub fn open(path: &str, mailbox: u32, event_mask: u32) -> isize {
 /// To attach the handle to a mailbox for event notifications, pass the
 /// mailbox handle and event mask. Pass `(0, 0)` for no mailbox attachment.
 ///
+/// To redirect child's stdin/stdout, pass the handle values. Pass 0 for default
+/// behavior (uses HANDLE_PARENT for both).
+///
 /// Note: This is the raw spawn syscall. Use `crate::environment::spawn` for
 /// the higher-level version that also sends startup arguments.
 #[inline(always)]
-pub fn spawn(path: &str, mailbox: u32, event_mask: u32) -> isize {
+pub fn spawn(path: &str, mailbox: u32, event_mask: u32, stdin: u32, stdout: u32) -> isize {
+    let params = SpawnParams {
+        path_ptr: path.as_ptr() as usize,
+        path_len: path.len(),
+        mailbox,
+        event_mask,
+        stdin,
+        stdout,
+    };
     send(
         Handle::ENVIRONMENT,
         OP_ENVIRONMENT_SPAWN,
-        path.as_ptr() as usize,
-        path.len(),
-        mailbox as usize,
-        event_mask as usize,
+        &params as *const SpawnParams as usize,
+        0,
+        0,
+        0,
     )
 }
 

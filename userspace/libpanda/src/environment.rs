@@ -69,7 +69,7 @@ pub fn open(path: &str, mailbox: u32, event_mask: u32) -> Result<Handle, isize> 
 /// )?;
 /// ```
 pub fn spawn(path: &str, args: &[&str], mailbox: u32, event_mask: u32) -> Result<Handle, isize> {
-    let result = sys::env::spawn(path, mailbox, event_mask);
+    let result = sys::env::spawn(path, mailbox, event_mask, 0, 0);
     if result < 0 {
         return Err(result);
     }

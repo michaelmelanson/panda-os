@@ -42,6 +42,7 @@ pub mod mailbox;
 pub mod print;
 pub mod process;
 pub mod startup;
+pub mod stdio;
 pub mod terminal;
 
 // Re-export alloc types for convenience

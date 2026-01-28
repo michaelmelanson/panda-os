@@ -20,18 +20,26 @@ pub const SYSCALL_SEND: usize = 0x30;
 // =============================================================================
 
 /// Well-known handle IDs that are pre-allocated for every process.
+///
+/// Handles 0-2 are stdio (Unix-like convention), handles 3+ are system resources.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WellKnownHandle {
+    /// Standard input channel (for pipeline/redirection support)
+    Stdin = 0,
+    /// Standard output channel (for pipeline/redirection support)
+    Stdout = 1,
+    /// Standard error channel (reserved for future use)
+    Stderr = 2,
     /// Handle to the current process (Process resource)
-    ProcessSelf = 0,
+    Process = 3,
     /// Handle to the system environment (Environment resource)
-    Environment = 1,
+    Environment = 4,
     /// Handle to the process's default mailbox (Mailbox resource)
-    Mailbox = 2,
+    Mailbox = 5,
     /// Handle to the channel connected to the parent process (ChannelEndpoint resource)
     /// Only valid if this process was spawned by another process.
-    Parent = 3,
+    Parent = 6,
 }
 
 impl WellKnownHandle {
@@ -42,15 +50,25 @@ impl WellKnownHandle {
     }
 }
 
-// Legacy constants for backwards compatibility
+// Handle constants
+/// Standard input channel handle.
+pub const HANDLE_STDIN: u32 = WellKnownHandle::Stdin as u32;
+/// Standard output channel handle.
+pub const HANDLE_STDOUT: u32 = WellKnownHandle::Stdout as u32;
+/// Standard error channel handle (reserved).
+pub const HANDLE_STDERR: u32 = WellKnownHandle::Stderr as u32;
 /// Handle to the current process (Process resource)
-pub const HANDLE_SELF: u32 = WellKnownHandle::ProcessSelf as u32;
+pub const HANDLE_PROCESS: u32 = WellKnownHandle::Process as u32;
 /// Handle to the system environment (Environment resource)
 pub const HANDLE_ENVIRONMENT: u32 = WellKnownHandle::Environment as u32;
 /// Handle to the process's default mailbox (Mailbox resource)
 pub const HANDLE_MAILBOX: u32 = WellKnownHandle::Mailbox as u32;
 /// Handle to the channel connected to the parent process (ChannelEndpoint resource)
 pub const HANDLE_PARENT: u32 = WellKnownHandle::Parent as u32;
+
+// Legacy alias for backwards compatibility
+/// Alias for HANDLE_PROCESS (deprecated, use HANDLE_PROCESS instead)
+pub const HANDLE_SELF: u32 = HANDLE_PROCESS;
 
 // =============================================================================
 // Operation codes
@@ -261,7 +279,8 @@ pub const HEAP_MAX_SIZE: usize = 0x100_0000_0000;
 // Environment operations (0x3_0000 - 0x3_FFFF)
 /// Open file: (path_ptr, path_len, flags) -> handle
 pub const OP_ENVIRONMENT_OPEN: u32 = Operation::EnvironmentOpen as u32;
-/// Spawn process: (path_ptr, path_len) -> process_handle
+/// Spawn process: (params_ptr) -> process_handle
+/// params_ptr points to a SpawnParams struct
 pub const OP_ENVIRONMENT_SPAWN: u32 = Operation::EnvironmentSpawn as u32;
 /// Log message: (msg_ptr, msg_len) -> 0
 pub const OP_ENVIRONMENT_LOG: u32 = Operation::EnvironmentLog as u32;
@@ -395,8 +414,10 @@ pub const FILE_NONBLOCK: u32 = FileFlags::NONBLOCK.0;
 
 // Channel constants
 /// Maximum size of a single channel message in bytes.
+/// 4KB is large enough for TCP segments (~1460 bytes) plus headers,
+/// aligns with page size, and is reasonable for most IPC use cases.
 /// Larger data should use shared memory / buffer handles.
-pub const MAX_MESSAGE_SIZE: usize = 1024;
+pub const MAX_MESSAGE_SIZE: usize = 4096;
 
 /// Default queue depth (number of messages per direction).
 pub const DEFAULT_QUEUE_CAPACITY: usize = 16;
@@ -613,6 +634,26 @@ pub struct StartupMessageHeader {
     pub env_count: u16,
     /// Reserved flags.
     pub flags: u16,
+}
+
+/// Parameters for spawning a new process.
+///
+/// Passed to OP_ENVIRONMENT_SPAWN via pointer.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SpawnParams {
+    /// Pointer to the executable path string.
+    pub path_ptr: usize,
+    /// Length of the path string.
+    pub path_len: usize,
+    /// Mailbox handle for event notifications (0 = none).
+    pub mailbox: u32,
+    /// Event mask for mailbox notifications.
+    pub event_mask: u32,
+    /// Handle to use for child's stdin (0 = default to parent channel).
+    pub stdin: u32,
+    /// Handle to use for child's stdout (0 = default to parent channel).
+    pub stdout: u32,
 }
 
 // =============================================================================

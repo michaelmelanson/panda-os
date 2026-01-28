@@ -138,7 +138,9 @@ impl HandleTable {
     pub fn new() -> Self {
         Self {
             handles: BTreeMap::new(),
-            next_id: 4, // 0-3 reserved for well-known handles (self, env, mailbox, parent)
+            // 0-6 reserved for well-known handles:
+            // 0=stdin, 1=stdout, 2=stderr, 3=process, 4=env, 5=mailbox, 6=parent
+            next_id: 7,
         }
     }
 

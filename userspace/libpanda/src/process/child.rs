@@ -130,6 +130,8 @@ pub struct ChildBuilder<'a> {
     args: Vec<&'a str>,
     mailbox: u32,
     event_mask: u32,
+    stdin: u32,
+    stdout: u32,
 }
 
 impl<'a> ChildBuilder<'a> {
@@ -140,6 +142,8 @@ impl<'a> ChildBuilder<'a> {
             args: Vec::new(),
             mailbox: 0,
             event_mask: 0,
+            stdin: 0,
+            stdout: 0,
         }
     }
 
@@ -168,9 +172,33 @@ impl<'a> ChildBuilder<'a> {
         self
     }
 
+    /// Set the child's stdin to read from the given handle.
+    ///
+    /// The handle should be a channel endpoint. If not set, the child's
+    /// stdin will be invalid and it will use HANDLE_PARENT for input.
+    pub fn stdin(mut self, handle: Handle) -> Self {
+        self.stdin = handle.as_raw();
+        self
+    }
+
+    /// Set the child's stdout to write to the given handle.
+    ///
+    /// The handle should be a channel endpoint. If not set, the child's
+    /// stdout will be invalid and it will use HANDLE_PARENT for output.
+    pub fn stdout(mut self, handle: Handle) -> Self {
+        self.stdout = handle.as_raw();
+        self
+    }
+
     /// Spawn the child process.
     pub fn spawn(self) -> Result<Child> {
-        let result = sys::env::spawn(self.path, self.mailbox, self.event_mask);
+        let result = sys::env::spawn(
+            self.path,
+            self.mailbox,
+            self.event_mask,
+            self.stdin,
+            self.stdout,
+        );
         if result < 0 {
             return Err(Error::from_code(result));
         }

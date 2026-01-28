@@ -33,8 +33,19 @@ impl Handle {
         self.0
     }
 
+    /// Well-known handle for standard input.
+    /// Only valid if the process was spawned with stdin redirection.
+    pub const STDIN: Handle = Handle(panda_abi::HANDLE_STDIN);
+
+    /// Well-known handle for standard output.
+    /// Only valid if the process was spawned with stdout redirection.
+    pub const STDOUT: Handle = Handle(panda_abi::HANDLE_STDOUT);
+
     /// Well-known handle to the current process.
-    pub const SELF: Handle = Handle(panda_abi::HANDLE_SELF);
+    pub const PROCESS: Handle = Handle(panda_abi::HANDLE_PROCESS);
+
+    /// Alias for PROCESS (for backwards compatibility).
+    pub const SELF: Handle = Self::PROCESS;
 
     /// Well-known handle to the system environment.
     pub const ENVIRONMENT: Handle = Handle(panda_abi::HANDLE_ENVIRONMENT);
@@ -264,7 +275,7 @@ impl TypedHandle<Process> {
     #[inline]
     pub const fn current() -> Self {
         Self {
-            id: panda_abi::HANDLE_SELF,
+            id: panda_abi::HANDLE_PROCESS,
             _marker: PhantomData,
         }
     }

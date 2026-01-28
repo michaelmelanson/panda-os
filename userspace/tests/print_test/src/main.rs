@@ -1,12 +1,15 @@
 //! Test for print! and println! macros.
+//!
+//! Note: print!/println! output goes to the parent channel, not the kernel log.
+//! We use environment::log() for test markers that the test framework checks.
 
 #![no_std]
 #![no_main]
 
-use libpanda::{print, println};
+use libpanda::{environment, print, println};
 
 libpanda::main! {
-    println!("=== Print macro tests ===");
+    environment::log("=== Print macro tests ===");
 
     // Test basic println
     println!("Test: basic println");
@@ -61,6 +64,6 @@ libpanda::main! {
     println!("  array: {:?}", arr);
     println!("  PASS");
 
-    println!("=== All print tests passed! ===");
+    environment::log("=== All print tests passed! ===");
     0
 }

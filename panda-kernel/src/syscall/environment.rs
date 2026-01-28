@@ -171,27 +171,27 @@ pub fn handle_mount(
 /// This function does not return - it yields to the scheduler.
 ///
 /// Arguments:
-/// - uri_ptr, uri_len: URI of executable to spawn
-/// - mailbox_handle: Handle of mailbox to attach spawn handle to (0 = don't attach)
-/// - event_mask: Events to listen for on the spawn handle
+/// - params_ptr: Pointer to SpawnParams struct
 ///
 /// Creates a channel between parent and child. Child receives its endpoint at HANDLE_PARENT.
 /// Parent receives a SpawnHandle that combines channel + process info.
-pub fn handle_spawn(
-    ctx: &SyscallContext,
-    uri_ptr: usize,
-    uri_len: usize,
-    mailbox_handle: usize,
-    event_mask: usize,
-) -> isize {
-    let mailbox_handle = mailbox_handle as u32;
-    let event_mask = event_mask as u32;
+/// If params.stdin or params.stdout are non-zero, those handles are copied to the child's
+/// HANDLE_STDIN/HANDLE_STDOUT slots.
+pub fn handle_spawn(ctx: &SyscallContext, params_ptr: usize) -> isize {
+    // Read spawn parameters from userspace
+    let params = unsafe { *(params_ptr as *const panda_abi::SpawnParams) };
+
+    let mailbox_handle = params.mailbox;
+    let event_mask = params.event_mask;
+    let stdin_handle = params.stdin;
+    let stdout_handle = params.stdout;
+
     debug!(
-        "SPAWN: uri_ptr={:#x}, uri_len={}, mailbox={}, event_mask={:#x}",
-        uri_ptr, uri_len, mailbox_handle, event_mask
+        "SPAWN: path_ptr={:#x}, path_len={}, mailbox={}, event_mask={:#x}, stdin={}, stdout={}",
+        params.path_ptr, params.path_len, mailbox_handle, event_mask, stdin_handle, stdout_handle
     );
-    let uri_ptr = uri_ptr as *const u8;
-    let uri = unsafe { slice::from_raw_parts(uri_ptr, uri_len) };
+    let uri_ptr = params.path_ptr as *const u8;
+    let uri = unsafe { slice::from_raw_parts(uri_ptr, params.path_len) };
     debug!("SPAWN: created slice");
     let uri = match str::from_utf8(uri) {
         Ok(u) => u,
@@ -200,7 +200,25 @@ pub fn handle_spawn(
 
     debug!("SPAWN: uri={}", uri);
 
+    // Get stdin/stdout resources from parent's handle table (if specified)
+    // These need to be cloned before entering the async block
+    let stdin_resource = if stdin_handle != 0 {
+        scheduler::with_current_process(|proc| {
+            proc.handles().get(stdin_handle).map(|h| h.resource_arc())
+        })
+    } else {
+        None
+    };
+    let stdout_resource = if stdout_handle != 0 {
+        scheduler::with_current_process(|proc| {
+            proc.handles().get(stdout_handle).map(|h| h.resource_arc())
+        })
+    } else {
+        None
+    };
+
     // Create a future for the spawn operation
+    // Move stdin/stdout resources into the future
     let uri_owned = String::from(uri);
     let future = Box::pin(async move {
         let Some(resource) = resource::open(&uri_owned).await else {
@@ -272,6 +290,18 @@ pub fn handle_spawn(
         process
             .handles_mut()
             .insert_at(panda_abi::HANDLE_PARENT, Arc::new(child_endpoint));
+
+        // Set up stdin/stdout if specified by parent
+        if let Some(stdin_res) = stdin_resource {
+            process
+                .handles_mut()
+                .insert_at(panda_abi::HANDLE_STDIN, stdin_res);
+        }
+        if let Some(stdout_res) = stdout_resource {
+            process
+                .handles_mut()
+                .insert_at(panda_abi::HANDLE_STDOUT, stdout_res);
+        }
 
         scheduler::add_process(process);
 

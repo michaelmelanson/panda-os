@@ -4,12 +4,12 @@
 extern crate alloc;
 
 use alloc::string::String;
-use libpanda::environment;
 use libpanda::io::{File, Read};
+use libpanda::{print, println};
 
 libpanda::main! { |args|
     if args.len() < 2 {
-        environment::log("Usage: cat <file>");
+        println!("Usage: cat <file>");
         return 1;
     }
 
@@ -26,7 +26,7 @@ libpanda::main! { |args|
     let mut file = match File::open(&uri) {
         Ok(f) => f,
         Err(_) => {
-            environment::log(&alloc::format!("cat: {}: No such file or directory", path));
+            println!("cat: {}: No such file or directory", path);
             return 1;
         }
     };
@@ -38,17 +38,14 @@ libpanda::main! { |args|
             Ok(0) => break, // EOF
             Ok(n) => n,
             Err(_) => {
-                environment::log("cat: error reading file");
+                println!("cat: error reading file");
                 return 1;
             }
         };
 
-        // Convert to string and log
+        // Print file contents
         if let Ok(s) = core::str::from_utf8(&buf[..n]) {
-            // Log line by line to handle newlines properly
-            for line in s.lines() {
-                environment::log(line);
-            }
+            print!("{}", s);
         }
     }
 

@@ -235,7 +235,7 @@ fn handle_send(
 
         // Environment operations (open/spawn/opendir/mount are async and don't return)
         OP_ENVIRONMENT_OPEN => environment::handle_open(ctx, arg0, arg1, arg2, arg3),
-        OP_ENVIRONMENT_SPAWN => environment::handle_spawn(ctx, arg0, arg1, arg2, arg3),
+        OP_ENVIRONMENT_SPAWN => environment::handle_spawn(ctx, arg0),
         OP_ENVIRONMENT_LOG => environment::handle_log(arg0, arg1),
         OP_ENVIRONMENT_TIME => environment::handle_time(),
         OP_ENVIRONMENT_OPENDIR => environment::handle_opendir(ctx, arg0, arg1),

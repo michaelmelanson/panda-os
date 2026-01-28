@@ -1,21 +1,24 @@
 //! Print macros for userspace programs.
 //!
-//! Provides `print!` and `println!` macros that write to the system log.
+//! Provides `print!` and `println!` macros that write to the parent channel.
+//! For interactive terminal programs, the parent (terminal) receives this
+//! output and displays it. For pipeline programs, output goes to stdout.
 
 use core::fmt::{self, Write};
 
-use crate::environment;
+use crate::handle::Handle;
+use crate::sys;
 
 /// Buffer size for print output. Messages longer than this will be truncated.
 const PRINT_BUFFER_SIZE: usize = 256;
 
-/// A writer that buffers output and sends it as a single log message.
-struct LogWriter {
+/// A writer that buffers output and sends it to the parent channel.
+struct OutputWriter {
     buffer: [u8; PRINT_BUFFER_SIZE],
     pos: usize,
 }
 
-impl LogWriter {
+impl OutputWriter {
     const fn new() -> Self {
         Self {
             buffer: [0; PRINT_BUFFER_SIZE],
@@ -25,14 +28,13 @@ impl LogWriter {
 
     fn flush(&self) {
         if self.pos > 0 {
-            // Safety: we only write valid UTF-8 via write_str
-            let s = unsafe { core::str::from_utf8_unchecked(&self.buffer[..self.pos]) };
-            environment::log(s);
+            // Send to parent channel (terminal or pipeline stage)
+            let _ = sys::channel::send_msg(Handle::PARENT, &self.buffer[..self.pos]);
         }
     }
 }
 
-impl Write for LogWriter {
+impl Write for OutputWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         let bytes = s.as_bytes();
         let available = PRINT_BUFFER_SIZE - self.pos;
@@ -48,7 +50,7 @@ impl Write for LogWriter {
 /// Internal function used by print macros.
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
-    let mut writer = LogWriter::new();
+    let mut writer = OutputWriter::new();
     let _ = writer.write_fmt(args);
     writer.flush();
 }
