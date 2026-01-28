@@ -53,10 +53,10 @@ libpanda::main! {
     let (a, b) = ipc::create_pair().expect("create_pair failed");
 
     // Close one end
-    file::close(b);
+    file::close(b.into());
 
     // Try to send - should fail because peer is closed
-    match ipc::try_send(a, b"hello") {
+    match ipc::try_send(a.into(), b"hello") {
         Ok(_) => {
             environment::log("FAIL: send to closed channel should fail");
             return 1;

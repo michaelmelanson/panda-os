@@ -173,6 +173,10 @@ impl Buffer for SharedBuffer {
 }
 
 impl Resource for SharedBuffer {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        panda_abi::HandleType::Buffer
+    }
+
     fn as_buffer(&self) -> Option<&dyn Buffer> {
         Some(self)
     }

@@ -2,16 +2,22 @@
 //!
 //! Handles provide a unified abstraction for kernel resources accessible from userspace.
 //! Each process has its own handle table mapping handle IDs to resources.
+//!
+//! Handle format: `[8 bits: type tag][24 bits: handle id]`
+//! The type tag allows userspace to verify handle types at runtime.
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+
+use panda_abi::HandleType;
 
 use crate::process::waker::Waker;
 use crate::resource::{
     Buffer, CharacterOutput, Directory, EventSource, ProcessInterface, Resource, Surface, VfsFile,
 };
 
-/// Handle identifier (similar to file descriptor but for any resource)
+/// Handle identifier (similar to file descriptor but for any resource).
+/// Includes type tag in high 8 bits, handle ID in low 24 bits.
 pub type HandleId = u32;
 
 /// A kernel resource handle with per-handle state.
@@ -130,7 +136,7 @@ impl Handle {
 /// Per-process handle table mapping handle IDs to resources.
 pub struct HandleTable {
     handles: BTreeMap<HandleId, Handle>,
-    next_id: HandleId,
+    next_id: u32,
 }
 
 impl HandleTable {
@@ -144,31 +150,42 @@ impl HandleTable {
         }
     }
 
-    /// Insert a resource at a specific handle ID.
+    /// Insert a resource at a specific handle ID (already tagged).
     /// Used for well-known handles like HANDLE_MAILBOX and HANDLE_PARENT.
     pub fn insert_at(&mut self, id: HandleId, resource: Arc<dyn Resource>) {
         self.handles.insert(id, Handle::new(resource));
     }
 
-    /// Insert a resource and return its handle ID.
-    pub fn insert(&mut self, resource: Arc<dyn Resource>) -> HandleId {
+    /// Insert a resource with the specified type tag and return its tagged handle ID.
+    pub fn insert_typed(
+        &mut self,
+        handle_type: HandleType,
+        resource: Arc<dyn Resource>,
+    ) -> HandleId {
         let id = self.next_id;
         self.next_id += 1;
-        self.handles.insert(id, Handle::new(resource));
-        id
+        let tagged_id = handle_type.make_handle(id);
+        self.handles.insert(tagged_id, Handle::new(resource));
+        tagged_id
     }
 
-    /// Get a reference to a handle.
+    /// Insert a resource using its self-reported type and return its tagged handle ID.
+    pub fn insert(&mut self, resource: Arc<dyn Resource>) -> HandleId {
+        let handle_type = resource.handle_type();
+        self.insert_typed(handle_type, resource)
+    }
+
+    /// Get a reference to a handle by its tagged ID.
     pub fn get(&self, id: HandleId) -> Option<&Handle> {
         self.handles.get(&id)
     }
 
-    /// Get a mutable reference to a handle.
+    /// Get a mutable reference to a handle by its tagged ID.
     pub fn get_mut(&mut self, id: HandleId) -> Option<&mut Handle> {
         self.handles.get_mut(&id)
     }
 
-    /// Remove a handle by ID.
+    /// Remove a handle by its tagged ID.
     pub fn remove(&mut self, id: HandleId) -> Option<Handle> {
         self.handles.remove(&id)
     }

@@ -167,6 +167,10 @@ impl VfsFileResource {
 }
 
 impl Resource for VfsFileResource {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        panda_abi::HandleType::File
+    }
+
     fn as_vfs_file(&self) -> Option<&dyn super::VfsFile> {
         Some(self)
     }
@@ -190,6 +194,10 @@ impl DirectoryResource {
 }
 
 impl Resource for DirectoryResource {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        panda_abi::HandleType::Directory
+    }
+
     fn as_directory(&self) -> Option<&dyn Directory> {
         Some(self)
     }
@@ -248,6 +256,11 @@ impl SerialConsoleResource {
 }
 
 impl Resource for SerialConsoleResource {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        // Console is accessed like a file
+        panda_abi::HandleType::File
+    }
+
     fn as_char_output(&self) -> Option<&dyn CharacterOutput> {
         Some(self)
     }
@@ -298,6 +311,11 @@ impl KeyboardResource {
 }
 
 impl Resource for KeyboardResource {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        // Keyboard is accessed like a file (read events)
+        panda_abi::HandleType::File
+    }
+
     fn as_event_source(&self) -> Option<&dyn EventSource> {
         Some(self)
     }
@@ -408,6 +426,10 @@ struct BlockDeviceResource {
 }
 
 impl Resource for BlockDeviceResource {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        panda_abi::HandleType::File
+    }
+
     fn as_vfs_file(&self) -> Option<&dyn super::VfsFile> {
         Some(self)
     }

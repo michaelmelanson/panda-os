@@ -1,5 +1,7 @@
 //! Mailbox operation syscall handlers (OP_MAILBOX_*).
 
+use panda_abi::HandleType;
+
 use crate::resource::Mailbox;
 use crate::scheduler;
 
@@ -9,7 +11,10 @@ use super::SyscallContext;
 /// Returns a new mailbox handle.
 pub fn handle_create() -> isize {
     let mailbox = Mailbox::new();
-    let handle_id = scheduler::with_current_process(|proc| proc.handles_mut().insert(mailbox));
+    let handle_id = scheduler::with_current_process(|proc| {
+        proc.handles_mut()
+            .insert_typed(HandleType::Mailbox, mailbox)
+    });
     handle_id as isize
 }
 

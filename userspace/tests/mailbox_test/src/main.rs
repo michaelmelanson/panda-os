@@ -26,7 +26,10 @@ libpanda::main! {
     };
 
     // Wrap the child handle in a Channel for receiving messages
-    let channel = Channel::from_handle_borrowed(child_handle.into());
+    let Some(channel) = Channel::from_handle_borrowed(child_handle.into()) else {
+        environment::log("FAIL: handle is not a channel");
+        return 1;
+    };
 
     environment::log("Mailbox test: child spawned, waiting for events...");
 

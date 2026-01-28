@@ -22,6 +22,10 @@ impl ProcessResource {
 }
 
 impl Resource for ProcessResource {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        panda_abi::HandleType::Process
+    }
+
     fn as_process(&self) -> Option<&dyn Process> {
         Some(self)
     }

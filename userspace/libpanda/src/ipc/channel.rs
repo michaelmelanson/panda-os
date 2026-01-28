@@ -1,7 +1,7 @@
 //! Channel abstraction for message-passing.
 
 use crate::error::{Error, Result};
-use crate::handle::Handle;
+use crate::handle::{ChannelHandle, Handle};
 use crate::sys;
 
 /// A message channel for inter-process communication.
@@ -24,7 +24,7 @@ use crate::sys;
 /// }
 /// ```
 pub struct Channel {
-    handle: Handle,
+    handle: ChannelHandle,
     /// Whether we own the handle (and should close it on drop).
     owned: bool,
 }
@@ -34,41 +34,70 @@ impl Channel {
     ///
     /// Returns `None` if this process has no parent (e.g., init process).
     pub fn parent() -> Option<Self> {
-        Handle::parent().map(|h| Self {
+        ChannelHandle::parent().map(|h| Self {
             handle: h,
             owned: false, // Don't close the parent handle
         })
     }
 
-    /// Create a Channel from an existing handle.
+    /// Create a Channel from an existing untyped handle.
     ///
     /// The channel takes ownership of the handle and will close it on drop.
-    pub fn from_handle(handle: Handle) -> Self {
+    /// Returns `None` if the handle is not a channel handle.
+    pub fn from_handle(handle: Handle) -> Option<Self> {
+        let handle = ChannelHandle::from_raw(handle.as_raw())?;
+        Some(Self {
+            handle,
+            owned: true,
+        })
+    }
+
+    /// Create a Channel from a typed handle.
+    ///
+    /// The channel takes ownership of the handle and will close it on drop.
+    pub fn from_typed(handle: ChannelHandle) -> Self {
         Self {
             handle,
             owned: true,
         }
     }
 
-    /// Create a Channel from a handle without taking ownership.
+    /// Create a Channel from an untyped handle without taking ownership.
     ///
     /// The handle will NOT be closed when this Channel is dropped.
     /// Use this when the handle is managed elsewhere (e.g., child process handles).
-    pub fn from_handle_borrowed(handle: Handle) -> Self {
+    /// Returns `None` if the handle is not a channel handle.
+    pub fn from_handle_borrowed(handle: Handle) -> Option<Self> {
+        let handle = ChannelHandle::from_raw(handle.as_raw())?;
+        Some(Self {
+            handle,
+            owned: false,
+        })
+    }
+
+    /// Create a Channel from a typed handle without taking ownership.
+    ///
+    /// The handle will NOT be closed when this Channel is dropped.
+    pub fn from_typed_borrowed(handle: ChannelHandle) -> Self {
         Self {
             handle,
             owned: false,
         }
     }
 
-    /// Get the underlying handle.
-    pub fn handle(&self) -> Handle {
+    /// Get the underlying typed handle.
+    pub fn handle(&self) -> ChannelHandle {
         self.handle
+    }
+
+    /// Get the underlying handle as an untyped Handle.
+    pub fn untyped_handle(&self) -> Handle {
+        self.handle.into()
     }
 
     /// Send a message (blocking if queue is full).
     pub fn send(&self, msg: &[u8]) -> Result<()> {
-        let result = sys::channel::send_msg(self.handle, msg);
+        let result = sys::channel::send_msg(self.handle.into(), msg);
         if result < 0 {
             Err(Error::from_code(result))
         } else {
@@ -80,7 +109,7 @@ impl Channel {
     ///
     /// Returns `Err(Error::WouldBlock)` if the queue is full.
     pub fn try_send(&self, msg: &[u8]) -> Result<()> {
-        let result = sys::channel::try_send_msg(self.handle, msg);
+        let result = sys::channel::try_send_msg(self.handle.into(), msg);
         if result < 0 {
             Err(Error::from_code(result))
         } else {
@@ -92,7 +121,7 @@ impl Channel {
     ///
     /// Returns the number of bytes received.
     pub fn recv(&self, buf: &mut [u8]) -> Result<usize> {
-        let result = sys::channel::recv_msg(self.handle, buf);
+        let result = sys::channel::recv_msg(self.handle.into(), buf);
         if result < 0 {
             Err(Error::from_code(result))
         } else {
@@ -105,7 +134,7 @@ impl Channel {
     /// Returns `Ok(Some(len))` if a message was received, `Ok(None)` if the
     /// queue is empty, or `Err` on error.
     pub fn try_recv(&self, buf: &mut [u8]) -> Result<Option<usize>> {
-        let result = sys::channel::try_recv_msg(self.handle, buf);
+        let result = sys::channel::try_recv_msg(self.handle.into(), buf);
         if result == -1 {
             // Would block - no message available
             Ok(None)
@@ -124,18 +153,23 @@ impl Channel {
         self.recv(response)
     }
 
-    /// Consume the channel and return the underlying handle without closing it.
-    pub fn into_handle(self) -> Handle {
+    /// Consume the channel and return the underlying typed handle without closing it.
+    pub fn into_handle(self) -> ChannelHandle {
         let handle = self.handle;
         core::mem::forget(self);
         handle
+    }
+
+    /// Consume the channel and return the underlying untyped handle without closing it.
+    pub fn into_untyped_handle(self) -> Handle {
+        self.into_handle().into()
     }
 }
 
 impl Drop for Channel {
     fn drop(&mut self) {
         if self.owned {
-            let _ = sys::file::close(self.handle);
+            let _ = sys::file::close(self.handle.into());
         }
     }
 }
@@ -198,13 +232,14 @@ pub fn try_recv(handle: Handle, buf: &mut [u8]) -> Result<usize> {
 ///
 /// Returns handles to both endpoints: `(endpoint_a, endpoint_b)`.
 /// Messages sent on endpoint_a are received by endpoint_b, and vice versa.
-pub fn create_pair() -> Result<(Handle, Handle)> {
+pub fn create_pair() -> Result<(ChannelHandle, ChannelHandle)> {
     let result = sys::channel::create_raw();
     if result < 0 {
         return Err(Error::from_code(result));
     }
     // Result encodes both handles: high 32 bits = handle_a, low 32 bits = handle_b
-    let handle_a = Handle::from((result >> 32) as u32);
-    let handle_b = Handle::from((result & 0xFFFFFFFF) as u32);
+    let handle_a = ChannelHandle::from_raw((result >> 32) as u32).ok_or(Error::InvalidArgument)?;
+    let handle_b =
+        ChannelHandle::from_raw((result & 0xFFFFFFFF) as u32).ok_or(Error::InvalidArgument)?;
     Ok((handle_a, handle_b))
 }

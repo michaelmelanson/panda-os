@@ -3,6 +3,8 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
+use panda_abi::HandleType;
+
 use crate::process::PendingSyscall;
 use crate::resource::{Buffer, SharedBuffer, VfsFile};
 use crate::scheduler;
@@ -18,7 +20,7 @@ pub fn handle_alloc(size: usize, info_ptr: usize) -> isize {
         match SharedBuffer::alloc(proc, size) {
             Ok((buffer, mapped_addr)) => {
                 let buffer_size = Buffer::size(&*buffer);
-                let handle_id = proc.handles_mut().insert(buffer);
+                let handle_id = proc.handles_mut().insert_typed(HandleType::Buffer, buffer);
 
                 // Write full info to userspace if pointer provided
                 if info_ptr != 0 {

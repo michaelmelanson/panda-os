@@ -13,6 +13,10 @@ pub struct WindowResource {
 }
 
 impl Resource for WindowResource {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        panda_abi::HandleType::Surface
+    }
+
     fn as_surface(&self) -> Option<&dyn Surface> {
         Some(self)
     }

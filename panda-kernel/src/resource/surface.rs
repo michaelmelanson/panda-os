@@ -110,13 +110,19 @@ pub trait Surface: Send + Sync {
 
     /// Blit pixels to surface (copy rectangle from pixel buffer).
     /// Uses interior mutability.
-    fn blit(&self, x: u32, y: u32, width: u32, height: u32, pixels: &[u8])
-        -> Result<(), SurfaceError>;
+    fn blit(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Result<(), SurfaceError>;
 
     /// Fill rectangle with solid color.
     /// Uses interior mutability.
     fn fill(&self, x: u32, y: u32, width: u32, height: u32, color: u32)
-        -> Result<(), SurfaceError>;
+    -> Result<(), SurfaceError>;
 
     /// Flush updates to display (for double-buffering).
     /// Uses interior mutability.
@@ -213,10 +219,10 @@ impl FramebufferSurface {
             let offset = (y * self.info.stride + x * 4) as isize;
             let ptr = self.framebuffer.offset(offset);
             // Direct copy - framebuffer is B8G8R8A8, pixel is [B,G,R,A]
-            *ptr = pixel[0];        // B
-            *ptr.offset(1) = pixel[1];  // G
-            *ptr.offset(2) = pixel[2];  // R
-            *ptr.offset(3) = pixel[3];  // A
+            *ptr = pixel[0]; // B
+            *ptr.offset(1) = pixel[1]; // G
+            *ptr.offset(2) = pixel[2]; // R
+            *ptr.offset(3) = pixel[3]; // A
         }
     }
 
@@ -345,6 +351,10 @@ impl Surface for FramebufferSurface {
 }
 
 impl Resource for FramebufferSurface {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        panda_abi::HandleType::Surface
+    }
+
     fn as_surface(&self) -> Option<&dyn Surface> {
         Some(self)
     }

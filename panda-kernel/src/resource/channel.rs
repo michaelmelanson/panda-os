@@ -260,6 +260,10 @@ impl Drop for ChannelEndpoint {
 }
 
 impl Resource for ChannelEndpoint {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        panda_abi::HandleType::Channel
+    }
+
     fn waker(&self) -> Option<Arc<crate::process::waker::Waker>> {
         Some(self.waker())
     }

@@ -24,7 +24,7 @@ use panda_abi::FileStat;
 /// // File is automatically closed here
 /// ```
 pub struct File {
-    handle: Handle,
+    handle: FileHandle,
 }
 
 impl File {
@@ -41,9 +41,8 @@ impl File {
         if result < 0 {
             Err(Error::from_code(result))
         } else {
-            Ok(Self {
-                handle: Handle::from(result as u32),
-            })
+            let handle = FileHandle::from_raw(result as u32).ok_or(Error::InvalidArgument)?;
+            Ok(Self { handle })
         }
     }
 
@@ -66,39 +65,35 @@ impl File {
         if result < 0 {
             Err(Error::from_code(result))
         } else {
-            Ok(Self {
-                handle: Handle::from(result as u32),
-            })
+            let handle = FileHandle::from_raw(result as u32).ok_or(Error::InvalidArgument)?;
+            Ok(Self { handle })
         }
     }
 
-    /// Create a File from an existing handle.
+    /// Create a File from an existing untyped handle.
     ///
     /// The File takes ownership and will close the handle on drop.
-    pub fn from_handle(handle: Handle) -> Self {
-        Self { handle }
+    /// Returns `None` if the handle is not a file handle.
+    pub fn from_handle(handle: Handle) -> Option<Self> {
+        let handle = FileHandle::from_raw(handle.as_raw())?;
+        Some(Self { handle })
     }
 
     /// Create a File from a typed file handle.
     ///
     /// The File takes ownership and will close the handle on drop.
     pub fn from_typed(handle: FileHandle) -> Self {
-        Self {
-            handle: handle.into(),
-        }
+        Self { handle }
     }
 
-    /// Get the underlying handle.
-    pub fn handle(&self) -> Handle {
+    /// Get the underlying typed handle.
+    pub fn handle(&self) -> FileHandle {
         self.handle
     }
 
-    /// Get the underlying handle as a typed FileHandle.
-    ///
-    /// # Safety
-    /// The caller must ensure this handle actually refers to a file.
-    pub unsafe fn typed_handle(&self) -> FileHandle {
-        unsafe { FileHandle::from_raw(self.handle.as_raw()) }
+    /// Get the underlying handle as an untyped Handle.
+    pub fn untyped_handle(&self) -> Handle {
+        self.handle.into()
     }
 
     /// Get file metadata (size, type).
@@ -107,7 +102,7 @@ impl File {
             size: 0,
             is_dir: false,
         };
-        let result = sys::file::stat(self.handle, &mut stat);
+        let result = sys::file::stat(self.handle.into(), &mut stat);
         if result < 0 {
             Err(Error::from_code(result))
         } else {
@@ -139,19 +134,26 @@ impl File {
         Ok(buf)
     }
 
-    /// Consume the File and return the underlying handle without closing it.
+    /// Consume the File and return the underlying typed handle without closing it.
     ///
     /// The caller is responsible for closing the handle.
-    pub fn into_handle(self) -> Handle {
+    pub fn into_handle(self) -> FileHandle {
         let handle = self.handle;
         core::mem::forget(self);
         handle
+    }
+
+    /// Consume the File and return the underlying untyped handle without closing it.
+    ///
+    /// The caller is responsible for closing the handle.
+    pub fn into_untyped_handle(self) -> Handle {
+        self.into_handle().into()
     }
 }
 
 impl Read for File {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let result = sys::file::read(self.handle, buf);
+        let result = sys::file::read(self.handle.into(), buf);
         if result < 0 {
             Err(Error::from_code(result))
         } else {
@@ -162,7 +164,7 @@ impl Read for File {
 
 impl Write for File {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
-        let result = sys::file::write(self.handle, buf);
+        let result = sys::file::write(self.handle.into(), buf);
         if result < 0 {
             Err(Error::from_code(result))
         } else {
@@ -183,7 +185,7 @@ impl Seek for File {
             SeekFrom::End(n) => (n, panda_abi::SEEK_END),
             SeekFrom::Current(n) => (n, panda_abi::SEEK_CUR),
         };
-        let result = sys::file::seek(self.handle, offset, whence);
+        let result = sys::file::seek(self.handle.into(), offset, whence);
         if result < 0 {
             Err(Error::from_code(result))
         } else {
@@ -194,7 +196,7 @@ impl Seek for File {
 
 impl Drop for File {
     fn drop(&mut self) {
-        let _ = sys::file::close(self.handle);
+        let _ = sys::file::close(self.handle.into());
     }
 }
 

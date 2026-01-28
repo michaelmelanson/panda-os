@@ -13,7 +13,10 @@ libpanda::main! {
     };
 
     // Wrap the child handle in a Channel (borrowed - we still need the handle for wait)
-    let channel = Channel::from_handle_borrowed(child_handle.into());
+    let Some(channel) = Channel::from_handle_borrowed(child_handle.into()) else {
+        environment::log("FAIL: handle is not a channel");
+        return 1;
+    };
 
     environment::log("Channel test: child spawned, sending ping...");
 

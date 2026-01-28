@@ -28,7 +28,7 @@ libpanda::main! {
     // stdout not set means output goes to parent channel
     let Ok(consumer) = ChildBuilder::new("file:/initrd/pipeline_consumer")
         .args(&["pipeline_consumer"])
-        .stdin(read_end)
+        .stdin(read_end.into())
         .spawn_handle()
     else {
         environment::log("FAIL: failed to spawn consumer");
@@ -40,7 +40,7 @@ libpanda::main! {
     // stdin not set means no stdin redirection
     let Ok(producer) = ChildBuilder::new("file:/initrd/pipeline_producer")
         .args(&["pipeline_producer"])
-        .stdout(write_end)
+        .stdout(write_end.into())
         .spawn_handle()
     else {
         environment::log("FAIL: failed to spawn producer");
@@ -52,11 +52,11 @@ libpanda::main! {
     // This is important: when the producer exits, its STDOUT handle is dropped,
     // but our copy of write_end keeps the channel open. We need to close it
     // so the consumer sees EOF when the producer is done.
-    file::close(write_end);
+    file::close(write_end.into());
     environment::log("pipeline_test: closed write_end");
 
     // Also close our copy of read_end - the consumer has it via STDIN
-    file::close(read_end);
+    file::close(read_end.into());
     environment::log("pipeline_test: closed read_end");
 
     // Wait for producer to exit

@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use core::slice;
 
 use log::debug;
-use panda_abi::CHANNEL_NONBLOCK;
+use panda_abi::{CHANNEL_NONBLOCK, HandleType};
 
 use crate::resource::{ChannelEndpoint, ChannelError, Resource};
 use crate::scheduler;
@@ -26,8 +26,12 @@ pub fn handle_create(out_handles_ptr: usize) -> isize {
 
     // Insert both endpoints into the current process's handle table
     let result = scheduler::with_current_process(|proc| {
-        let handle_a = proc.handles_mut().insert(Arc::new(endpoint_a));
-        let handle_b = proc.handles_mut().insert(Arc::new(endpoint_b));
+        let handle_a = proc
+            .handles_mut()
+            .insert_typed(HandleType::Channel, Arc::new(endpoint_a));
+        let handle_b = proc
+            .handles_mut()
+            .insert_typed(HandleType::Channel, Arc::new(endpoint_b));
         (handle_a, handle_b)
     });
 

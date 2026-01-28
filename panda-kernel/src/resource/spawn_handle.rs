@@ -34,6 +34,11 @@ impl SpawnHandle {
 }
 
 impl Resource for SpawnHandle {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        // Process handles are also valid as channels
+        panda_abi::HandleType::Process
+    }
+
     fn as_channel(&self) -> Option<&ChannelEndpoint> {
         Some(&self.channel)
     }

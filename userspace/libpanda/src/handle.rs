@@ -99,6 +99,19 @@ mod private {
 pub trait HandleKind: private::Sealed {
     /// Human-readable name for this handle kind.
     const NAME: &'static str;
+
+    /// The expected handle type tag for runtime validation.
+    const EXPECTED_TYPE: panda_abi::HandleType;
+
+    /// Check if a raw handle value has a compatible type tag.
+    fn is_compatible(handle: u32) -> bool {
+        let tag = panda_abi::HandleType::from_handle(handle);
+        if let Some(actual_type) = panda_abi::HandleType::from_tag(tag) {
+            actual_type.is_compatible_with(Self::EXPECTED_TYPE)
+        } else {
+            false
+        }
+    }
 }
 
 /// A type-safe handle wrapper.
@@ -124,16 +137,40 @@ pub struct TypedHandle<T: HandleKind> {
 }
 
 impl<T: HandleKind> TypedHandle<T> {
-    /// Create a typed handle from a raw handle ID.
+    /// Create a typed handle from a raw handle ID without validation.
     ///
     /// # Safety
     /// The caller must ensure the handle ID refers to a resource of type `T`.
     #[inline]
-    pub const unsafe fn from_raw(id: u32) -> Self {
+    pub const unsafe fn from_raw_unchecked(id: u32) -> Self {
         Self {
             id,
             _marker: PhantomData,
         }
+    }
+
+    /// Create a typed handle from a raw handle ID with runtime validation.
+    ///
+    /// Returns `None` if the handle's type tag doesn't match the expected type.
+    #[inline]
+    pub fn from_raw(id: u32) -> Option<Self> {
+        if T::is_compatible(id) {
+            Some(Self {
+                id,
+                _marker: PhantomData,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Create a typed handle from a raw handle ID, panicking if invalid.
+    ///
+    /// # Panics
+    /// Panics if the handle's type tag doesn't match the expected type.
+    #[inline]
+    pub fn from_raw_or_panic(id: u32) -> Self {
+        Self::from_raw(id).expect("handle type mismatch")
     }
 
     /// Get the raw handle ID.
@@ -148,16 +185,24 @@ impl<T: HandleKind> TypedHandle<T> {
         Handle(self.id)
     }
 
-    /// Create from an untyped Handle.
+    /// Create from an untyped Handle without validation.
     ///
     /// # Safety
     /// The caller must ensure the handle refers to a resource of type `T`.
     #[inline]
-    pub const unsafe fn from_untyped(handle: Handle) -> Self {
+    pub const unsafe fn from_untyped_unchecked(handle: Handle) -> Self {
         Self {
             id: handle.0,
             _marker: PhantomData,
         }
+    }
+
+    /// Create from an untyped Handle with runtime validation.
+    ///
+    /// Returns `None` if the handle's type tag doesn't match the expected type.
+    #[inline]
+    pub fn from_untyped(handle: Handle) -> Option<Self> {
+        Self::from_raw(handle.0)
     }
 }
 
@@ -191,6 +236,7 @@ pub enum File {}
 impl private::Sealed for File {}
 impl HandleKind for File {
     const NAME: &'static str = "File";
+    const EXPECTED_TYPE: panda_abi::HandleType = panda_abi::HandleType::File;
 }
 
 /// Marker type for directory handles.
@@ -199,6 +245,7 @@ pub enum Directory {}
 impl private::Sealed for Directory {}
 impl HandleKind for Directory {
     const NAME: &'static str = "Directory";
+    const EXPECTED_TYPE: panda_abi::HandleType = panda_abi::HandleType::Directory;
 }
 
 /// Marker type for surface handles.
@@ -207,6 +254,7 @@ pub enum Surface {}
 impl private::Sealed for Surface {}
 impl HandleKind for Surface {
     const NAME: &'static str = "Surface";
+    const EXPECTED_TYPE: panda_abi::HandleType = panda_abi::HandleType::Surface;
 }
 
 /// Marker type for process handles.
@@ -215,6 +263,7 @@ pub enum Process {}
 impl private::Sealed for Process {}
 impl HandleKind for Process {
     const NAME: &'static str = "Process";
+    const EXPECTED_TYPE: panda_abi::HandleType = panda_abi::HandleType::Process;
 }
 
 /// Marker type for channel handles.
@@ -223,6 +272,7 @@ pub enum Channel {}
 impl private::Sealed for Channel {}
 impl HandleKind for Channel {
     const NAME: &'static str = "Channel";
+    const EXPECTED_TYPE: panda_abi::HandleType = panda_abi::HandleType::Channel;
 }
 
 /// Marker type for mailbox handles.
@@ -231,6 +281,7 @@ pub enum MailboxKind {}
 impl private::Sealed for MailboxKind {}
 impl HandleKind for MailboxKind {
     const NAME: &'static str = "Mailbox";
+    const EXPECTED_TYPE: panda_abi::HandleType = panda_abi::HandleType::Mailbox;
 }
 
 /// Marker type for buffer handles.
@@ -239,6 +290,7 @@ pub enum Buffer {}
 impl private::Sealed for Buffer {}
 impl HandleKind for Buffer {
     const NAME: &'static str = "Buffer";
+    const EXPECTED_TYPE: panda_abi::HandleType = panda_abi::HandleType::Buffer;
 }
 
 // =============================================================================

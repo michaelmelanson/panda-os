@@ -160,11 +160,11 @@ impl Terminal {
         // For n stages, we need n-1 channels
         let mut channels: Vec<(Handle, Handle)> = Vec::new();
         for _ in 0..(n - 1) {
-            let Ok(pair) = channel::create_pair() else {
+            let Ok((a, b)) = channel::create_pair() else {
                 self.write_line("failed to create pipeline channel");
                 return;
             };
-            channels.push(pair);
+            channels.push((a.into(), b.into()));
         }
 
         let events = EVENT_PROCESS_EXITED | EVENT_CHANNEL_READABLE;

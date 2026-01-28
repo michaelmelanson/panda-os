@@ -22,7 +22,7 @@ use panda_abi::MAX_MESSAGE_SIZE;
 /// let mut child = Child::spawn("file:/initrd/hello").unwrap();
 ///
 /// // Communicate via channel
-/// child.channel().send(b"message").unwrap();
+/// child.channel().unwrap().send(b"message").unwrap();
 ///
 /// // Wait for exit
 /// let status = child.wait().unwrap();
@@ -64,7 +64,9 @@ impl Child {
     /// Get a channel for communicating with the child.
     ///
     /// The returned channel borrows the handle and won't close it on drop.
-    pub fn channel(&self) -> Channel {
+    /// Returns `None` if the handle is not a valid channel (should not happen
+    /// for properly spawned processes).
+    pub fn channel(&self) -> Option<Channel> {
         Channel::from_handle_borrowed(self.handle)
     }
 

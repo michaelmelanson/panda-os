@@ -3,6 +3,8 @@
 //! Resources are kernel objects that can be accessed via handles from userspace.
 //! Each resource implements one or more focused interface traits.
 
+use panda_abi::HandleType;
+
 mod block;
 mod buffer;
 mod channel;
@@ -55,6 +57,10 @@ pub trait VfsFile: Send + Sync {
 /// Resources implement one or more focused interface traits (EventSource, etc.).
 /// The `as_*` methods allow dynamic dispatch to the appropriate interface.
 pub trait Resource: Send + Sync {
+    /// Get the handle type tag for this resource.
+    /// This is used to tag handles returned to userspace for runtime type checking.
+    fn handle_type(&self) -> HandleType;
+
     /// Get this resource as an EventSource (for keyboard, mouse, timers).
     fn as_event_source(&self) -> Option<&dyn EventSource> {
         None

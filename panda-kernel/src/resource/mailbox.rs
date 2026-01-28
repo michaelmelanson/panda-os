@@ -118,6 +118,10 @@ impl Default for Mailbox {
 }
 
 impl Resource for Mailbox {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        panda_abi::HandleType::Mailbox
+    }
+
     fn waker(&self) -> Option<Arc<Waker>> {
         Some(self.waker())
     }

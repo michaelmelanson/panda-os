@@ -28,50 +28,163 @@ pub const SYSCALL_SEND: usize = 0x30;
 
 /// Well-known handle IDs that are pre-allocated for every process.
 ///
-/// Handles 0-2 are stdio (Unix-like convention), handles 3+ are system resources.
-#[repr(u32)]
+/// These handles include type tags in the high 8 bits:
+/// - Stdin/Stdout/Stderr/Parent: Channel type (0x10)
+/// - Process: Process type (0x11)
+/// - Environment: Special (no type tag, handled specially by kernel)
+/// - Mailbox: Mailbox type (0x20)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WellKnownHandle {
-    /// Standard input channel (for pipeline/redirection support)
-    Stdin = 0,
-    /// Standard output channel (for pipeline/redirection support)
-    Stdout = 1,
-    /// Standard error channel (reserved for future use)
-    Stderr = 2,
-    /// Handle to the current process (Process resource)
-    Process = 3,
-    /// Handle to the system environment (Environment resource)
-    Environment = 4,
-    /// Handle to the process's default mailbox (Mailbox resource)
-    Mailbox = 5,
-    /// Handle to the channel connected to the parent process (ChannelEndpoint resource)
-    /// Only valid if this process was spawned by another process.
-    Parent = 6,
-}
+pub struct WellKnownHandle;
 
 impl WellKnownHandle {
-    /// Convert to raw handle ID.
+    /// Standard input channel (for pipeline/redirection support).
+    /// Handle ID 0 with Channel type tag.
+    pub const STDIN: u32 = HandleType::Channel.make_handle(0);
+
+    /// Standard output channel (for pipeline/redirection support).
+    /// Handle ID 1 with Channel type tag.
+    pub const STDOUT: u32 = HandleType::Channel.make_handle(1);
+
+    /// Standard error channel (reserved for future use).
+    /// Handle ID 2 with Channel type tag.
+    pub const STDERR: u32 = HandleType::Channel.make_handle(2);
+
+    /// Handle to the current process (Process resource).
+    /// Handle ID 3 with Process type tag.
+    pub const PROCESS: u32 = HandleType::Process.make_handle(3);
+
+    /// Handle to the system environment (Environment resource).
+    /// Handle ID 4 - special handle type (no resource backing).
+    /// Environment operations don't require a real handle, this is a sentinel.
+    pub const ENVIRONMENT: u32 = 4;
+
+    /// Handle to the process's default mailbox (Mailbox resource).
+    /// Handle ID 5 with Mailbox type tag.
+    pub const MAILBOX: u32 = HandleType::Mailbox.make_handle(5);
+
+    /// Handle to the channel connected to the parent process (ChannelEndpoint resource).
+    /// Handle ID 6 with Channel type tag.
+    /// Only valid if this process was spawned by another process.
+    pub const PARENT: u32 = HandleType::Channel.make_handle(6);
+}
+
+// =============================================================================
+// Handle type tags
+// =============================================================================
+
+/// Handle type tags encoded in the high 8 bits of a handle value.
+///
+/// Handle format: `[8 bits: type tag][24 bits: handle id]`
+/// This allows 256 handle types and 16 million handles per process.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandleType {
+    /// Invalid or unknown handle type.
+    Invalid = 0x00,
+
+    // File system types (0x01-0x0F)
+    /// File handle (opened via EnvironmentOpen).
+    File = 0x01,
+    /// Directory handle (opened via EnvironmentOpendir).
+    Directory = 0x02,
+
+    // IPC types (0x10-0x1F)
+    /// Channel endpoint handle.
+    Channel = 0x10,
+    /// Process handle (also usable as a channel to communicate with the child).
+    Process = 0x11,
+
+    // Event types (0x20-0x2F)
+    /// Mailbox handle for event multiplexing.
+    Mailbox = 0x20,
+
+    // Graphics types (0x30-0x3F)
+    /// Surface handle for graphics output.
+    Surface = 0x30,
+    /// Shared memory buffer handle.
+    Buffer = 0x31,
+}
+
+impl HandleType {
+    /// Number of bits used for the type tag.
+    pub const TAG_BITS: u32 = 8;
+
+    /// Number of bits used for the handle ID.
+    pub const ID_BITS: u32 = 24;
+
+    /// Mask for extracting the handle ID (low 24 bits).
+    pub const ID_MASK: u32 = (1 << Self::ID_BITS) - 1;
+
+    /// Mask for extracting the type tag (high 8 bits).
+    pub const TAG_MASK: u32 = 0xFF << Self::ID_BITS;
+
+    /// Maximum handle ID value.
+    pub const MAX_ID: u32 = Self::ID_MASK;
+
+    /// Create a tagged handle value from type and ID.
     #[inline]
-    pub const fn as_u32(self) -> u32 {
-        self as u32
+    pub const fn make_handle(self, id: u32) -> u32 {
+        ((self as u32) << Self::ID_BITS) | (id & Self::ID_MASK)
+    }
+
+    /// Extract the type tag from a handle value.
+    #[inline]
+    pub const fn from_handle(handle: u32) -> u8 {
+        (handle >> Self::ID_BITS) as u8
+    }
+
+    /// Extract the handle ID from a handle value.
+    #[inline]
+    pub const fn id_from_handle(handle: u32) -> u32 {
+        handle & Self::ID_MASK
+    }
+
+    /// Try to convert a raw tag value to a HandleType.
+    pub const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            0x00 => Some(Self::Invalid),
+            0x01 => Some(Self::File),
+            0x02 => Some(Self::Directory),
+            0x10 => Some(Self::Channel),
+            0x11 => Some(Self::Process),
+            0x20 => Some(Self::Mailbox),
+            0x30 => Some(Self::Surface),
+            0x31 => Some(Self::Buffer),
+            _ => None,
+        }
+    }
+
+    /// Check if a handle type is compatible with another.
+    ///
+    /// Process handles are also valid as Channel handles.
+    #[inline]
+    pub const fn is_compatible_with(self, expected: Self) -> bool {
+        if self as u8 == expected as u8 {
+            return true;
+        }
+        // Process handles can be used as channels
+        if self as u8 == Self::Process as u8 && expected as u8 == Self::Channel as u8 {
+            return true;
+        }
+        false
     }
 }
 
 // Handle constants
 /// Standard input channel handle.
-pub const HANDLE_STDIN: u32 = WellKnownHandle::Stdin as u32;
+pub const HANDLE_STDIN: u32 = WellKnownHandle::STDIN;
 /// Standard output channel handle.
-pub const HANDLE_STDOUT: u32 = WellKnownHandle::Stdout as u32;
+pub const HANDLE_STDOUT: u32 = WellKnownHandle::STDOUT;
 /// Standard error channel handle (reserved).
-pub const HANDLE_STDERR: u32 = WellKnownHandle::Stderr as u32;
+pub const HANDLE_STDERR: u32 = WellKnownHandle::STDERR;
 /// Handle to the current process (Process resource)
-pub const HANDLE_PROCESS: u32 = WellKnownHandle::Process as u32;
+pub const HANDLE_PROCESS: u32 = WellKnownHandle::PROCESS;
 /// Handle to the system environment (Environment resource)
-pub const HANDLE_ENVIRONMENT: u32 = WellKnownHandle::Environment as u32;
+pub const HANDLE_ENVIRONMENT: u32 = WellKnownHandle::ENVIRONMENT;
 /// Handle to the process's default mailbox (Mailbox resource)
-pub const HANDLE_MAILBOX: u32 = WellKnownHandle::Mailbox as u32;
+pub const HANDLE_MAILBOX: u32 = WellKnownHandle::MAILBOX;
 /// Handle to the channel connected to the parent process (ChannelEndpoint resource)
-pub const HANDLE_PARENT: u32 = WellKnownHandle::Parent as u32;
+pub const HANDLE_PARENT: u32 = WellKnownHandle::PARENT;
 
 // Legacy alias for backwards compatibility
 /// Alias for HANDLE_PROCESS (deprecated, use HANDLE_PROCESS instead)

@@ -28,7 +28,7 @@ Working:
   - `PRINT_BUFFER_SIZE: usize = 256` in print.rs
   - Keyboard scan codes in keyboard.rs should reference Linux input event codes
 
-- **Migrate APIs to typed handles**: While `TypedHandle<T>` exists, most APIs still use untyped `Handle`. Gradually migrate high-level APIs to return typed handles (e.g., `FileHandle`, `ChannelHandle`).
+- **Migrate APIs to typed handles**: ✓ Handles now include 8-bit type tags in high bits for runtime validation. `File` and `Channel` use typed handles internally, and `from_handle()` methods validate types safely without unsafe code.
 
 
 ## Next steps
