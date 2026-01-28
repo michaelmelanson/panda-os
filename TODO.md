@@ -13,7 +13,7 @@ Working:
 - Virtio block device driver with async I/O (interrupt-driven, non-blocking)
 - Process handles: spawn returns handle, OP_PROCESS_WAIT blocks until child exits
 - Message-passing IPC: channels (bidirectional, 4KB messages, 16 depth) and mailboxes (event aggregation)
-- Userspace: libpanda (two-layer architecture: sys:: low-level + high-level RAII wrappers), init, terminal, hello/ls/cat utilities, 25 test suites
+- Userspace: libpanda (two-layer architecture: sys:: low-level + high-level RAII wrappers), init, terminal, hello/ls/cat utilities, 26 test suites
 - Unified device paths with class-based addressing (`keyboard:/pci/input/0`, `block:/pci/storage/0`)
 - Cross-scheme device discovery via `*:` prefix (`*:/pci/storage/0` lists supporting schemes)
 - Stdio handle infrastructure: STDIN=0, STDOUT=1, STDERR=2, with spawn supporting stdin/stdout redirection
@@ -27,9 +27,9 @@ Working:
 
 ## Next steps
 
-### 1. Structured pipelines (see plans/STRUCTURED_PIPELINES.md)
+### 1. Structured pipelines ✓ (see plans/STRUCTURED_PIPELINES.md)
 
-Enable shell pipelines (`cmd1 | cmd2 | cmd3`) where tools exchange structured `Value` objects rather than raw bytes. PowerShell-style object pipeline with Unix compatibility.
+Shell pipelines (`cmd1 | cmd2 | cmd3`) where tools exchange structured `Value` objects rather than raw bytes. PowerShell-style object pipeline with Unix compatibility.
 
 **Phase 1: Create Value type and restructure protocol** ✓
 - [x] Create `panda-abi/src/value.rs` with `Value` enum (Null, Bool, Int, Float, String, Bytes, Array, Map, Styled, Link, Table)
