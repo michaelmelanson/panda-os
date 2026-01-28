@@ -28,64 +28,20 @@ Working:
   - `PRINT_BUFFER_SIZE: usize = 256` in print.rs
   - Keyboard scan codes in keyboard.rs should reference Linux input event codes
 
-- **Migrate APIs to typed handles**: ✓ Handles now include 8-bit type tags in high bits for runtime validation. `File` and `Channel` use typed handles internally, and `from_handle()` methods validate types safely without unsafe code.
-
-- **Test build failures should fail `make test`**: ✓ Fixed - build failures now abort `make test` before running tests.
-
 
 ## Next steps
 
-### 1. Structured pipelines ✓ (see plans/STRUCTURED_PIPELINES.md)
-
-Shell pipelines (`cmd1 | cmd2 | cmd3`) where tools exchange structured `Value` objects rather than raw bytes. PowerShell-style object pipeline with Unix compatibility.
-
-**Phase 1: Create Value type and restructure protocol** ✓
-- [x] Create `panda-abi/src/value.rs` with `Value` enum (Null, Bool, Int, Float, String, Bytes, Array, Map, Styled, Link, Table)
-- [x] Create `Table` struct with `cols: u16`, `headers: Option<Vec<Value>>`, `cells: Vec<Value>`
-- [x] Implement `Encode`/`Decode` traits for `Value` and `Table`
-- [x] Add `Value::to_bytes()` / `Value::from_bytes()` helpers
-- [x] Rename `TerminalOutput` -> `Request`, `TerminalInput` -> `Event`
-- [x] Add `Request::Error(Value)` and `Request::Warning(Value)` for side-band errors
-- [x] Remove `Output`, `StyledText`, `StyledSpan` (subsumed by `Value`)
-
-**Phase 2: Add channel create syscall** ✓
-- [x] Add `OP_CHANNEL_CREATE` to `panda-abi/src/lib.rs`
-- [x] Implement `handle_create()` in `panda-kernel/src/syscall/channel.rs`
-- [x] Wire up in syscall dispatcher
-
-**Phase 3: Update libpanda** ✓
-- [x] Update `terminal.rs` to use `Request`/`Event` via PARENT only
-- [x] Update `stdio.rs`: `write_value(Value)` with STDOUT->PARENT fallback
-- [x] Update `print.rs`: `print!`/`println!` send `Value::String`
-- [x] Add `Channel::create_pair()` to `channel.rs`
-
-**Phase 4: Update terminal emulator** ✓
-- [x] Parse `|` in command lines
-- [x] Create data channels between pipeline stages
-- [x] Spawn processes with STDIN/STDOUT redirection
-- [x] Handle `Request` from any child, render `Value` from final stage
-- [x] Implement rendering for all `Value` variants
-
-**Phase 5: Update tools** ✓
-- [x] Update `cat` to output `Value::String` (or `Value::Bytes` for binary)
-- [x] Update `ls` to output `Value::Table` with Name, Type, Size columns
-
-**Phase 6: Add tests** ✓
-- [x] Value serialisation tests (in panda-abi unit tests)
-- [x] `pipeline_test/` - Multi-stage pipeline with Value flow
-- [x] `control_plane_test/` - Request/Event via PARENT
-
-### 2. Missing syscalls
+### 1. Missing syscalls
 
 - **Implement OP_PROCESS_SIGNAL**: Basic signal support (at minimum SIGKILL/SIGTERM). Needed for killing processes from terminal.
 
 - **Implement OP_ENVIRONMENT_TIME**: Return current time. Could use ACPI PM timer, TSC, or RTC. Needed for timing-sensitive applications.
 
-### 3. System services
+### 2. System services
 
 - **Implement system initialisation tool**: Declarative service configurations, similar to `systemd` on Linux, to describe services to start at boot.
 
-### 4. Block I/O optimisations
+### 3. Block I/O optimisations
 
 - **Scatter-gather support**: Submit multiple non-contiguous sectors in one virtio request for better throughput.
 
@@ -93,7 +49,7 @@ Shell pipelines (`cmd1 | cmd2 | cmd3`) where tools exchange structured `Value` o
 
 - **Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
 
-### 5. Future work
+### 4. Future work
 
 - **Ext2 write support**: Currently ext2 is read-only.
 
