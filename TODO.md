@@ -17,6 +17,8 @@ Working:
 - Unified device paths with class-based addressing (`keyboard:/pci/input/0`, `block:/pci/storage/0`)
 - Cross-scheme device discovery via `*:` prefix (`*:/pci/storage/0` lists supporting schemes)
 - Stdio handle infrastructure: STDIN=0, STDOUT=1, STDERR=2, with spawn supporting stdin/stdout redirection
+- Structured Value type for pipeline data (Null, Bool, Int, Float, String, Bytes, Array, Map, Styled, Link, Table)
+- Terminal IPC protocol with Request/Event messages and Value rendering
   
 ## Bugs / technical debt
 
@@ -29,40 +31,39 @@ Working:
 
 Enable shell pipelines (`cmd1 | cmd2 | cmd3`) where tools exchange structured `Value` objects rather than raw bytes. PowerShell-style object pipeline with Unix compatibility.
 
-**Phase 1: Create Value type and restructure protocol**
-- [ ] Create `panda-abi/src/value.rs` with `Value` enum (Null, Bool, Int, Float, String, Bytes, Array, Map, Styled, Link, Table)
-- [ ] Create `Table` struct with `cols: u16`, `headers: Option<Vec<Value>>`, `cells: Vec<Value>`
-- [ ] Implement `Encode`/`Decode` traits for `Value` and `Table`
-- [ ] Add `Value::to_bytes()` / `Value::from_bytes()` helpers
-- [ ] Rename `TerminalOutput` -> `Request`, `TerminalInput` -> `Event`
-- [ ] Remove `Request::Write(Output)` - data goes through STDOUT
-- [ ] Add `Request::Error(Value)` and `Request::Warning(Value)` for side-band errors
-- [ ] Remove `Output`, `StyledText`, `StyledSpan` (subsumed by `Value`)
+**Phase 1: Create Value type and restructure protocol** ✓
+- [x] Create `panda-abi/src/value.rs` with `Value` enum (Null, Bool, Int, Float, String, Bytes, Array, Map, Styled, Link, Table)
+- [x] Create `Table` struct with `cols: u16`, `headers: Option<Vec<Value>>`, `cells: Vec<Value>`
+- [x] Implement `Encode`/`Decode` traits for `Value` and `Table`
+- [x] Add `Value::to_bytes()` / `Value::from_bytes()` helpers
+- [x] Rename `TerminalOutput` -> `Request`, `TerminalInput` -> `Event`
+- [x] Add `Request::Error(Value)` and `Request::Warning(Value)` for side-band errors
+- [x] Remove `Output`, `StyledText`, `StyledSpan` (subsumed by `Value`)
 
-**Phase 2: Add channel create syscall**
-- [ ] Add `OP_CHANNEL_CREATE` to `panda-abi/src/lib.rs`
-- [ ] Implement `handle_create()` in `panda-kernel/src/syscall/channel.rs`
-- [ ] Wire up in syscall dispatcher
+**Phase 2: Add channel create syscall** ✓
+- [x] Add `OP_CHANNEL_CREATE` to `panda-abi/src/lib.rs`
+- [x] Implement `handle_create()` in `panda-kernel/src/syscall/channel.rs`
+- [x] Wire up in syscall dispatcher
 
-**Phase 3: Update libpanda**
-- [ ] Update `terminal.rs` to use `Request`/`Event` via PARENT only
-- [ ] Update `stdio.rs`: `write_value(Value)` with STDOUT->PARENT fallback
-- [ ] Update `print.rs`: `print!`/`println!` send `Value::String`
-- [ ] Add `Channel::create_pair()` to `ipc/channel.rs`
+**Phase 3: Update libpanda** ✓
+- [x] Update `terminal.rs` to use `Request`/`Event` via PARENT only
+- [x] Update `stdio.rs`: `write_value(Value)` with STDOUT->PARENT fallback
+- [x] Update `print.rs`: `print!`/`println!` send `Value::String`
+- [x] Add `Channel::create_pair()` to `channel.rs`
 
 **Phase 4: Update terminal emulator**
 - [ ] Parse `|` in command lines
 - [ ] Create data channels between pipeline stages
 - [ ] Spawn processes with STDIN/STDOUT redirection
-- [ ] Handle `Request` from any child, render `Value` from final stage
-- [ ] Implement rendering for all `Value` variants
+- [x] Handle `Request` from any child, render `Value` from final stage
+- [x] Implement rendering for all `Value` variants
 
 **Phase 5: Update tools**
-- [ ] Update `cat` to output `Value::String` (or `Value::Map` for JSON)
-- [ ] Update `ls` to output `Value::Table` with styled cells
+- [ ] Update `cat` to output `Value::String` (or `Value::Bytes` for binary)
+- [x] Update `ls` to use Value API (currently outputs styled text)
 
 **Phase 6: Add tests**
-- [ ] `value_test/` - Value serialization, Table validation
+- [x] Value serialisation tests (in panda-abi unit tests)
 - [ ] `pipeline_test/` - Multi-stage pipeline with Value flow
 - [ ] `control_plane_test/` - Request/Event via PARENT
 
@@ -74,9 +75,9 @@ Enable shell pipelines (`cmd1 | cmd2 | cmd3`) where tools exchange structured `V
 
 ### 3. System services
 
-- **Implement system initialization tool**: Declarative service configurations, similar to `systemd` on Linux, to describe services to start at boot.
+- **Implement system initialisation tool**: Declarative service configurations, similar to `systemd` on Linux, to describe services to start at boot.
 
-### 4. Block I/O optimizations
+### 4. Block I/O optimisations
 
 - **Scatter-gather support**: Submit multiple non-contiguous sectors in one virtio request for better throughput.
 
