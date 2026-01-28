@@ -9,6 +9,7 @@ mod input;
 mod render;
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use fontdue::{Font, FontSettings};
 use libpanda::{
     buffer::Buffer,
@@ -52,8 +53,10 @@ pub struct Terminal {
     cursor_x: u32,
     cursor_y: u32,
     pub line_buffer: String,
-    /// Currently running child process (if any)
+    /// Currently running child process (last stage of pipeline, or single command)
     pub child: Option<Handle>,
+    /// All children in a pipeline (for cleanup)
+    pub pipeline_children: Vec<Handle>,
     /// Pending input request from child
     pub pending_input: Option<PendingInput>,
     /// Current foreground colour
@@ -86,6 +89,7 @@ impl Terminal {
             cursor_y: MARGIN,
             line_buffer: String::new(),
             child: None,
+            pipeline_children: Vec::new(),
             pending_input: None,
             current_fg: COLOUR_DEFAULT_FG,
             avg_char_width,

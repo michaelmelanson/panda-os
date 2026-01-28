@@ -4,12 +4,15 @@
 extern crate alloc;
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use libpanda::io::{File, Read};
-use libpanda::{print, println};
+use libpanda::stdio::output_value;
+use libpanda::terminal;
+use panda_abi::value::Value;
 
 libpanda::main! { |args|
     if args.len() < 2 {
-        println!("Usage: cat <file>");
+        terminal::error("Usage: cat <file>");
         return 1;
     }
 
@@ -26,29 +29,36 @@ libpanda::main! { |args|
     let mut file = match File::open(&uri) {
         Ok(f) => f,
         Err(_) => {
-            println!("cat: {}: No such file or directory", path);
+            terminal::error(&alloc::format!("cat: {}: No such file or directory", path));
             return 1;
         }
     };
 
-    // Read and print contents
+    // Read entire file into buffer
+    let mut contents = Vec::new();
     let mut buf = [0u8; 512];
     loop {
         let n = match file.read(&mut buf) {
             Ok(0) => break, // EOF
             Ok(n) => n,
             Err(_) => {
-                println!("cat: error reading file");
+                terminal::error("cat: error reading file");
                 return 1;
             }
         };
-
-        // Print file contents
-        if let Ok(s) = core::str::from_utf8(&buf[..n]) {
-            print!("{}", s);
-        }
+        contents.extend_from_slice(&buf[..n]);
     }
 
-    // File is automatically closed here via Drop
+    // Output as Value::String if valid UTF-8, otherwise Value::Bytes
+    let value = match String::from_utf8(contents.clone()) {
+        Ok(s) => Value::String(s),
+        Err(_) => Value::Bytes(contents),
+    };
+
+    if let Err(_) = output_value(&value) {
+        terminal::error("cat: error writing output");
+        return 1;
+    }
+
     0
 }

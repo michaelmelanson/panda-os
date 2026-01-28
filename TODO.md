@@ -51,16 +51,16 @@ Enable shell pipelines (`cmd1 | cmd2 | cmd3`) where tools exchange structured `V
 - [x] Update `print.rs`: `print!`/`println!` send `Value::String`
 - [x] Add `Channel::create_pair()` to `channel.rs`
 
-**Phase 4: Update terminal emulator**
-- [ ] Parse `|` in command lines
-- [ ] Create data channels between pipeline stages
-- [ ] Spawn processes with STDIN/STDOUT redirection
+**Phase 4: Update terminal emulator** ✓
+- [x] Parse `|` in command lines
+- [x] Create data channels between pipeline stages
+- [x] Spawn processes with STDIN/STDOUT redirection
 - [x] Handle `Request` from any child, render `Value` from final stage
 - [x] Implement rendering for all `Value` variants
 
-**Phase 5: Update tools**
-- [ ] Update `cat` to output `Value::String` (or `Value::Bytes` for binary)
-- [x] Update `ls` to use Value API (currently outputs styled text)
+**Phase 5: Update tools** ✓
+- [x] Update `cat` to output `Value::String` (or `Value::Bytes` for binary)
+- [x] Update `ls` to output `Value::Table` with Name, Type, Size columns
 
 **Phase 6: Add tests**
 - [x] Value serialisation tests (in panda-abi unit tests)

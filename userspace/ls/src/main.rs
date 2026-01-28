@@ -4,10 +4,23 @@
 extern crate alloc;
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use libpanda::terminal::{self, Colour, NamedColour};
 use libpanda::{environment, file};
-use panda_abi::value::Value;
+use panda_abi::value::{Table, Value};
+
+fn format_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        alloc::format!("{}", bytes)
+    } else if bytes < 1024 * 1024 {
+        alloc::format!("{}K", bytes / 1024)
+    } else if bytes < 1024 * 1024 * 1024 {
+        alloc::format!("{}M", bytes / (1024 * 1024))
+    } else {
+        alloc::format!("{}G", bytes / (1024 * 1024 * 1024))
+    }
+}
 
 libpanda::main! { |args|
     // Default to current directory (root of mounted fs)
@@ -63,30 +76,39 @@ libpanda::main! { |args|
     // Sort entries alphabetically
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Build output as a list of Values
-    let mut parts: Vec<Value> = Vec::new();
-    for (i, (name, is_dir)) in entries.iter().enumerate() {
-        if *is_dir {
-            // Directories in blue with trailing slash
-            parts.push(terminal::coloured(
-                &alloc::format!("{}/", name),
-                Colour::Named(NamedColour::Blue),
-            ));
+    // Build table with Name, Type, and Size columns
+    let headers = vec![
+        Value::String(String::from("Name")),
+        Value::String(String::from("Type")),
+        Value::String(String::from("Size")),
+    ];
+
+    let mut cells: Vec<Value> = Vec::new();
+    for (name, is_dir) in entries.iter() {
+        // Get file size by stat'ing the entry
+        let entry_path = if path.ends_with('/') {
+            alloc::format!("file:{}{}", path, name)
         } else {
-            parts.push(Value::String(name.clone()));
-        }
+            alloc::format!("file:{}/{}", path, name)
+        };
+        let size = environment::stat(&entry_path)
+            .map(|s| s.size)
+            .unwrap_or(0);
 
-        // Add spacing between entries
-        if i < entries.len() - 1 {
-            parts.push(Value::String(String::from("  ")));
+        if *is_dir {
+            // Directories in blue
+            cells.push(terminal::coloured(name, Colour::Named(NamedColour::Blue)));
+            cells.push(Value::String(String::from("dir")));
+            cells.push(Value::String(String::from("-")));
+        } else {
+            cells.push(Value::String(name.clone()));
+            cells.push(Value::String(String::from("file")));
+            cells.push(Value::String(format_size(size)));
         }
     }
-    parts.push(Value::String(String::from("\n")));
 
-    // Print each part
-    for part in parts {
-        terminal::print_value(part);
-    }
+    let table = Table::new(3, Some(headers), cells).unwrap();
+    terminal::print_value(Value::Table(table));
 
     0
 }

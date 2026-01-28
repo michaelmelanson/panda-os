@@ -86,6 +86,57 @@ pub fn spawn(path: &str, args: &[&str], mailbox: u32, event_mask: u32) -> Result
     Ok(handle)
 }
 
+/// Spawn a new process with explicit stdin/stdout redirection.
+///
+/// Like `spawn`, but allows specifying handles for the child's STDIN and STDOUT.
+/// Pass 0 for stdin/stdout to leave them unconnected.
+///
+/// This is used for setting up pipelines where processes communicate via
+/// channels rather than through the parent.
+///
+/// # Example
+/// ```
+/// // Create a channel pair for pipeline
+/// let (read_end, write_end) = channel::create_pair();
+///
+/// // Spawn producer with stdout connected to write_end
+/// let producer = environment::spawn_with_stdio(
+///     "file:/mnt/ls", &["ls"],
+///     mailbox.handle().as_raw(), EVENT_PROCESS_EXITED,
+///     0, write_end.as_raw(),
+/// )?;
+///
+/// // Spawn consumer with stdin connected to read_end
+/// let consumer = environment::spawn_with_stdio(
+///     "file:/mnt/grep", &["grep", "foo"],
+///     mailbox.handle().as_raw(), EVENT_PROCESS_EXITED,
+///     read_end.as_raw(), 0,
+/// )?;
+/// ```
+pub fn spawn_with_stdio(
+    path: &str,
+    args: &[&str],
+    mailbox: u32,
+    event_mask: u32,
+    stdin: u32,
+    stdout: u32,
+) -> Result<Handle, isize> {
+    let result = sys::env::spawn(path, mailbox, event_mask, stdin, stdout);
+    if result < 0 {
+        return Err(result);
+    }
+
+    let handle = Handle::from(result as u32);
+
+    // Send startup message (always, even with empty args)
+    let mut buf = [0u8; MAX_MESSAGE_SIZE];
+    if let Ok(len) = crate::startup::encode(args, &mut buf) {
+        let _ = crate::channel::send(handle, &buf[..len]);
+    }
+
+    Ok(handle)
+}
+
 /// Log a message to the system console.
 #[inline(always)]
 pub fn log(msg: &str) {
