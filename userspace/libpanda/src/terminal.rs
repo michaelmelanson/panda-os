@@ -6,16 +6,14 @@
 //! # Example
 //!
 //! ```
-//! use libpanda::terminal::{self, StyledTextExt, TableExt};
+//! use libpanda::terminal;
 //!
 //! // Simple output
 //! terminal::println("Hello, world!");
 //!
 //! // Styled output
-//! let mut text = terminal::StyledText::new();
-//! text.push_error("Error: ");
-//! text.push_plain("file not found");
-//! terminal::print_styled(text);
+//! terminal::print_styled("Error: ", terminal::Style::fg(terminal::Colour::Named(terminal::NamedColour::Red)));
+//! terminal::println("file not found");
 //!
 //! // Input
 //! if let Some(name) = terminal::input("What is your name? ") {
@@ -23,77 +21,74 @@
 //! }
 //! ```
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use panda_abi::terminal::{
-    InputKind, InputRequest, InputResponse, InputValue, Output, QueryResponse, TerminalInput,
-    TerminalOutput, TerminalQuery,
+    ClearRegion, Event, InputKind, InputRequest, InputResponse, InputValue, QueryResponse, Request,
+    Style, TerminalQuery,
 };
+use panda_abi::value::{Table, Value};
 use panda_abi::{HANDLE_PARENT, MAX_MESSAGE_SIZE};
 
 use crate::Handle;
 use crate::channel;
 
-// Re-export commonly used types from panda_abi::terminal
+// Re-export commonly used types
 pub use panda_abi::terminal::{
-    Alignment, ClearRegion, Colour, ColourSupport, NamedColour, Style, StyledSpan, StyledText,
-    Table, TerminalCapabilities,
+    Alignment, Colour, ColourSupport, NamedColour, Style as TerminalStyle, TerminalCapabilities,
 };
 
 // =============================================================================
-// Output functions
+// Output functions (send Value to terminal via PARENT)
 // =============================================================================
 
 /// Print plain text (no newline).
 pub fn print(s: &str) {
-    send_output(Output::Text(String::from(s)));
+    send_value(Value::String(String::from(s)));
 }
 
 /// Print plain text with newline.
 pub fn println(s: &str) {
     let mut text = String::from(s);
     text.push('\n');
-    send_output(Output::Text(text));
+    send_value(Value::String(text));
 }
 
 /// Print styled text.
-pub fn print_styled(text: StyledText) {
-    send_output(Output::Styled(text));
+pub fn print_styled(s: &str, style: Style) {
+    send_value(Value::Styled(
+        style,
+        Box::new(Value::String(String::from(s))),
+    ));
+}
+
+/// Print a Value directly.
+pub fn print_value(value: Value) {
+    send_value(value);
 }
 
 /// Display a table.
 pub fn print_table(table: Table) {
-    send_output(Output::Table(table));
-}
-
-/// Display key-value pairs.
-pub fn print_key_values(pairs: Vec<(StyledText, StyledText)>) {
-    send_output(Output::KeyValue(pairs));
-}
-
-/// Display a list.
-pub fn print_list(items: Vec<StyledText>) {
-    send_output(Output::List(items));
-}
-
-/// Print JSON (terminal can pretty-print and syntax highlight).
-pub fn print_json(json: &str) {
-    send_output(Output::Json(String::from(json)));
+    send_value(Value::Table(table));
 }
 
 /// Print a hyperlink.
 pub fn print_link(text: &str, url: &str) {
-    send_output(Output::Link {
-        text: String::from(text),
+    send_value(Value::Link {
         url: String::from(url),
-        style: None,
+        inner: Box::new(Value::String(String::from(text))),
     });
 }
 
+// =============================================================================
+// Control plane functions (UI control, always via PARENT)
+// =============================================================================
+
 /// Clear a region of the terminal.
 pub fn clear(region: ClearRegion) {
-    send_message(TerminalOutput::Clear(region));
+    send_request(Request::Clear(region));
 }
 
 /// Clear the entire screen.
@@ -103,21 +98,53 @@ pub fn clear_screen() {
 
 /// Move the cursor to a position.
 pub fn move_cursor(row: u16, col: u16) {
-    send_message(TerminalOutput::MoveCursor { row, col });
+    send_request(Request::MoveCursor { row, col });
 }
 
 /// Set the window title.
 pub fn set_title(title: &str) {
-    send_message(TerminalOutput::SetTitle(String::from(title)));
+    send_request(Request::SetTitle(String::from(title)));
 }
 
 /// Report progress.
 pub fn progress(current: u32, total: u32, message: &str) {
-    send_message(TerminalOutput::Progress {
+    send_request(Request::Progress {
         current,
         total,
         message: String::from(message),
     });
+}
+
+// =============================================================================
+// Error/Warning functions (control plane, always reach terminal)
+// =============================================================================
+
+/// Report an error via the control plane.
+///
+/// This message is sent directly to the terminal (via PARENT channel) and
+/// is always displayed, even if this process is in the middle of a pipeline.
+/// Use this for errors that must reach the user.
+pub fn error(message: &str) {
+    send_request(Request::Error(Value::String(String::from(message))));
+}
+
+/// Report a warning via the control plane.
+///
+/// This message is sent directly to the terminal (via PARENT channel) and
+/// is always displayed, even if this process is in the middle of a pipeline.
+/// Use this for warnings that must reach the user.
+pub fn warning(message: &str) {
+    send_request(Request::Warning(Value::String(String::from(message))));
+}
+
+/// Report an error with a structured Value via the control plane.
+pub fn error_value(value: Value) {
+    send_request(Request::Error(value));
+}
+
+/// Report a warning with a structured Value via the control plane.
+pub fn warning_value(value: Value) {
+    send_request(Request::Warning(value));
 }
 
 // =============================================================================
@@ -152,7 +179,7 @@ pub fn read_line() -> Option<String> {
 
 /// Read a line of input with a prompt.
 pub fn input(prompt: &str) -> Option<String> {
-    input_with_kind(Some(StyledText::plain(prompt)), InputKind::Line).and_then(|v| {
+    input_with_kind(Some(Value::String(String::from(prompt))), InputKind::Line).and_then(|v| {
         if let InputValue::Text(s) = v {
             Some(s)
         } else {
@@ -162,7 +189,7 @@ pub fn input(prompt: &str) -> Option<String> {
 }
 
 /// Read a line of input with a styled prompt.
-pub fn input_styled(prompt: StyledText) -> Option<String> {
+pub fn input_styled(prompt: Value) -> Option<String> {
     input_with_kind(Some(prompt), InputKind::Line).and_then(|v| {
         if let InputValue::Text(s) = v {
             Some(s)
@@ -174,7 +201,11 @@ pub fn input_styled(prompt: StyledText) -> Option<String> {
 
 /// Read a password (input not echoed).
 pub fn password(prompt: &str) -> Option<String> {
-    input_with_kind(Some(StyledText::plain(prompt)), InputKind::Password).and_then(|v| {
+    input_with_kind(
+        Some(Value::String(String::from(prompt))),
+        InputKind::Password,
+    )
+    .and_then(|v| {
         if let InputValue::Text(s) = v {
             Some(s)
         } else {
@@ -185,15 +216,18 @@ pub fn password(prompt: &str) -> Option<String> {
 
 /// Ask a yes/no confirmation question.
 pub fn confirm(prompt: &str) -> bool {
-    input_with_kind(Some(StyledText::plain(prompt)), InputKind::Confirm)
-        .map(|v| {
-            if let InputValue::Bool(b) = v {
-                b
-            } else {
-                false
-            }
-        })
-        .unwrap_or(false)
+    input_with_kind(
+        Some(Value::String(String::from(prompt))),
+        InputKind::Confirm,
+    )
+    .map(|v| {
+        if let InputValue::Bool(b) = v {
+            b
+        } else {
+            false
+        }
+    })
+    .unwrap_or(false)
 }
 
 /// Read a single character.
@@ -213,11 +247,11 @@ pub fn choose(prompt: &str, choices: &[&str]) -> Option<usize> {
     let req = InputRequest {
         id,
         kind: InputKind::Choice,
-        prompt: Some(StyledText::plain(prompt)),
+        prompt: Some(Value::String(String::from(prompt))),
         choices: choices.iter().map(|s| String::from(*s)).collect(),
     };
 
-    send_message(TerminalOutput::RequestInput(req));
+    send_request(Request::RequestInput(req));
 
     // Wait for response
     wait_for_input_response(id).and_then(|v| {
@@ -229,7 +263,7 @@ pub fn choose(prompt: &str, choices: &[&str]) -> Option<usize> {
     })
 }
 
-fn input_with_kind(prompt: Option<StyledText>, kind: InputKind) -> Option<InputValue> {
+fn input_with_kind(prompt: Option<Value>, kind: InputKind) -> Option<InputValue> {
     let id = next_request_id();
     let req = InputRequest {
         id,
@@ -238,7 +272,7 @@ fn input_with_kind(prompt: Option<StyledText>, kind: InputKind) -> Option<InputV
         choices: Vec::new(),
     };
 
-    send_message(TerminalOutput::RequestInput(req));
+    send_request(Request::RequestInput(req));
 
     // Wait for response
     wait_for_input_response(id)
@@ -251,9 +285,9 @@ fn wait_for_input_response(expected_id: u32) -> Option<InputValue> {
     loop {
         match channel::recv(parent, &mut buf) {
             Ok(len) => {
-                if let Ok((msg, _)) = TerminalInput::from_bytes(&buf[..len]) {
+                if let Ok((msg, _)) = Event::from_bytes(&buf[..len]) {
                     match msg {
-                        TerminalInput::Input(InputResponse { id, value }) if id == expected_id => {
+                        Event::Input(InputResponse { id, value }) if id == expected_id => {
                             return value;
                         }
                         // Ignore other messages while waiting
@@ -272,7 +306,7 @@ fn wait_for_input_response(expected_id: u32) -> Option<InputValue> {
 
 /// Query the terminal size.
 pub fn size() -> Option<(u16, u16)> {
-    send_message(TerminalOutput::Query(TerminalQuery::Size));
+    send_request(Request::Query(TerminalQuery::Size));
 
     let parent = unsafe { Handle::from_raw(HANDLE_PARENT) };
     let mut buf = [0u8; MAX_MESSAGE_SIZE];
@@ -280,8 +314,8 @@ pub fn size() -> Option<(u16, u16)> {
     loop {
         match channel::recv(parent, &mut buf) {
             Ok(len) => {
-                if let Ok((msg, _)) = TerminalInput::from_bytes(&buf[..len]) {
-                    if let TerminalInput::QueryResponse(QueryResponse::Size { cols, rows }) = msg {
+                if let Ok((msg, _)) = Event::from_bytes(&buf[..len]) {
+                    if let Event::QueryResponse(QueryResponse::Size { cols, rows }) = msg {
                         return Some((cols, rows));
                     }
                 }
@@ -293,7 +327,7 @@ pub fn size() -> Option<(u16, u16)> {
 
 /// Query the terminal capabilities.
 pub fn capabilities() -> Option<TerminalCapabilities> {
-    send_message(TerminalOutput::Query(TerminalQuery::Capabilities));
+    send_request(Request::Query(TerminalQuery::Capabilities));
 
     let parent = unsafe { Handle::from_raw(HANDLE_PARENT) };
     let mut buf = [0u8; MAX_MESSAGE_SIZE];
@@ -301,8 +335,8 @@ pub fn capabilities() -> Option<TerminalCapabilities> {
     loop {
         match channel::recv(parent, &mut buf) {
             Ok(len) => {
-                if let Ok((msg, _)) = TerminalInput::from_bytes(&buf[..len]) {
-                    if let TerminalInput::QueryResponse(QueryResponse::Capabilities(caps)) = msg {
+                if let Ok((msg, _)) = Event::from_bytes(&buf[..len]) {
+                    if let Event::QueryResponse(QueryResponse::Capabilities(caps)) = msg {
                         return Some(caps);
                     }
                 }
@@ -316,143 +350,56 @@ pub fn capabilities() -> Option<TerminalCapabilities> {
 // Internal helpers
 // =============================================================================
 
-fn send_output(output: Output) {
-    send_message(TerminalOutput::Write(output));
+/// Send a Value to the terminal for display.
+fn send_value(value: Value) {
+    send_request(Request::Write(value));
 }
 
-fn send_message(msg: TerminalOutput) {
+/// Send a Request to the terminal.
+fn send_request(msg: Request) {
     let bytes = msg.to_bytes();
     let parent = unsafe { Handle::from_raw(HANDLE_PARENT) };
     let _ = channel::send(parent, &bytes);
 }
 
 // =============================================================================
-// Extension traits for builder helpers
+// Helper functions for building styled Values
 // =============================================================================
 
-/// Extension trait for StyledText with additional builder methods.
-pub trait StyledTextExt {
-    /// Create styled text with a single bold span.
-    fn bold(text: &str) -> StyledText;
-
-    /// Create styled text with a single coloured span.
-    fn coloured(text: &str, colour: Colour) -> StyledText;
-
-    /// Create styled text with a single span using full style.
-    fn styled(text: &str, style: Style) -> StyledText;
-
-    /// Push italic text.
-    fn push_italic(&mut self, text: &str);
-
-    /// Push underlined text.
-    fn push_underline(&mut self, text: &str);
-
-    /// Push text with foreground and background colours.
-    fn push_coloured_bg(&mut self, text: &str, fg: Colour, bg: Colour);
-
-    /// Convenience: push red error text.
-    fn push_error(&mut self, text: &str);
-
-    /// Convenience: push green success text.
-    fn push_success(&mut self, text: &str);
-
-    /// Convenience: push yellow warning text.
-    fn push_warning(&mut self, text: &str);
-
-    /// Convenience: push blue info text.
-    fn push_info(&mut self, text: &str);
+/// Create a styled Value from text and style.
+pub fn styled(text: &str, style: Style) -> Value {
+    Value::Styled(style, Box::new(Value::String(String::from(text))))
 }
 
-impl StyledTextExt for StyledText {
-    fn bold(text: &str) -> StyledText {
-        let mut st = StyledText::new();
-        st.push_bold(text);
-        st
-    }
-
-    fn coloured(text: &str, colour: Colour) -> StyledText {
-        let mut st = StyledText::new();
-        st.push_coloured(text, colour);
-        st
-    }
-
-    fn styled(text: &str, style: Style) -> StyledText {
-        StyledText {
-            spans: alloc::vec![StyledSpan {
-                text: String::from(text),
-                style,
-            }],
-        }
-    }
-
-    fn push_italic(&mut self, text: &str) {
-        self.push(
-            text,
-            Style {
-                italic: true,
-                ..Default::default()
-            },
-        );
-    }
-
-    fn push_underline(&mut self, text: &str) {
-        self.push(
-            text,
-            Style {
-                underline: true,
-                ..Default::default()
-            },
-        );
-    }
-
-    fn push_coloured_bg(&mut self, text: &str, fg: Colour, bg: Colour) {
-        self.push(
-            text,
-            Style {
-                foreground: Some(fg),
-                background: Some(bg),
-                ..Default::default()
-            },
-        );
-    }
-
-    fn push_error(&mut self, text: &str) {
-        self.push_coloured(text, Colour::Named(NamedColour::Red));
-    }
-
-    fn push_success(&mut self, text: &str) {
-        self.push_coloured(text, Colour::Named(NamedColour::Green));
-    }
-
-    fn push_warning(&mut self, text: &str) {
-        self.push_coloured(text, Colour::Named(NamedColour::Yellow));
-    }
-
-    fn push_info(&mut self, text: &str) {
-        self.push_coloured(text, Colour::Named(NamedColour::Blue));
-    }
+/// Create a bold text Value.
+pub fn bold(text: &str) -> Value {
+    Value::Styled(Style::bold(), Box::new(Value::String(String::from(text))))
 }
 
-/// Extension trait for Table with additional builder methods.
-pub trait TableExt {
-    /// Create a table with headers from string slices.
-    fn with_header_strs(headers: &[&str]) -> Table;
-
-    /// Add a row from string slices.
-    fn add_row_strs(&mut self, cells: &[&str]);
+/// Create a coloured text Value.
+pub fn coloured(text: &str, colour: Colour) -> Value {
+    Value::Styled(
+        Style::fg(colour),
+        Box::new(Value::String(String::from(text))),
+    )
 }
 
-impl TableExt for Table {
-    fn with_header_strs(headers: &[&str]) -> Table {
-        Table {
-            headers: Some(headers.iter().map(|s| StyledText::plain(s)).collect()),
-            rows: Vec::new(),
-            alignment: Vec::new(),
-        }
-    }
+/// Create an error-styled Value (red text).
+pub fn error_text(text: &str) -> Value {
+    coloured(text, Colour::Named(NamedColour::Red))
+}
 
-    fn add_row_strs(&mut self, cells: &[&str]) {
-        self.rows
-            .push(cells.iter().map(|s| StyledText::plain(s)).collect());
-    }
+/// Create a warning-styled Value (yellow text).
+pub fn warning_text(text: &str) -> Value {
+    coloured(text, Colour::Named(NamedColour::Yellow))
+}
+
+/// Create a success-styled Value (green text).
+pub fn success_text(text: &str) -> Value {
+    coloured(text, Colour::Named(NamedColour::Green))
+}
+
+/// Create an info-styled Value (blue text).
+pub fn info_text(text: &str) -> Value {
+    coloured(text, Colour::Named(NamedColour::Blue))
 }

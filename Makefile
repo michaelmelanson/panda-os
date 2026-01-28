@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: build panda-kernel init run test kernel-test userspace-test ext2-image clean-ext2
+.PHONY: build panda-kernel init run test kernel-test userspace-test unit-test ext2-image clean-ext2
 
 KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic resource block device_path
 USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test keyboard_test mailbox_keyboard_test state_test readdir_test buffer_test surface_test window_test multi_window_test alpha_test partial_refresh_test window_move_test block_test ext2_test device_path_test channel_test mailbox_test args_test
@@ -16,6 +16,12 @@ mailbox_test_EXTRAS := mailbox_child
 args_test_EXTRAS := args_child
 export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS args_test_EXTRAS
 
+# Cargo commands for custom targets (require build-std for no_std targets)
+CARGO := cargo +nightly
+CARGO_BUILD_STD := -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
+KERNEL_TARGET := --target ./x86_64-panda-uefi.json
+USERSPACE_TARGET := --target ./x86_64-panda-userspace.json
+
 # Build targets
 build: panda-kernel init terminal hello ls cat
 	mkdir -p build/run/efi/boot
@@ -27,22 +33,22 @@ build: panda-kernel init terminal hello ls cat
 	echo 'fs0:\efi\boot\bootx64.efi' > build/run/efi/boot/startup.nsh
 
 panda-kernel:
-	cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json
+	$(CARGO) build $(CARGO_BUILD_STD) --package panda-kernel $(KERNEL_TARGET)
 
 init:
-	cargo +nightly build -Z build-std=core,alloc --package init --target ./x86_64-panda-userspace.json
+	$(CARGO) build $(CARGO_BUILD_STD) --package init $(USERSPACE_TARGET)
 
 terminal:
-	cargo +nightly build -Z build-std=core,alloc --package terminal --target ./x86_64-panda-userspace.json
+	$(CARGO) build $(CARGO_BUILD_STD) --package terminal $(USERSPACE_TARGET)
 
 hello:
-	cargo +nightly build -Z build-std=core,alloc --package hello --target ./x86_64-panda-userspace.json
+	$(CARGO) build $(CARGO_BUILD_STD) --package hello $(USERSPACE_TARGET)
 
 ls:
-	cargo +nightly build -Z build-std=core,alloc --package ls --target ./x86_64-panda-userspace.json
+	$(CARGO) build $(CARGO_BUILD_STD) --package ls $(USERSPACE_TARGET)
 
 cat:
-	cargo +nightly build -Z build-std=core,alloc --package cat --target ./x86_64-panda-userspace.json
+	$(CARGO) build $(CARGO_BUILD_STD) --package cat $(USERSPACE_TARGET)
 
 run: build ext2-image
 	$(QEMU_COMMON) \
@@ -74,16 +80,20 @@ clean-ext2:
 	rm -f $(EXT2_IMAGE)
 
 # All tests
-test: kernel-test userspace-test
+test: unit-test kernel-test userspace-test
+
+# Rust unit tests (run on host without build-std)
+unit-test:
+	@echo "Running Rust unit tests..."
+	@cargo test -p panda-abi --features std
+	@echo ""
 
 # Kernel tests
-# Use 'cargo build --tests' instead of 'cargo test --no-run' to avoid dual-profile
-# issues with build-std (cargo test builds deps in both test and dev profiles)
 ifdef TEST
 kernel-test:
 	@if echo "$(KERNEL_TESTS)" | grep -q -w "$(TEST)"; then \
 		echo "Building kernel test $(TEST)..."; \
-		cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json --tests --features testing 2>&1 | grep -E "Compiling|Executable" || true; \
+		$(CARGO) build $(CARGO_BUILD_STD) --package panda-kernel $(KERNEL_TARGET) --tests --features testing 2>&1 | grep -E "Compiling|Executable" || true; \
 		./scripts/setup-kernel-test.sh $(TEST); \
 		echo "Running kernel test $(TEST)..."; \
 		./scripts/run-tests.sh kernel $(TEST); \
@@ -94,7 +104,7 @@ kernel-test:
 else
 kernel-test:
 	@echo "Building kernel tests..."
-	@cargo +nightly build --package panda-kernel --target ./x86_64-panda-uefi.json --tests --features testing 2>&1 | grep -E "Compiling|Executable" || true
+	@$(CARGO) build $(CARGO_BUILD_STD) --package panda-kernel $(KERNEL_TARGET) --tests --features testing 2>&1 | grep -E "Compiling|Executable" || true
 	@echo ""
 	@for test in $(KERNEL_TESTS); do \
 		./scripts/setup-kernel-test.sh $$test; \
@@ -108,10 +118,10 @@ ifdef TEST
 userspace-test: panda-kernel
 	@if echo "$(USERSPACE_TESTS)" | grep -q -w "$(TEST)"; then \
 		echo "Building userspace test $(TEST)..."; \
-		cargo +nightly build -Z build-std=core,alloc --package $(TEST) --target ./x86_64-panda-userspace.json; \
+		$(CARGO) build $(CARGO_BUILD_STD) --package $(TEST) $(USERSPACE_TARGET); \
 		extras_var=$(TEST)_EXTRAS; \
 		for extra in $${!extras_var}; do \
-			cargo +nightly build -Z build-std=core,alloc --package $$extra --target ./x86_64-panda-userspace.json; \
+			$(CARGO) build $(CARGO_BUILD_STD) --package $$extra $(USERSPACE_TARGET); \
 		done; \
 		./scripts/setup-userspace-test.sh $(TEST) $${!extras_var}; \
 		echo "Running userspace test $(TEST)..."; \
@@ -124,10 +134,10 @@ else
 userspace-test: panda-kernel
 	@echo "Building userspace tests..."
 	@for test in $(USERSPACE_TESTS); do \
-		cargo +nightly build -Z build-std=core,alloc --package $$test --target ./x86_64-panda-userspace.json; \
+		$(CARGO) build $(CARGO_BUILD_STD) --package $$test $(USERSPACE_TARGET); \
 		extras_var=$${test}_EXTRAS; \
 		for extra in $${!extras_var}; do \
-			cargo +nightly build -Z build-std=core,alloc --package $$extra --target ./x86_64-panda-userspace.json; \
+			$(CARGO) build $(CARGO_BUILD_STD) --package $$extra $(USERSPACE_TARGET); \
 		done; \
 	done
 	@for test in $(USERSPACE_TESTS); do \

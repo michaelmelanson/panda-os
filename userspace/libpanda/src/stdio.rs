@@ -129,3 +129,117 @@ pub fn println(s: &str) -> Result<()> {
     write(s.as_bytes())?;
     write(b"\n")
 }
+
+// =============================================================================
+// Value-based I/O for structured pipelines
+// =============================================================================
+
+use panda_abi::MAX_MESSAGE_SIZE;
+use panda_abi::encoding::{Decode, Decoder, Encode, Encoder};
+use panda_abi::value::Value;
+
+/// Write a structured Value to standard output.
+///
+/// This encodes the Value to binary and sends it through the stdout channel.
+/// Used for structured pipeline communication.
+pub fn write_value(value: &Value) -> Result<()> {
+    let mut encoder = Encoder::new();
+    value.encode(&mut encoder);
+    let bytes = encoder.finish();
+
+    if bytes.len() > MAX_MESSAGE_SIZE {
+        return Err(Error::from_code(-2)); // Message too large
+    }
+
+    write(&bytes)
+}
+
+/// Read a structured Value from standard input.
+///
+/// This reads bytes from stdin and decodes them as a Value.
+/// Returns `None` if the channel is closed.
+pub fn read_value() -> Result<Option<Value>> {
+    let mut buf = [0u8; MAX_MESSAGE_SIZE];
+    let n = read(&mut buf)?;
+
+    if n == 0 {
+        return Ok(None);
+    }
+
+    let mut decoder = Decoder::new(&buf[..n]);
+    match Value::decode(&mut decoder) {
+        Ok(value) => Ok(Some(value)),
+        Err(_) => Err(Error::from_code(-4)), // Decode error
+    }
+}
+
+/// Read a structured Value from standard input (non-blocking).
+///
+/// Returns `Ok(Some(value))` if data available, `Ok(None)` if no data,
+/// or `Err` on channel error.
+pub fn try_read_value() -> Result<Option<Value>> {
+    let mut buf = [0u8; MAX_MESSAGE_SIZE];
+    match try_read(&mut buf) {
+        Ok(n) if n > 0 => {
+            let mut decoder = Decoder::new(&buf[..n]);
+            match Value::decode(&mut decoder) {
+                Ok(value) => Ok(Some(value)),
+                Err(_) => Err(Error::from_code(-4)), // Decode error
+            }
+        }
+        Ok(_) => Ok(None), // No data available
+        Err(e) => Err(e),
+    }
+}
+
+// =============================================================================
+// Pipeline detection and output helpers
+// =============================================================================
+
+/// Check if this process is running in a pipeline (has valid STDOUT).
+///
+/// Returns `true` if STDOUT is connected to another pipeline stage,
+/// `false` if running standalone (output goes to PARENT/terminal).
+///
+/// This is determined by attempting a non-blocking write to STDOUT.
+/// If STDOUT is invalid (not set up by parent), the operation fails.
+pub fn is_pipeline() -> bool {
+    // Try to check if STDOUT handle is valid by attempting a non-blocking operation
+    // A non-blocking send to an invalid handle returns an error immediately
+    // We use an empty message to minimize overhead
+    let result = sys::channel::try_send_msg(Handle::STDOUT, &[]);
+    // If result is 0, STDOUT is valid and we're in a pipeline
+    // If result is negative, either STDOUT is invalid or queue is full
+    // We consider "queue full" (-1) as a valid pipeline state
+    result >= -1
+}
+
+/// Output a Value, choosing the appropriate channel based on context.
+///
+/// - In a pipeline: sends Value to STDOUT for next stage
+/// - Standalone: sends Value via PARENT to terminal for display
+///
+/// This allows tools to output structured data that works both in
+/// pipelines and standalone execution.
+pub fn output_value(value: &Value) -> Result<()> {
+    // For now, always send via STDOUT if possible, fall back to PARENT
+    // In the future, we could check is_pipeline() to choose the channel
+    match write_value(value) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            // STDOUT not available, send via PARENT for terminal display
+            use panda_abi::terminal::Request;
+
+            // Send Value directly via Request::Write
+            let msg = Request::Write(value.clone());
+
+            let bytes = msg.to_bytes();
+            let result = sys::channel::send_msg(Handle::PARENT, &bytes);
+            if result < 0 {
+                Err(Error::from_code(result))
+            } else {
+                Ok(())
+            }
+        }
+    }
+}

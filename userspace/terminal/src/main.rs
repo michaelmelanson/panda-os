@@ -19,9 +19,10 @@ use libpanda::{
 };
 use panda_abi::{
     terminal::{
-        ClearRegion, ColourSupport, QueryResponse, StyledText, Table, TerminalCapabilities,
-        TerminalInput, TerminalOutput, TerminalQuery,
+        ClearRegion, ColourSupport, Event as TerminalEvent, QueryResponse, Request,
+        TerminalCapabilities, TerminalQuery,
     },
+    value::Value,
     BlitParams, FillParams, UpdateParamsIn, OP_SURFACE_BLIT, OP_SURFACE_FILL, OP_SURFACE_FLUSH,
     OP_SURFACE_UPDATE_PARAMS,
 };
@@ -114,7 +115,7 @@ impl Terminal {
             y: 0,
             width: self.width,
             height: self.height,
-            color: COLOUR_BACKGROUND,
+            colour: COLOUR_BACKGROUND,
         };
         send(
             self.surface,
@@ -144,7 +145,7 @@ impl Terminal {
                         y: y_start,
                         width: self.width - 2 * MARGIN,
                         height: self.height - y_start - MARGIN,
-                        color: COLOUR_BACKGROUND,
+                        colour: COLOUR_BACKGROUND,
                     };
                     send(
                         self.surface,
@@ -163,7 +164,7 @@ impl Terminal {
                     y: self.cursor_y,
                     width: self.width - 2 * MARGIN,
                     height: LINE_HEIGHT,
-                    color: COLOUR_BACKGROUND,
+                    colour: COLOUR_BACKGROUND,
                 };
                 send(
                     self.surface,
@@ -185,7 +186,7 @@ impl Terminal {
             y: self.cursor_y,
             width: self.width - self.cursor_x - MARGIN,
             height: LINE_HEIGHT,
-            color: COLOUR_BACKGROUND,
+            colour: COLOUR_BACKGROUND,
         };
         send(
             self.surface,
@@ -296,7 +297,7 @@ impl Terminal {
                 y: self.cursor_y,
                 width: char_width,
                 height: LINE_HEIGHT,
-                color: COLOUR_BACKGROUND,
+                colour: COLOUR_BACKGROUND,
             };
             send(
                 self.surface,
@@ -370,32 +371,6 @@ impl Terminal {
         self.flush();
     }
 
-    /// Write styled text
-    fn write_styled(&mut self, styled: &StyledText) {
-        let max_x = self.width - MARGIN;
-
-        for span in &styled.spans {
-            let fg = span
-                .style
-                .foreground
-                .as_ref()
-                .map(colour_to_argb)
-                .unwrap_or(COLOUR_DEFAULT_FG);
-
-            // Check if this span is a "word" (no whitespace) - if so, try to keep it together
-            let is_word = !span.text.chars().any(|c| c.is_whitespace());
-            if is_word {
-                let span_width = self.measure_text(&span.text);
-                // If we're not at the start of a line and the span won't fit, wrap first
-                if self.cursor_x > MARGIN && self.cursor_x + span_width > max_x {
-                    self.newline();
-                }
-            }
-
-            self.write_str_coloured(&span.text, fg);
-        }
-    }
-
     /// Write a line (string + newline) to the terminal
     pub fn write_line(&mut self, s: &str) {
         self.write_str(s);
@@ -403,53 +378,110 @@ impl Terminal {
         self.flush();
     }
 
-    /// Render a table
-    fn render_table(&mut self, table: &Table) {
-        // Calculate column widths
-        let num_cols = table
-            .headers
-            .as_ref()
-            .map(|h| h.len())
-            .unwrap_or_else(|| table.rows.first().map(|r| r.len()).unwrap_or(0));
+    /// Render a Value object (for structured pipeline data)
+    fn render_value(&mut self, value: &panda_abi::value::Value) {
+        use panda_abi::value::Value;
+        match value {
+            Value::Null => self.write_str("null"),
+            Value::Bool(b) => self.write_str(if *b { "true" } else { "false" }),
+            Value::Int(i) => self.write_str(&alloc::format!("{}", i)),
+            Value::Float(f) => self.write_str(&alloc::format!("{}", f)),
+            Value::String(s) => self.write_str(s),
+            Value::Bytes(b) => self.write_str(&alloc::format!("<{} bytes>", b.len())),
+            Value::Array(arr) => {
+                for (i, item) in arr.iter().enumerate() {
+                    if i > 0 {
+                        self.newline();
+                    }
+                    self.write_str("  - ");
+                    self.render_value(item);
+                }
+            }
+            Value::Map(map) => {
+                for (i, (k, v)) in map.iter().enumerate() {
+                    if i > 0 {
+                        self.newline();
+                    }
+                    self.write_str(k);
+                    self.write_str(": ");
+                    self.render_value(v);
+                }
+            }
+            Value::Styled(style, inner) => {
+                let fg = style
+                    .foreground
+                    .as_ref()
+                    .map(colour_to_argb)
+                    .unwrap_or(COLOUR_DEFAULT_FG);
+                // For styled values, we need to render the inner value with the style
+                // For simplicity, only handle String for now
+                if let Value::String(s) = inner.as_ref() {
+                    self.write_str_coloured(s, fg);
+                } else {
+                    // Fall back to rendering without style
+                    self.render_value(inner);
+                }
+            }
+            Value::Link { url, inner } => {
+                self.render_value(inner);
+                self.write_str(" (");
+                self.write_str(url);
+                self.write_str(")");
+            }
+            Value::Table(table) => {
+                self.render_value_table(table);
+            }
+        }
+    }
 
+    /// Render a Value::Table with proper column width calculation
+    fn render_value_table(&mut self, table: &panda_abi::value::Table) {
+        let num_cols = table.cols as usize;
         if num_cols == 0 {
             return;
         }
 
+        // Calculate column widths by measuring all values
         let mut col_widths = alloc::vec![0usize; num_cols];
 
         // Measure headers
         if let Some(ref headers) = table.headers {
             for (i, header) in headers.iter().enumerate() {
-                let width: usize = header.spans.iter().map(|s| s.text.len()).sum();
-                if i < col_widths.len() && width > col_widths[i] {
-                    col_widths[i] = width;
+                if i < num_cols {
+                    let width = self.measure_value_width(header);
+                    if width > col_widths[i] {
+                        col_widths[i] = width;
+                    }
                 }
             }
         }
 
-        // Measure rows
-        for row in &table.rows {
+        // Measure all cells
+        for row in table.row_iter() {
             for (i, cell) in row.iter().enumerate() {
-                let width: usize = cell.spans.iter().map(|s| s.text.len()).sum();
-                if i < col_widths.len() && width > col_widths[i] {
-                    col_widths[i] = width;
+                if i < num_cols {
+                    let width = self.measure_value_width(cell);
+                    if width > col_widths[i] {
+                        col_widths[i] = width;
+                    }
                 }
             }
         }
 
-        // Render headers
+        // Render headers if present
         if let Some(ref headers) = table.headers {
             for (i, header) in headers.iter().enumerate() {
-                self.write_styled(header);
+                if i > 0 {
+                    self.write_str("  ");
+                }
+                self.render_value(header);
+                // Pad to column width
                 if i < headers.len() - 1 {
-                    // Pad to column width
-                    let content_width: usize = header.spans.iter().map(|s| s.text.len()).sum();
+                    let content_width = self.measure_value_width(header);
                     let padding = col_widths
                         .get(i)
                         .unwrap_or(&0)
-                        .saturating_sub(content_width)
-                        + 2;
+                        .saturating_sub(content_width);
                     for _ in 0..padding {
                         let _ = self.draw_char(' ');
                     }
@@ -458,7 +490,8 @@ impl Terminal {
             self.newline();
 
             // Separator line
-            let total_width: usize = col_widths.iter().sum::<usize>() + (num_cols - 1) * 2;
+            let total_width: usize =
+                col_widths.iter().sum::<usize>() + (num_cols.saturating_sub(1)) * 2;
             for _ in 0..total_width {
                 let _ = self.draw_char('-');
             }
@@ -466,16 +499,20 @@ impl Terminal {
         }
 
         // Render rows
-        for row in &table.rows {
-            for (i, cell) in row.iter().enumerate() {
-                self.write_styled(cell);
-                if i < row.len() - 1 {
-                    let content_width: usize = cell.spans.iter().map(|s| s.text.len()).sum();
+        for row in table.row_iter() {
+            let row_vec: alloc::vec::Vec<_> = row.iter().collect();
+            for (i, cell) in row_vec.iter().enumerate() {
+                if i > 0 {
+                    self.write_str("  ");
+                }
+                self.render_value(cell);
+                // Pad to column width (except last column)
+                if i < row_vec.len() - 1 {
+                    let content_width = self.measure_value_width(cell);
                     let padding = col_widths
                         .get(i)
                         .unwrap_or(&0)
-                        .saturating_sub(content_width)
-                        + 2;
+                        .saturating_sub(content_width);
                     for _ in 0..padding {
                         let _ = self.draw_char(' ');
                     }
@@ -483,69 +520,114 @@ impl Terminal {
             }
             self.newline();
         }
-
         self.flush();
     }
 
-    /// Handle a terminal output message from child
-    pub fn handle_terminal_output(&mut self, msg: TerminalOutput, child_handle: Handle) {
-        match msg {
-            TerminalOutput::Write(output) => {
-                use panda_abi::terminal::Output;
-                match output {
-                    Output::Text(text) => self.write_str(&text),
-                    Output::Styled(styled) => self.write_styled(&styled),
-                    Output::Table(table) => self.render_table(&table),
-                    Output::KeyValue(pairs) => {
-                        for (key, value) in &pairs {
-                            self.write_styled(key);
-                            self.write_str(": ");
-                            self.write_styled(value);
-                            self.newline();
-                        }
-                        self.flush();
-                    }
-                    Output::List(items) => {
-                        for item in &items {
-                            self.write_str("  - ");
-                            self.write_styled(item);
-                            self.newline();
-                        }
-                        self.flush();
-                    }
-                    Output::Bytes(data) => {
-                        // Display as hex dump
-                        self.write_str(&alloc::format!("<{} bytes>", data.len()));
-                        self.newline();
-                        self.flush();
-                    }
-                    Output::Link { text, url, .. } => {
-                        // Just show text and URL
-                        self.write_str(&text);
-                        self.write_str(" (");
-                        self.write_str(&url);
-                        self.write_str(")");
-                        self.flush();
-                    }
-                    Output::Json(json) => {
-                        // Just write the JSON as-is for now
-                        self.write_str(&json);
-                        self.newline();
-                        self.flush();
-                    }
+    /// Measure the display width of a Value in characters
+    fn measure_value_width(&self, value: &Value) -> usize {
+        match value {
+            Value::Null => 4, // "null"
+            Value::Bool(b) => {
+                if *b {
+                    4
+                } else {
+                    5
+                }
+            } // "true" or "false"
+            Value::Int(n) => {
+                // Count digits (including sign)
+                let mut v = *n;
+                let mut count = if v < 0 { 1 } else { 0 }; // account for minus sign
+                if v == 0 {
+                    return 1;
+                }
+                if v < 0 {
+                    v = v.wrapping_neg();
+                }
+                while v > 0 {
+                    count += 1;
+                    v /= 10;
+                }
+                count
+            }
+            Value::Float(f) => {
+                // Approximate width for float display
+                alloc::format!("{}", f).len()
+            }
+            Value::String(s) => s.len(),
+            Value::Bytes(data) => {
+                // "<N bytes>"
+                alloc::format!("<{} bytes>", data.len()).len()
+            }
+            Value::Array(items) => {
+                // [item, item, ...]
+                if items.is_empty() {
+                    2 // "[]"
+                } else {
+                    2 + items
+                        .iter()
+                        .map(|v| self.measure_value_width(v))
+                        .sum::<usize>()
+                        + (items.len() - 1) * 2 // ", " separators
                 }
             }
-            TerminalOutput::MoveCursor { row, col } => {
+            Value::Map(fields) => {
+                // {key: value, ...}
+                if fields.is_empty() {
+                    2 // "{}"
+                } else {
+                    2 + fields
+                        .iter()
+                        .map(|(k, v)| k.len() + 2 + self.measure_value_width(v))
+                        .sum::<usize>()
+                        + (fields.len() - 1) * 2
+                }
+            }
+            Value::Styled(_, inner) => {
+                // Styled doesn't change display width
+                self.measure_value_width(inner)
+            }
+            Value::Link { inner, .. } => {
+                // Link text width
+                self.measure_value_width(inner)
+            }
+            Value::Table(_) => 7, // "<table>" placeholder
+        }
+    }
+
+    /// Handle a terminal request message from child
+    pub fn handle_request(&mut self, msg: Request, child_handle: Handle) {
+        match msg {
+            Request::Error(value) => {
+                // Display error in red
+                self.write_str_coloured("[ERROR] ", 0xFFFF0000);
+                self.render_value(&value);
+                self.newline();
+                self.flush();
+            }
+            Request::Warning(value) => {
+                // Display warning in yellow
+                self.write_str_coloured("[WARN] ", 0xFFFFFF00);
+                self.render_value(&value);
+                self.newline();
+                self.flush();
+            }
+            Request::Write(value) => {
+                // Render the Value
+                self.render_value(&value);
+                self.flush();
+            }
+            Request::MoveCursor { row, col } => {
                 self.cursor_x = MARGIN + col as u32 * self.avg_char_width;
                 self.cursor_y = MARGIN + row as u32 * LINE_HEIGHT;
             }
-            TerminalOutput::Clear(region) => {
+            Request::Clear(region) => {
                 self.clear_region(region);
             }
-            TerminalOutput::RequestInput(req) => {
+            Request::RequestInput(req) => {
                 // Display prompt if provided
                 if let Some(ref prompt) = req.prompt {
-                    self.write_styled(prompt);
+                    self.render_value(prompt);
                 }
 
                 // Store pending input state
@@ -556,11 +638,11 @@ impl Terminal {
                     buffer: String::new(),
                 });
             }
-            TerminalOutput::SetTitle(title) => {
+            Request::SetTitle(title) => {
                 // TODO: Set window title when supported
                 let _ = title;
             }
-            TerminalOutput::Progress {
+            Request::Progress {
                 current,
                 total,
                 message,
@@ -575,7 +657,7 @@ impl Terminal {
                 self.newline();
                 self.flush();
             }
-            TerminalOutput::Query(query) => {
+            Request::Query(query) => {
                 let response = match query {
                     TerminalQuery::Size => {
                         let cols = (self.width - 2 * MARGIN) / self.avg_char_width;
@@ -603,11 +685,11 @@ impl Terminal {
                     }
                 };
 
-                let input_msg = TerminalInput::QueryResponse(response);
-                let bytes = input_msg.to_bytes();
+                let event_msg = TerminalEvent::QueryResponse(response);
+                let bytes = event_msg.to_bytes();
                 let _ = channel::send(child_handle, &bytes);
             }
-            TerminalOutput::Exit(_code) => {
+            Request::Exit(_code) => {
                 // Child is exiting via protocol - will also get ProcessExited event
             }
         }

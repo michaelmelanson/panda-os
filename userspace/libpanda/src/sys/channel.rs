@@ -6,6 +6,27 @@
 use super::{Handle, send};
 use panda_abi::*;
 
+/// Create a channel pair.
+///
+/// Returns handles to both endpoints: (endpoint_a, endpoint_b).
+/// Messages sent on endpoint_a are received by endpoint_b, and vice versa.
+#[inline(always)]
+pub fn create() -> (Handle, Handle) {
+    let mut handles: [u32; 2] = [0, 0];
+    let result = send(
+        Handle::from(0u32), // No source handle for create
+        OP_CHANNEL_CREATE,
+        handles.as_mut_ptr() as usize,
+        0,
+        0,
+        0,
+    );
+    if result < 0 {
+        panic!("channel_create failed: {}", result);
+    }
+    (Handle::from(handles[0]), Handle::from(handles[1]))
+}
+
 /// Send a message on a channel (blocking if queue full).
 ///
 /// Returns 0 on success, or negative error code.

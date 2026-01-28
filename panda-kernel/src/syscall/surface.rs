@@ -233,7 +233,7 @@ pub fn handle_fill(handle: u32, params_ptr: usize) -> isize {
             params.y,
             params.width,
             params.height,
-            params.color,
+            params.colour,
         ) {
             Ok(()) => 0,
             Err(_) => -1,

@@ -85,7 +85,7 @@ impl Surface {
             y: rect.y,
             width: rect.width,
             height: rect.height,
-            color: colour.as_u32(),
+            colour: colour.as_u32(),
         };
         let result = sys::surface::fill(self.handle, &params);
         if result < 0 {

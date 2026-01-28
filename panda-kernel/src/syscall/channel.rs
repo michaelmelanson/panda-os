@@ -6,10 +6,44 @@ use core::slice;
 use log::debug;
 use panda_abi::CHANNEL_NONBLOCK;
 
-use crate::resource::{ChannelError, Resource};
+use crate::resource::{ChannelEndpoint, ChannelError, Resource};
 use crate::scheduler;
 
 use super::SyscallContext;
+
+/// Handle channel create operation.
+/// Creates a pair of connected channel endpoints and returns handles to both.
+///
+/// Arguments:
+/// - out_handles_ptr: Pointer to array of two u32s to receive handle IDs [endpoint_a, endpoint_b]
+///
+/// Returns 0 on success, negative error code on failure.
+pub fn handle_create(out_handles_ptr: usize) -> isize {
+    debug!("channel_create: out_handles_ptr={:#x}", out_handles_ptr);
+
+    // Create the channel pair
+    let (endpoint_a, endpoint_b) = ChannelEndpoint::create_pair();
+
+    // Insert both endpoints into the current process's handle table
+    let result = scheduler::with_current_process(|proc| {
+        let handle_a = proc.handles_mut().insert(Arc::new(endpoint_a));
+        let handle_b = proc.handles_mut().insert(Arc::new(endpoint_b));
+        (handle_a, handle_b)
+    });
+
+    // Write the handle IDs to userspace
+    let out_handles = out_handles_ptr as *mut [u32; 2];
+    unsafe {
+        (*out_handles)[0] = result.0;
+        (*out_handles)[1] = result.1;
+    }
+
+    debug!(
+        "channel_create: created handles {} and {}",
+        result.0, result.1
+    );
+    0
+}
 
 /// Get the channel endpoint from a handle, returning a cloned Arc.
 /// This allows us to call methods on the channel outside of with_current_process.

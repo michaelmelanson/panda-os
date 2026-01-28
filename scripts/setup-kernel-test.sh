@@ -15,6 +15,8 @@ mkdir -p "$BUILD_DIR/efi/boot"
 # Use 'cargo build' instead of 'cargo test' to avoid dual-profile issues with build-std
 # (cargo test builds deps in both test and dev profiles, causing duplicate core crates)
 TEST_BIN=$(cargo +nightly build \
+    -Z build-std=core,alloc \
+    -Z build-std-features=compiler-builtins-mem \
     --package panda-kernel \
     --target "$PROJECT_DIR/x86_64-panda-uefi.json" \
     --test "$TEST_NAME" \

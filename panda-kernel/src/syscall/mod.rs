@@ -263,6 +263,7 @@ fn handle_send(
         OP_MAILBOX_POLL => mailbox::handle_poll(handle),
 
         // Channel operations
+        OP_CHANNEL_CREATE => channel::handle_create(arg0),
         OP_CHANNEL_SEND => channel::handle_send(ctx, handle, arg0, arg1, arg2),
         OP_CHANNEL_RECV => channel::handle_recv(ctx, handle, arg0, arg1, arg2),
 

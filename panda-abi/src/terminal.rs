@@ -18,34 +18,23 @@ use crate::encoding::{Decode, DecodeError, Decoder, Encode, Encoder};
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
-    // Output messages (Child -> Terminal): 0x0000 - 0x00FF
-    /// Write content to terminal
+    // Request messages (child -> terminal via PARENT): 0x0000 - 0x00FF
     Write = 0x0001,
-    /// Move cursor to position
     MoveCursor = 0x0002,
-    /// Clear a region
     Clear = 0x0003,
-    /// Request input from user
     RequestInput = 0x0004,
-    /// Set window title
     SetTitle = 0x0005,
-    /// Report progress
     Progress = 0x0006,
-    /// Query terminal capabilities/state
     Query = 0x0007,
-    /// Exit with status
     Exit = 0x0008,
+    Error = 0x0009,
+    Warning = 0x000A,
 
-    // Input messages (Terminal -> Child): 0x0100 - 0x01FF
-    /// Response to RequestInput
+    // Event messages (terminal -> child via PARENT): 0x0100 - 0x01FF
     InputResponse = 0x0100,
-    /// Raw key event
     Key = 0x0101,
-    /// Terminal resized
     Resize = 0x0102,
-    /// Signal from user
     Signal = 0x0103,
-    /// Response to query
     QueryResponse = 0x0104,
 }
 
@@ -191,112 +180,10 @@ impl NamedColour {
 }
 
 // =============================================================================
-// Styled text
+// Alignment
 // =============================================================================
 
-/// A span of text with a single style.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StyledSpan {
-    pub text: String,
-    pub style: Style,
-}
-
-impl Encode for StyledSpan {
-    fn encode(&self, enc: &mut Encoder) {
-        self.text.encode(enc);
-        self.style.encode(enc);
-    }
-}
-
-impl Decode for StyledSpan {
-    fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
-        let text = String::decode(dec)?;
-        let style = Style::decode(dec)?;
-        Ok(Self { text, style })
-    }
-}
-
-/// Text with embedded style spans (stateless - each span carries its style).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StyledText {
-    pub spans: Vec<StyledSpan>,
-}
-
-impl StyledText {
-    /// Create empty styled text.
-    pub fn new() -> Self {
-        Self { spans: Vec::new() }
-    }
-
-    /// Create styled text from plain text (default style).
-    pub fn plain(s: &str) -> Self {
-        Self {
-            spans: alloc::vec![StyledSpan {
-                text: String::from(s),
-                style: Style::default(),
-            }],
-        }
-    }
-
-    /// Push a span with the given style.
-    pub fn push(&mut self, text: &str, style: Style) {
-        self.spans.push(StyledSpan {
-            text: String::from(text),
-            style,
-        });
-    }
-
-    /// Push plain text (default style).
-    pub fn push_plain(&mut self, text: &str) {
-        self.push(text, Style::default());
-    }
-
-    /// Push bold text.
-    pub fn push_bold(&mut self, text: &str) {
-        self.push(
-            text,
-            Style {
-                bold: true,
-                ..Default::default()
-            },
-        );
-    }
-
-    /// Push coloured text.
-    pub fn push_coloured(&mut self, text: &str, fg: Colour) {
-        self.push(
-            text,
-            Style {
-                foreground: Some(fg),
-                ..Default::default()
-            },
-        );
-    }
-
-    /// Check if the styled text is empty.
-    pub fn is_empty(&self) -> bool {
-        self.spans.is_empty() || self.spans.iter().all(|s| s.text.is_empty())
-    }
-}
-
-impl Encode for StyledText {
-    fn encode(&self, enc: &mut Encoder) {
-        self.spans.encode(enc);
-    }
-}
-
-impl Decode for StyledText {
-    fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
-        let spans = Vec::<StyledSpan>::decode(dec)?;
-        Ok(Self { spans })
-    }
-}
-
-// =============================================================================
-// Table
-// =============================================================================
-
-/// Table alignment.
+/// Table alignment (for terminal rendering hints).
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Alignment {
@@ -320,67 +207,6 @@ impl Decode for Alignment {
             2 => Ok(Self::Right),
             _ => Err(DecodeError::InvalidValue),
         }
-    }
-}
-
-/// Table content.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Table {
-    pub headers: Option<Vec<StyledText>>,
-    pub rows: Vec<Vec<StyledText>>,
-    pub alignment: Vec<Alignment>,
-}
-
-impl Table {
-    /// Create an empty table.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set headers.
-    pub fn with_headers(mut self, headers: Vec<StyledText>) -> Self {
-        self.headers = Some(headers);
-        self
-    }
-
-    /// Add a row.
-    pub fn add_row(&mut self, row: Vec<StyledText>) {
-        self.rows.push(row);
-    }
-
-    /// Set column alignments.
-    pub fn with_alignment(mut self, alignment: Vec<Alignment>) -> Self {
-        self.alignment = alignment;
-        self
-    }
-}
-
-impl Encode for Table {
-    fn encode(&self, enc: &mut Encoder) {
-        self.headers.encode(enc);
-        // Rows need special encoding: Vec<Vec<StyledText>>
-        enc.write_u16(self.rows.len() as u16);
-        for row in &self.rows {
-            row.encode(enc);
-        }
-        self.alignment.encode(enc);
-    }
-}
-
-impl Decode for Table {
-    fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
-        let headers = Option::<Vec<StyledText>>::decode(dec)?;
-        let row_count = dec.read_u16()? as usize;
-        let mut rows = Vec::with_capacity(row_count);
-        for _ in 0..row_count {
-            rows.push(Vec::<StyledText>::decode(dec)?);
-        }
-        let alignment = Vec::<Alignment>::decode(dec)?;
-        Ok(Self {
-            headers,
-            rows,
-            alignment,
-        })
     }
 }
 
@@ -459,14 +285,14 @@ impl Decode for InputKind {
 }
 
 /// Input request from child to terminal.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InputRequest {
     /// Request ID for correlation
     pub id: u32,
     /// Type of input requested
     pub kind: InputKind,
-    /// Optional prompt to display
-    pub prompt: Option<StyledText>,
+    /// Optional prompt to display (as a Value for styled prompts)
+    pub prompt: Option<crate::value::Value>,
     /// Choices (only for InputKind::Choice)
     pub choices: Vec<String>,
 }
@@ -484,7 +310,7 @@ impl Decode for InputRequest {
     fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
         let id = u32::decode(dec)?;
         let kind = InputKind::decode(dec)?;
-        let prompt = Option::<StyledText>::decode(dec)?;
+        let prompt = Option::<crate::value::Value>::decode(dec)?;
         let choices = Vec::<String>::decode(dec)?;
         Ok(Self {
             id,
@@ -525,107 +351,21 @@ impl Decode for TerminalQuery {
 }
 
 // =============================================================================
-// Output content
+// Control plane messages (child -> terminal)
 // =============================================================================
 
-/// Content that can be written to terminal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Output {
-    /// Plain text (may contain newlines)
-    Text(String),
-    /// Text with embedded style spans
-    Styled(StyledText),
-    /// Table
-    Table(Table),
-    /// Key-value pairs
-    KeyValue(Vec<(StyledText, StyledText)>),
-    /// List items
-    List(Vec<StyledText>),
-    /// Raw bytes
-    Bytes(Vec<u8>),
-    /// Hyperlink
-    Link {
-        text: String,
-        url: String,
-        style: Option<Style>,
-    },
-    /// JSON (terminal can pretty-print)
-    Json(String),
-}
-
-impl Encode for Output {
-    fn encode(&self, enc: &mut Encoder) {
-        match self {
-            Output::Text(s) => {
-                enc.write_u8(0);
-                s.encode(enc);
-            }
-            Output::Styled(styled) => {
-                enc.write_u8(1);
-                styled.encode(enc);
-            }
-            Output::Table(table) => {
-                enc.write_u8(2);
-                table.encode(enc);
-            }
-            Output::KeyValue(pairs) => {
-                enc.write_u8(3);
-                pairs.encode(enc);
-            }
-            Output::List(items) => {
-                enc.write_u8(4);
-                items.encode(enc);
-            }
-            Output::Bytes(data) => {
-                enc.write_u8(5);
-                enc.write_byte_array(data);
-            }
-            Output::Link { text, url, style } => {
-                enc.write_u8(6);
-                text.encode(enc);
-                url.encode(enc);
-                style.encode(enc);
-            }
-            Output::Json(json) => {
-                enc.write_u8(7);
-                json.encode(enc);
-            }
-        }
-    }
-}
-
-impl Decode for Output {
-    fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
-        match dec.read_u8()? {
-            0 => Ok(Output::Text(String::decode(dec)?)),
-            1 => Ok(Output::Styled(StyledText::decode(dec)?)),
-            2 => Ok(Output::Table(Table::decode(dec)?)),
-            3 => Ok(Output::KeyValue(Vec::<(StyledText, StyledText)>::decode(
-                dec,
-            )?)),
-            4 => Ok(Output::List(Vec::<StyledText>::decode(dec)?)),
-            5 => Ok(Output::Bytes(dec.read_byte_array()?)),
-            6 => {
-                let text = String::decode(dec)?;
-                let url = String::decode(dec)?;
-                let style = Option::<Style>::decode(dec)?;
-                Ok(Output::Link { text, url, style })
-            }
-            7 => Ok(Output::Json(String::decode(dec)?)),
-            _ => Err(DecodeError::InvalidValue),
-        }
-    }
-}
-
-// =============================================================================
-// Output messages (Child -> Terminal)
-// =============================================================================
-
-/// Message from child process to terminal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TerminalOutput {
-    /// Write content to the terminal
-    Write(Output),
+/// Control message from child process to terminal (via PARENT channel).
+///
+/// These are control plane messages for interactive features (input prompts,
+/// queries), error/warning display, and UI control. For data output, send
+/// `Value` objects through STDOUT instead.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Request {
+    /// Display error message (always shown, even from middle pipeline stages).
+    /// Use this for errors that must reach the user regardless of pipeline position.
+    Error(crate::value::Value),
+    /// Display warning message (always shown, even from middle pipeline stages).
+    Warning(crate::value::Value),
     /// Move cursor to position
     MoveCursor { row: u16, col: u16 },
     /// Clear a region
@@ -644,9 +384,13 @@ pub enum TerminalOutput {
     Query(TerminalQuery),
     /// Exit with status
     Exit(i32),
+    /// Write a Value to the terminal for display.
+    /// For standalone programs, this is how output reaches the terminal.
+    /// For pipeline programs, prefer using STDOUT channel for data flow.
+    Write(crate::value::Value),
 }
 
-impl TerminalOutput {
+impl Request {
     /// Encode this message to bytes with TLV header.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut enc = Encoder::new();
@@ -663,7 +407,8 @@ impl TerminalOutput {
 
     fn encode_with_header(&self, enc: &mut Encoder) {
         let msg_type = match self {
-            Self::Write(_) => MessageType::Write,
+            Self::Error(_) => MessageType::Error,
+            Self::Warning(_) => MessageType::Warning,
             Self::MoveCursor { .. } => MessageType::MoveCursor,
             Self::Clear(_) => MessageType::Clear,
             Self::RequestInput(_) => MessageType::RequestInput,
@@ -671,6 +416,7 @@ impl TerminalOutput {
             Self::Progress { .. } => MessageType::Progress,
             Self::Query(_) => MessageType::Query,
             Self::Exit(_) => MessageType::Exit,
+            Self::Write(_) => MessageType::Write,
         };
 
         // Write header with placeholder length
@@ -679,7 +425,8 @@ impl TerminalOutput {
 
         // Write content
         match self {
-            Self::Write(output) => output.encode(enc),
+            Self::Error(value) => value.encode(enc),
+            Self::Warning(value) => value.encode(enc),
             Self::MoveCursor { row, col } => {
                 enc.write_u16(*row);
                 enc.write_u16(*col);
@@ -698,6 +445,7 @@ impl TerminalOutput {
             }
             Self::Query(query) => query.encode(enc),
             Self::Exit(code) => enc.write_i32(*code),
+            Self::Write(value) => value.encode(enc),
         }
 
         // Update length
@@ -710,9 +458,17 @@ impl TerminalOutput {
         let _length = length; // We trust the content decoding to consume the right amount
 
         match msg_type {
+            x if x == MessageType::Error as u16 => {
+                let value = crate::value::Value::decode(dec)?;
+                Ok(Self::Error(value))
+            }
+            x if x == MessageType::Warning as u16 => {
+                let value = crate::value::Value::decode(dec)?;
+                Ok(Self::Warning(value))
+            }
             x if x == MessageType::Write as u16 => {
-                let output = Output::decode(dec)?;
-                Ok(Self::Write(output))
+                let value = crate::value::Value::decode(dec)?;
+                Ok(Self::Write(value))
             }
             x if x == MessageType::MoveCursor as u16 => {
                 let row = dec.read_u16()?;
@@ -1035,9 +791,12 @@ impl Decode for QueryResponse {
     }
 }
 
-/// Message from terminal to child process.
+/// Event message from terminal to child process (via PARENT channel).
+///
+/// Control plane events: the terminal notifies the child about input,
+/// signals, and query responses.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TerminalInput {
+pub enum Event {
     /// Response to RequestInput
     Input(InputResponse),
     /// Raw key event (when in RawKeys mode)
@@ -1050,7 +809,7 @@ pub enum TerminalInput {
     QueryResponse(QueryResponse),
 }
 
-impl TerminalInput {
+impl Event {
     /// Encode this message to bytes with TLV header.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut enc = Encoder::new();

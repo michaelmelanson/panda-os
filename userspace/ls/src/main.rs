@@ -5,8 +5,9 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use libpanda::terminal::{self, Colour, NamedColour, StyledText, StyledTextExt};
+use libpanda::terminal::{self, Colour, NamedColour};
 use libpanda::{environment, file};
+use panda_abi::value::Value;
 
 libpanda::main! { |args|
     // Default to current directory (root of mounted fs)
@@ -27,10 +28,10 @@ libpanda::main! { |args|
     let dir = match environment::opendir(&uri) {
         Ok(d) => d,
         Err(_) => {
-            let mut text = StyledText::new();
-            text.push_error("ls: ");
-            text.push_plain(&alloc::format!("cannot access '{}': No such file or directory\n", path));
-            terminal::print_styled(text);
+            terminal::error(&alloc::format!(
+                "ls: cannot access '{}': No such file or directory",
+                path
+            ));
             return 1;
         }
     };
@@ -49,7 +50,7 @@ libpanda::main! { |args|
             break; // End of directory
         }
         if result < 0 {
-            terminal::println("ls: error reading directory");
+            terminal::error("ls: error reading directory");
             file::close(dir);
             return 1;
         }
@@ -62,23 +63,30 @@ libpanda::main! { |args|
     // Sort entries alphabetically
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Print entries with colours
-    let mut output = StyledText::new();
+    // Build output as a list of Values
+    let mut parts: Vec<Value> = Vec::new();
     for (i, (name, is_dir)) in entries.iter().enumerate() {
         if *is_dir {
             // Directories in blue with trailing slash
-            output.push_coloured(&alloc::format!("{}/", name), Colour::Named(NamedColour::Blue));
+            parts.push(terminal::coloured(
+                &alloc::format!("{}/", name),
+                Colour::Named(NamedColour::Blue),
+            ));
         } else {
-            output.push_plain(name);
+            parts.push(Value::String(name.clone()));
         }
 
         // Add spacing between entries
         if i < entries.len() - 1 {
-            output.push_plain("  ");
+            parts.push(Value::String(String::from("  ")));
         }
     }
-    output.push_plain("\n");
+    parts.push(Value::String(String::from("\n")));
 
-    terminal::print_styled(output);
+    // Print each part
+    for part in parts {
+        terminal::print_value(part);
+    }
+
     0
 }

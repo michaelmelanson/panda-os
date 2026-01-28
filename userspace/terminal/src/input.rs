@@ -9,7 +9,7 @@ use libpanda::{
     keyboard::{self, KeyValue, RawInputEvent, KEY_BACKSPACE, KEY_ENTER},
     Handle,
 };
-use panda_abi::terminal::{InputKind, InputResponse, InputValue, TerminalInput};
+use panda_abi::terminal::{Event as TerminalEvent, InputKind, InputResponse, InputValue};
 
 use crate::Terminal;
 
@@ -33,7 +33,7 @@ impl Terminal {
                 id: pending.id,
                 value,
             };
-            let msg = TerminalInput::Input(response);
+            let msg = TerminalEvent::Input(response);
             let bytes = msg.to_bytes();
             let _ = channel::send(pending.handle, &bytes);
         }

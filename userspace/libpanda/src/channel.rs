@@ -204,3 +204,15 @@ pub fn try_recv(handle: Handle, buf: &mut [u8]) -> Result<usize, isize> {
 
 /// Maximum size of a single channel message.
 pub const MESSAGE_SIZE_MAX: usize = MAX_MESSAGE_SIZE;
+
+/// Create a new channel pair.
+///
+/// Returns handles to both endpoints: (endpoint_a, endpoint_b).
+/// Messages sent on endpoint_a are received by endpoint_b, and vice versa.
+///
+/// This is useful for setting up pipelines where one endpoint is passed
+/// to a child process (via spawn) and the other is kept by the parent.
+#[inline(always)]
+pub fn create_pair() -> (Handle, Handle) {
+    sys::channel::create()
+}

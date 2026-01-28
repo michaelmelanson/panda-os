@@ -14,7 +14,8 @@
 //! # Example
 //!
 //! ```
-//! use panda_abi::value::{Value, Table, Style};
+//! use panda_abi::value::{Value, Table};
+//! use panda_abi::terminal::Style;
 //!
 //! // Simple text
 //! let text = Value::String("Hello, world!".into());
@@ -226,9 +227,9 @@ impl Value {
         Value::Styled(Style::bold(), Box::new(inner))
     }
 
-    /// Create a styled value with a foreground color.
-    pub fn colored(inner: Value, color: crate::terminal::Colour) -> Self {
-        Value::Styled(Style::fg(color), Box::new(inner))
+    /// Create a styled value with a foreground colour.
+    pub fn coloured(inner: Value, colour: crate::terminal::Colour) -> Self {
+        Value::Styled(Style::fg(colour), Box::new(inner))
     }
 }
 
@@ -267,10 +268,22 @@ pub enum TableError {
 impl Table {
     /// Create a new table with validation.
     ///
-    /// Returns an error if:
-    /// - `cols` is 0
-    /// - `headers` length doesn't equal `cols`
-    /// - `cells` length is not a multiple of `cols`
+    /// Returns an error if `cols` is 0, headers length doesn't equal `cols`,
+    /// or cells length is not a multiple of `cols`.
+    ///
+    /// ```
+    /// use panda_abi::value::{Table, Value};
+    ///
+    /// let table = Table::new(2, Some(vec![
+    ///     Value::String("Name".into()),
+    ///     Value::String("Age".into()),
+    /// ]), vec![
+    ///     Value::String("Alice".into()), Value::Int(30),
+    ///     Value::String("Bob".into()), Value::Int(25),
+    /// ]).unwrap();
+    ///
+    /// assert_eq!(table.rows(), 2);
+    /// ```
     pub fn new(
         cols: u16,
         headers: Option<Vec<Value>>,
@@ -326,6 +339,19 @@ impl Table {
     }
 
     /// Iterate over rows as slices.
+    ///
+    /// ```
+    /// use panda_abi::value::{Table, Value};
+    ///
+    /// let table = Table::new(2, None, vec![
+    ///     Value::Int(1), Value::Int(2),
+    ///     Value::Int(3), Value::Int(4),
+    /// ]).unwrap();
+    ///
+    /// let rows: Vec<_> = table.row_iter().collect();
+    /// assert_eq!(rows.len(), 2);
+    /// assert_eq!(rows[0], &[Value::Int(1), Value::Int(2)]);
+    /// ```
     pub fn row_iter(&self) -> impl Iterator<Item = &[Value]> {
         self.cells.chunks(self.cols as usize)
     }
@@ -391,16 +417,16 @@ impl Style {
         }
     }
 
-    /// Create a style with foreground color.
-    pub fn fg(color: crate::terminal::Colour) -> Self {
+    /// Create a style with foreground colour.
+    pub fn fg(colour: crate::terminal::Colour) -> Self {
         Self {
-            foreground: Some(color),
+            foreground: Some(colour),
             ..Default::default()
         }
     }
 
-    /// Create a style with foreground and background colors.
-    pub fn colors(fg: crate::terminal::Colour, bg: crate::terminal::Colour) -> Self {
+    /// Create a style with foreground and background colours.
+    pub fn colours(fg: crate::terminal::Colour, bg: crate::terminal::Colour) -> Self {
         Self {
             foreground: Some(fg),
             background: Some(bg),
@@ -434,5 +460,184 @@ impl Style {
             underline: self.underline || other.underline,
             strikethrough: self.strikethrough || other.strikethrough,
         }
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::encoding::{Decoder, Encoder};
+    use alloc::string::String;
+    use alloc::vec;
+
+    fn roundtrip(value: &Value) -> Value {
+        let mut enc = Encoder::new();
+        value.encode(&mut enc);
+        let bytes = enc.finish();
+        let mut dec = Decoder::new(&bytes);
+        Value::decode(&mut dec).unwrap()
+    }
+
+    #[test]
+    fn test_null() {
+        let v = Value::Null;
+        assert_eq!(roundtrip(&v), v);
+    }
+
+    #[test]
+    fn test_bool() {
+        assert_eq!(roundtrip(&Value::Bool(true)), Value::Bool(true));
+        assert_eq!(roundtrip(&Value::Bool(false)), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_int() {
+        assert_eq!(roundtrip(&Value::Int(0)), Value::Int(0));
+        assert_eq!(roundtrip(&Value::Int(42)), Value::Int(42));
+        assert_eq!(roundtrip(&Value::Int(-42)), Value::Int(-42));
+        assert_eq!(roundtrip(&Value::Int(i64::MAX)), Value::Int(i64::MAX));
+        assert_eq!(roundtrip(&Value::Int(i64::MIN)), Value::Int(i64::MIN));
+    }
+
+    #[test]
+    fn test_float() {
+        let v = Value::Float(3.14159);
+        let r = roundtrip(&v);
+        if let Value::Float(f) = r {
+            assert!((f - 3.14159).abs() < 1e-10);
+        } else {
+            panic!("Expected Float");
+        }
+    }
+
+    #[test]
+    fn test_string() {
+        let v = Value::String(String::from("hello world"));
+        assert_eq!(roundtrip(&v), v);
+
+        // Empty string
+        let v = Value::String(String::new());
+        assert_eq!(roundtrip(&v), v);
+    }
+
+    #[test]
+    fn test_bytes() {
+        let v = Value::Bytes(vec![1, 2, 3, 4, 5]);
+        assert_eq!(roundtrip(&v), v);
+
+        // Empty bytes
+        let v = Value::Bytes(vec![]);
+        assert_eq!(roundtrip(&v), v);
+    }
+
+    #[test]
+    fn test_array() {
+        let v = Value::Array(vec![
+            Value::Int(1),
+            Value::String(String::from("two")),
+            Value::Bool(true),
+        ]);
+        assert_eq!(roundtrip(&v), v);
+
+        // Empty array
+        let v = Value::Array(vec![]);
+        assert_eq!(roundtrip(&v), v);
+    }
+
+    #[test]
+    fn test_map() {
+        let mut map = BTreeMap::new();
+        map.insert(String::from("name"), Value::String(String::from("test")));
+        map.insert(String::from("count"), Value::Int(42));
+        let v = Value::Map(map);
+        assert_eq!(roundtrip(&v), v);
+    }
+
+    #[test]
+    fn test_styled() {
+        let inner = Value::String(String::from("bold text"));
+        let v = Value::Styled(Style::bold(), Box::new(inner));
+        assert_eq!(roundtrip(&v), v);
+    }
+
+    #[test]
+    fn test_link() {
+        let v = Value::Link {
+            url: String::from("https://example.com"),
+            inner: Box::new(Value::String(String::from("click here"))),
+        };
+        assert_eq!(roundtrip(&v), v);
+    }
+
+    #[test]
+    fn test_table() {
+        let table = Table::new(
+            2,
+            Some(vec![
+                Value::String(String::from("Name")),
+                Value::String(String::from("Age")),
+            ]),
+            vec![
+                Value::String(String::from("Alice")),
+                Value::Int(30),
+                Value::String(String::from("Bob")),
+                Value::Int(25),
+            ],
+        )
+        .unwrap();
+
+        let v = Value::Table(table);
+        assert_eq!(roundtrip(&v), v);
+    }
+
+    #[test]
+    fn test_table_row_iter() {
+        let table = Table::new(
+            2,
+            None,
+            vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)],
+        )
+        .unwrap();
+
+        let rows: Vec<_> = table.row_iter().collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], &[Value::Int(1), Value::Int(2)]);
+        assert_eq!(rows[1], &[Value::Int(3), Value::Int(4)]);
+    }
+
+    #[test]
+    fn test_table_validation() {
+        // Zero columns should fail
+        assert!(Table::new(0, None, vec![]).is_err());
+
+        // Wrong header count should fail
+        assert!(Table::new(2, Some(vec![Value::Null]), vec![]).is_err());
+
+        // Wrong cell count should fail
+        assert!(Table::new(2, None, vec![Value::Null]).is_err());
+
+        // Valid empty table
+        assert!(Table::new(2, None, vec![]).is_ok());
+    }
+
+    #[test]
+    fn test_nested_values() {
+        // Deeply nested structure
+        let v = Value::Array(vec![Value::Map({
+            let mut m = BTreeMap::new();
+            m.insert(
+                String::from("nested"),
+                Value::Array(vec![Value::Styled(
+                    Style::bold(),
+                    Box::new(Value::String(String::from("deep"))),
+                )]),
+            );
+            m
+        })]);
+        assert_eq!(roundtrip(&v), v);
     }
 }

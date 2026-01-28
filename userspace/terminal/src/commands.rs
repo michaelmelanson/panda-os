@@ -3,7 +3,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use libpanda::{channel, environment, process, Handle};
-use panda_abi::terminal::TerminalOutput;
+use panda_abi::terminal::Request;
 use panda_abi::{EVENT_CHANNEL_READABLE, EVENT_PROCESS_EXITED, MAX_MESSAGE_SIZE};
 
 use crate::Terminal;
@@ -108,8 +108,8 @@ impl Terminal {
         loop {
             match channel::try_recv(handle, &mut buf) {
                 Ok(len) if len > 0 => {
-                    if let Ok((msg, _)) = TerminalOutput::from_bytes(&buf[..len]) {
-                        self.handle_terminal_output(msg, handle);
+                    if let Ok((msg, _)) = Request::from_bytes(&buf[..len]) {
+                        self.handle_request(msg, handle);
                     }
                 }
                 _ => break,

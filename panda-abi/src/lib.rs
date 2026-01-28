@@ -3,7 +3,13 @@
 //! This crate contains syscall numbers, constants, and shared types
 //! that both the kernel and userspace need to agree on.
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(feature = "std")]
+extern crate std;
+
+#[cfg(feature = "std")]
+extern crate alloc;
 
 pub mod encoding;
 pub mod terminal;
@@ -150,7 +156,7 @@ pub enum Operation {
     SurfaceInfo = 0x6_0000,
     /// Blit pixels to surface: (params_ptr) -> 0 or error
     SurfaceBlit = 0x6_0001,
-    /// Fill rectangle with solid color: (params_ptr) -> 0 or error
+    /// Fill rectangle with solid colour: (params_ptr) -> 0 or error
     SurfaceFill = 0x6_0002,
     /// Flush surface updates: (rect_ptr) -> 0 or error
     SurfaceFlush = 0x6_0003,
@@ -166,10 +172,13 @@ pub enum Operation {
     MailboxPoll = 0x7_0002,
 
     // Channel operations (0x7_1000 - 0x7_1FFF)
+    /// Create a channel pair: (out_handles_ptr) -> 0 or error
+    /// Writes two handle IDs to out_handles_ptr: [endpoint_a, endpoint_b]
+    ChannelCreate = 0x7_1000,
     /// Send a message on a channel: (handle, buf_ptr, buf_len, flags) -> 0 or error
-    ChannelSend = 0x7_1000,
+    ChannelSend = 0x7_1001,
     /// Receive a message from a channel: (handle, buf_ptr, buf_len, flags) -> msg_len or error
-    ChannelRecv = 0x7_1001,
+    ChannelRecv = 0x7_1002,
 }
 
 impl Operation {
@@ -213,8 +222,9 @@ impl Operation {
             0x7_0000 => Some(Self::MailboxCreate),
             0x7_0001 => Some(Self::MailboxWait),
             0x7_0002 => Some(Self::MailboxPoll),
-            0x7_1000 => Some(Self::ChannelSend),
-            0x7_1001 => Some(Self::ChannelRecv),
+            0x7_1000 => Some(Self::ChannelCreate),
+            0x7_1001 => Some(Self::ChannelSend),
+            0x7_1002 => Some(Self::ChannelRecv),
             _ => None,
         }
     }
@@ -323,7 +333,7 @@ pub const OP_FILE_WRITE_BUFFER: u32 = Operation::FileWriteBuffer as u32;
 pub const OP_SURFACE_INFO: u32 = Operation::SurfaceInfo as u32;
 /// Blit pixels to surface: (params_ptr) -> 0 or error
 pub const OP_SURFACE_BLIT: u32 = Operation::SurfaceBlit as u32;
-/// Fill rectangle with solid color: (params_ptr) -> 0 or error
+/// Fill rectangle with solid colour: (params_ptr) -> 0 or error
 pub const OP_SURFACE_FILL: u32 = Operation::SurfaceFill as u32;
 /// Flush surface updates: (rect_ptr) -> 0 or error (rect_ptr can be 0 for full flush)
 pub const OP_SURFACE_FLUSH: u32 = Operation::SurfaceFlush as u32;
@@ -339,6 +349,8 @@ pub const OP_MAILBOX_WAIT: u32 = Operation::MailboxWait as u32;
 pub const OP_MAILBOX_POLL: u32 = Operation::MailboxPoll as u32;
 
 // Channel operations (0x7_1000 - 0x7_1FFF)
+/// Create a channel pair: (out_handles_ptr) -> 0 or error
+pub const OP_CHANNEL_CREATE: u32 = Operation::ChannelCreate as u32;
 /// Send a message on a channel: (handle, buf_ptr, buf_len, flags) -> 0 or error
 pub const OP_CHANNEL_SEND: u32 = Operation::ChannelSend as u32;
 /// Receive a message from a channel: (handle, buf_ptr, buf_len, flags) -> msg_len or error
@@ -1044,7 +1056,7 @@ pub struct FillParams {
     pub y: u32,
     pub width: u32,
     pub height: u32,
-    pub color: u32,
+    pub colour: u32,
 }
 
 /// Rectangle for flush operation.
