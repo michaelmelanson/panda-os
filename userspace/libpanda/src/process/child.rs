@@ -249,37 +249,41 @@ impl<'a> ChildBuilder<'a> {
         let handle = Handle::from(result as u32);
 
         // Build environment: start with inherited if enabled, then add explicit vars
-        let env: Vec<(&str, &str)> = if self.inherit_env {
-            // Get current process environment and merge with explicit vars
+        // We use owned strings to avoid lifetime issues with inherited env
+        let env_owned: Vec<(alloc::string::String, alloc::string::String)> = if self.inherit_env {
             let inherited = crate::env::vars();
-            let mut env_map: Vec<(&str, &str)> = Vec::new();
+            let mut env_map: Vec<(alloc::string::String, alloc::string::String)> =
+                Vec::with_capacity(inherited.len() + self.env.len());
 
-            // Add inherited vars (will be overridden by explicit vars with same key)
-            for (k, v) in &inherited {
-                // Check if this key is overridden by explicit env
+            // Add inherited vars (skip if overridden by explicit vars)
+            for (k, v) in inherited {
                 let overridden = self.env.iter().any(|(ek, _)| *ek == k.as_str());
                 if !overridden {
-                    // Leak strings to get static lifetime - this is fine since we're
-                    // about to encode and send them immediately
-                    let k_leaked: &'static str =
-                        alloc::boxed::Box::leak(k.clone().into_boxed_str());
-                    let v_leaked: &'static str =
-                        alloc::boxed::Box::leak(v.clone().into_boxed_str());
-                    env_map.push((k_leaked, v_leaked));
+                    env_map.push((k, v));
                 }
             }
 
-            // Add explicit vars (these override inherited)
-            env_map.extend(self.env.iter().copied());
+            // Add explicit vars
+            for (k, v) in &self.env {
+                env_map.push(((*k).into(), (*v).into()));
+            }
             env_map
         } else {
-            // Only use explicitly set environment variables
             self.env
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into()))
+                .collect()
         };
+
+        // Convert to borrowed slices for encoding
+        let env_refs: Vec<(&str, &str)> = env_owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
 
         // Send startup message with arguments and environment
         let mut buf = [0u8; MAX_MESSAGE_SIZE];
-        if let Ok(len) = crate::startup::encode_with_env(&self.args, &env, &mut buf) {
+        if let Ok(len) = crate::startup::encode_with_env(&self.args, &env_refs, &mut buf) {
             // Best effort - ignore send errors
             let _ = sys::channel::send_msg(handle, &buf[..len]);
         }

@@ -30,8 +30,6 @@ Working:
 
 - **Migrate APIs to typed handles**: While `TypedHandle<T>` exists, most APIs still use untyped `Handle`. Gradually migrate high-level APIs to return typed handles (e.g., `FileHandle`, `ChannelHandle`).
 
-- **String memory leaking in ChildBuilder**: `process/child.rs:245-251` intentionally leaks strings as a lifetime workaround. Consider using a temporary arena allocator or refactoring to avoid this.
-
 
 ## Next steps
 
