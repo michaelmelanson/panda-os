@@ -22,6 +22,8 @@ Working:
   
 ## Bugs / technical debt
 
+- **Syscall re-execution model**: Blocking syscalls currently re-execute from the beginning when a process wakes. This is unusual and requires syscalls to be idempotent. Consider switching to an io_uring-style model where async operations return immediately with a request ID, and completions arrive via mailbox. The mailbox infrastructure already exists and could serve as the completion queue.
+
 - **Better userspace heap allocator**: The current allocator in `libpanda/src/heap.rs` is a simple bump allocator that grows the heap via `brk()` but never reuses freed memory. Replace with a proper allocator (e.g., linked-list, buddy, or dlmalloc-style) that tracks free blocks and reuses them.
 
 - **Document magic numbers**: Several hardcoded values lack explanation:
