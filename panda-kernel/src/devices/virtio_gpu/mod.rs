@@ -78,15 +78,8 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
     let mut gpu = VirtIOGpu::<VirtioHal, PciTransport>::new(transport)
         .expect("Could not initialize Virtio GPU device");
 
-    // Query EDID for supported resolutions (from Standard Timings) and pick
-    // the highest one. QEMU's EDID preferred mode reflects whatever OVMF set
-    // (typically 640x480), but the Standard Timings list includes the actual
-    // supported resolutions from the xres/yres device parameters.
-    let (width, height) = gpu
-        .edid_supported_resolutions()
-        .ok()
-        .and_then(|resolutions| resolutions.into_iter().next())
-        .unwrap_or((1920, 1080));
+    // Use the EDID preferred resolution (DTD1) if available.
+    let (width, height) = gpu.edid_preferred_resolution().unwrap_or((1920, 1080));
     log::info!("Display resolution: {}x{}", width, height);
 
     let framebuffer = gpu
