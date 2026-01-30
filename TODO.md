@@ -61,6 +61,8 @@ Working:
 
 - **CI setup**: Add GitHub Actions to run `make test` on push/PR.
 
+- **GPU-accelerated composition**: Add virtio-gpu 3D (virgl) support to offload window composition to the host GPU. Currently the compositor does CPU-side pixel-by-pixel alpha blending. See [plans/virtio-gpu-3d-composition.md](plans/virtio-gpu-3d-composition.md) for the full design.
+
 ## Known issues
 
 - **proc-macro2 >= 1.0.104 causes test failures**: The `log!` macros generate incorrect code when used in x86-interrupt handlers with proc-macro2 1.0.104+. Cargo.lock pins proc-macro2 to 1.0.103 as a workaround.
