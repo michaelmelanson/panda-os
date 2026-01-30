@@ -182,7 +182,7 @@ QEMU_COMMON = qemu-system-x86_64 -nodefaults \
 	-machine pc-q35-9.2 -m 1G \
 	-serial stdio \
 	-boot menu=off \
-	-display gtk,zoom-to-fit=on \
+	-display gtk \
 	-device virtio-gpu,xres=1920,yres=1080 \
 	-device virtio-mouse \
 	-device virtio-keyboard \

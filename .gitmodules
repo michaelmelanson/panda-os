@@ -1,0 +1,4 @@
+[submodule "vendor/virtio-drivers"]
+	path = vendor/virtio-drivers
+	url = https://github.com/michaelmelanson/virtio-drivers.git
+	branch = panda
