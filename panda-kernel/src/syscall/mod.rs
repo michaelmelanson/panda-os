@@ -15,6 +15,7 @@ pub mod gdt;
 mod mailbox;
 mod process;
 mod surface;
+pub(crate) mod user_ptr;
 
 use log::{debug, error};
 use x86_64::VirtAddr;
@@ -22,11 +23,37 @@ use x86_64::VirtAddr;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-use crate::{
-    process::{SavedState, waker::Waker},
-    resource::VfsFile,
-    scheduler,
-};
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
+
+use crate::{resource::VfsFile, scheduler};
+
+/// A future that delegates to a closure on each poll.
+///
+/// This is the kernel's equivalent of `core::future::poll_fn` (not available in
+/// `no_std`). Used by blocking syscall handlers that retry an operation on each
+/// poll until it succeeds.
+pub(crate) struct PollFn<F>(F);
+
+impl<F> Future for PollFn<F>
+where
+    F: FnMut(&mut Context<'_>) -> Poll<user_ptr::SyscallResult> + Send + Unpin,
+{
+    type Output = user_ptr::SyscallResult;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<user_ptr::SyscallResult> {
+        (self.0)(cx)
+    }
+}
+
+/// Create a future from a closure that is called on each poll.
+pub(crate) fn poll_fn<F>(f: F) -> PollFn<F>
+where
+    F: FnMut(&mut Context<'_>) -> Poll<user_ptr::SyscallResult> + Send + Unpin,
+{
+    PollFn(f)
+}
 
 /// Wrapper to allow holding an Arc<dyn Resource> as Arc<dyn VfsFile>.
 ///
@@ -68,85 +95,12 @@ pub fn init() {
     entry::init();
 }
 
-/// Syscall arguments - used to save state for restart after blocking.
-#[derive(Clone, Copy)]
-pub struct SyscallArgs {
-    pub code: usize,
-    pub arg0: usize,
-    pub arg1: usize,
-    pub arg2: usize,
-    pub arg3: usize,
-    pub arg4: usize,
-    pub arg5: usize,
-}
-
-impl SyscallArgs {
-    /// Get all 6 arguments as an array (for SavedState construction).
-    pub fn args(&self) -> [usize; 6] {
-        [
-            self.arg0, self.arg1, self.arg2, self.arg3, self.arg4, self.arg5,
-        ]
-    }
-}
-
-/// Context passed to syscall handlers.
-///
-/// Provides access to syscall arguments and helper methods for common operations
-/// like blocking the current process.
-pub struct SyscallContext<'a> {
-    pub return_rip: usize,
-    pub user_rsp: usize,
-    pub args: &'a SyscallArgs,
-    pub callee_saved: &'a CalleeSavedRegs,
-}
-
-impl SyscallContext<'_> {
-    /// Block the current process until the waker fires.
-    ///
-    /// This saves the current syscall state so it can be re-executed when
-    /// the process is woken. This function does not return.
-    pub fn block_on(&self, waker: Arc<Waker>) -> ! {
-        // Save RIP-2 to re-execute the syscall instruction when resumed.
-        // The syscall instruction is 2 bytes (0F 05).
-        let syscall_ip = (self.return_rip - 2) as u64;
-        let saved_state = SavedState::for_syscall_restart(
-            syscall_ip,
-            self.user_rsp as u64,
-            self.args.code,
-            &self.args.args(),
-            self.callee_saved,
-        );
-        unsafe {
-            scheduler::block_current_on(
-                waker,
-                VirtAddr::new(syscall_ip),
-                VirtAddr::new(self.user_rsp as u64),
-                saved_state,
-            );
-        }
-    }
-
-    /// Yield to the scheduler to poll a pending async syscall.
-    ///
-    /// This is used for async syscalls that have set up a `pending_syscall` future.
-    /// The scheduler will poll the future and return its result to userspace.
-    /// This function does not return.
-    pub fn yield_for_async(&self) -> ! {
-        // The process already has pending_syscall set and state is Runnable.
-        // We need to yield to the scheduler without returning through sysret.
-        // The scheduler will poll the future and return the result.
-        unsafe {
-            scheduler::yield_current(
-                VirtAddr::new(self.return_rip as u64),
-                VirtAddr::new(self.user_rsp as u64),
-            );
-        }
-    }
-}
-
 /// Main syscall handler called from entry.rs.
 ///
 /// This is called from the naked syscall_entry function with all registers saved.
+/// All non-diverging syscall handlers return a future, which is polled once here.
+/// If the future is immediately ready, the result is returned to userspace.
+/// If the future is pending, it is stored as a PendingSyscall and the process yields.
 #[allow(clippy::too_many_arguments)]
 extern "sysv64" fn syscall_handler(
     arg0: usize,
@@ -158,7 +112,7 @@ extern "sysv64" fn syscall_handler(
     code: usize,
     return_rip: usize,
     user_rsp: usize,
-    callee_saved: *const CalleeSavedRegs,
+    _callee_saved: *const CalleeSavedRegs,
 ) -> isize {
     // Disable interrupts for the entire syscall to prevent race conditions
     let flags = x86_64::instructions::interrupts::are_enabled();
@@ -167,32 +121,50 @@ extern "sysv64" fn syscall_handler(
     let result = {
         debug!("SYSCALL: code={code:X}, args: {arg0:X}, {arg1:X}, {arg2:X}, {arg3:X}");
 
-        let syscall_args = SyscallArgs {
-            code,
-            arg0,
-            arg1,
-            arg2,
-            arg3,
-            arg4,
-            arg5,
-        };
+        if code != panda_abi::SYSCALL_SEND {
+            -1
+        } else {
+            let handle = arg0 as u32;
+            let operation = arg1 as u32;
 
-        let callee_saved = unsafe { &*callee_saved };
-
-        let ctx = SyscallContext {
-            return_rip,
-            user_rsp,
-            args: &syscall_args,
-            callee_saved,
-        };
-
-        match code {
-            panda_abi::SYSCALL_SEND => {
-                let handle = arg0 as u32;
-                let operation = arg1 as u32;
-                handle_send(&ctx, handle, operation, arg2, arg3, arg4, arg5)
+            // Phase 1: diverging operations that manipulate the scheduler directly
+            // and never return a value to userspace. These use unsafe scheduler
+            // functions and are kept here rather than in handler modules.
+            match operation {
+                panda_abi::OP_PROCESS_YIELD => unsafe {
+                    scheduler::yield_current(
+                        VirtAddr::new(return_rip as u64),
+                        VirtAddr::new(user_rsp as u64),
+                    );
+                },
+                panda_abi::OP_PROCESS_EXIT => {
+                    let current_pid = scheduler::current_process_id();
+                    log::info!(
+                        "Process {:?} exiting with code {}",
+                        current_pid,
+                        arg2 as i32
+                    );
+                    let process_info = scheduler::with_current_process(|proc| proc.info().clone());
+                    scheduler::remove_process(current_pid);
+                    process_info.set_exit_code(arg2 as i32);
+                    unsafe {
+                        scheduler::exec_next_runnable();
+                    }
+                }
+                _ => {}
             }
-            _ => -1,
+
+            // Phase 2: build a future from the handler.
+            // UserAccess is created here (page table is active during syscall entry).
+            let ua = unsafe { user_ptr::UserAccess::new() };
+
+            let future = build_future(&ua, handle, operation, arg2, arg3, arg4, arg5);
+
+            // ua is dropped here — cannot leak into futures (it's !Send anyway).
+            drop(ua);
+
+            // Phase 3: poll the future once and dispatch.
+            poll_and_dispatch(future, return_rip, user_rsp)
         }
     };
 
@@ -204,72 +176,120 @@ extern "sysv64" fn syscall_handler(
     result
 }
 
-/// Handle the unified send syscall, dispatching to operation-specific handlers.
-fn handle_send(
-    ctx: &SyscallContext,
+/// Build a syscall future by dispatching to the appropriate handler.
+///
+/// Handlers that read from userspace receive `&UserAccess` to copy data in
+/// before building their future. The `UserAccess` token is NOT captured in
+/// any future (the compiler enforces this since it is `!Send`).
+fn build_future(
+    ua: &user_ptr::UserAccess,
     handle: u32,
     operation: u32,
     arg0: usize,
     arg1: usize,
     arg2: usize,
     arg3: usize,
-) -> isize {
+) -> user_ptr::SyscallFuture {
     use panda_abi::*;
 
-    match operation {
+    // For handlers that return Result<SyscallFuture, SyscallError>, unwrap
+    // the error into an immediate error future.
+    let result: Result<user_ptr::SyscallFuture, user_ptr::SyscallError> = match operation {
         // File operations
-        OP_FILE_READ => file::handle_read(ctx, handle, arg0, arg1, arg2 as u32),
-        OP_FILE_WRITE => file::handle_write(ctx, handle, arg0, arg1),
-        OP_FILE_SEEK => file::handle_seek(ctx, handle, arg0, arg1),
-        OP_FILE_STAT => file::handle_stat(ctx, handle, arg0),
-        OP_FILE_CLOSE => file::handle_close(handle),
-        OP_FILE_READDIR => file::handle_readdir(handle, arg0),
+        OP_FILE_READ => Ok(file::handle_read(ua, handle, arg0, arg1, arg2 as u32)),
+        OP_FILE_WRITE => Ok(file::handle_write(ua, handle, arg0, arg1)),
+        OP_FILE_SEEK => Ok(file::handle_seek(handle, arg0, arg1)),
+        OP_FILE_STAT => Ok(file::handle_stat(handle, arg0)),
+        OP_FILE_CLOSE => Ok(file::handle_close(handle)),
+        OP_FILE_READDIR => Ok(file::handle_readdir(ua, handle, arg0)),
 
-        // Process operations
-        OP_PROCESS_YIELD => process::handle_yield(ctx),
-        OP_PROCESS_EXIT => process::handle_exit(arg0 as i32),
-        OP_PROCESS_GET_PID => process::handle_get_pid(),
-        OP_PROCESS_WAIT => process::handle_wait(ctx, handle),
-        OP_PROCESS_SIGNAL => process::handle_signal(),
-        OP_PROCESS_BRK => process::handle_brk(arg0),
+        // Process operations (yield and exit are handled above as diverging)
+        OP_PROCESS_GET_PID => Ok(process::handle_get_pid()),
+        OP_PROCESS_WAIT => Ok(process::handle_wait(handle)),
+        OP_PROCESS_SIGNAL => Ok(process::handle_signal()),
+        OP_PROCESS_BRK => Ok(process::handle_brk(arg0)),
 
-        // Environment operations (open/spawn/opendir/mount are async and don't return)
-        OP_ENVIRONMENT_OPEN => environment::handle_open(ctx, arg0, arg1, arg2, arg3),
-        OP_ENVIRONMENT_SPAWN => environment::handle_spawn(ctx, arg0),
-        OP_ENVIRONMENT_LOG => environment::handle_log(arg0, arg1),
-        OP_ENVIRONMENT_TIME => environment::handle_time(),
-        OP_ENVIRONMENT_OPENDIR => environment::handle_opendir(ctx, arg0, arg1),
-        OP_ENVIRONMENT_MOUNT => environment::handle_mount(ctx, arg0, arg1, arg2, arg3),
+        // Environment operations
+        OP_ENVIRONMENT_OPEN => Ok(environment::handle_open(ua, arg0, arg1, arg2, arg3)),
+        OP_ENVIRONMENT_SPAWN => Ok(environment::handle_spawn(ua, arg0)),
+        OP_ENVIRONMENT_LOG => Ok(environment::handle_log(ua, arg0, arg1)),
+        OP_ENVIRONMENT_TIME => Ok(environment::handle_time()),
+        OP_ENVIRONMENT_OPENDIR => Ok(environment::handle_opendir(ua, arg0, arg1)),
+        OP_ENVIRONMENT_MOUNT => Ok(environment::handle_mount(ua, arg0, arg1, arg2, arg3)),
 
         // Buffer operations
-        OP_BUFFER_ALLOC => buffer::handle_alloc(arg0, arg1),
-        OP_BUFFER_RESIZE => buffer::handle_resize(handle, arg0, arg1),
-        OP_BUFFER_FREE => buffer::handle_free(handle),
+        OP_BUFFER_ALLOC => Ok(buffer::handle_alloc(ua, arg0, arg1)),
+        OP_BUFFER_RESIZE => Ok(buffer::handle_resize(ua, handle, arg0, arg1)),
+        OP_BUFFER_FREE => Ok(buffer::handle_free(handle)),
 
         // Buffer-based file operations
-        OP_FILE_READ_BUFFER => buffer::handle_read_buffer(ctx, handle, arg0 as u32),
-        OP_FILE_WRITE_BUFFER => buffer::handle_write_buffer(ctx, handle, arg0 as u32, arg1),
+        OP_FILE_READ_BUFFER => Ok(buffer::handle_read_buffer(handle, arg0 as u32)),
+        OP_FILE_WRITE_BUFFER => Ok(buffer::handle_write_buffer(handle, arg0 as u32, arg1)),
 
         // Surface operations
-        OP_SURFACE_INFO => surface::handle_info(handle, arg0),
-        OP_SURFACE_BLIT => surface::handle_blit(handle, arg0),
-        OP_SURFACE_FILL => surface::handle_fill(handle, arg0),
-        OP_SURFACE_FLUSH => surface::handle_flush(ctx, handle, arg0),
-        OP_SURFACE_UPDATE_PARAMS => surface::handle_update_params(handle, arg0),
+        OP_SURFACE_INFO => Ok(surface::handle_info(ua, handle, arg0)),
+        OP_SURFACE_BLIT => Ok(surface::handle_blit(ua, handle, arg0)),
+        OP_SURFACE_FILL => Ok(surface::handle_fill(ua, handle, arg0)),
+        OP_SURFACE_FLUSH => Ok(surface::handle_flush(ua, handle, arg0)),
+        OP_SURFACE_UPDATE_PARAMS => Ok(surface::handle_update_params(ua, handle, arg0)),
 
         // Mailbox operations
-        OP_MAILBOX_CREATE => mailbox::handle_create(),
-        OP_MAILBOX_WAIT => mailbox::handle_wait(ctx, handle),
-        OP_MAILBOX_POLL => mailbox::handle_poll(handle),
+        OP_MAILBOX_CREATE => Ok(mailbox::handle_create()),
+        OP_MAILBOX_WAIT => Ok(mailbox::handle_wait(handle)),
+        OP_MAILBOX_POLL => Ok(mailbox::handle_poll(handle)),
 
         // Channel operations
-        OP_CHANNEL_CREATE => channel::handle_create(arg0),
-        OP_CHANNEL_SEND => channel::handle_send(ctx, handle, arg0, arg1, arg2),
-        OP_CHANNEL_RECV => channel::handle_recv(ctx, handle, arg0, arg1, arg2),
+        OP_CHANNEL_CREATE => Ok(channel::handle_create(ua, arg0)),
+        OP_CHANNEL_SEND => channel::handle_send(ua, handle, arg0, arg1, arg2),
+        OP_CHANNEL_RECV => Ok(channel::handle_recv(handle, arg0, arg1, arg2)),
 
         _ => {
             error!("Unknown operation: {:#x}", operation);
-            -1
+            Ok(Box::pin(core::future::ready(user_ptr::SyscallResult::err(
+                -1,
+            ))))
+        }
+    };
+
+    match result {
+        Ok(future) => future,
+        Err(_) => Box::pin(core::future::ready(user_ptr::SyscallResult::err(-1))),
+    }
+}
+
+/// Poll a syscall future once. If ready, perform copy-out and return the result code.
+/// If pending, store the future as a PendingSyscall and yield to the scheduler.
+fn poll_and_dispatch(
+    mut future: user_ptr::SyscallFuture,
+    return_rip: usize,
+    user_rsp: usize,
+) -> isize {
+    use crate::process::{PendingSyscall, ProcessWaker};
+
+    let pid = scheduler::current_process_id();
+    let waker = ProcessWaker::new(pid).into_waker();
+    let mut cx = core::task::Context::from_waker(&waker);
+
+    match future.as_mut().poll(&mut cx) {
+        Poll::Ready(result) => {
+            // Copy out writeback data if present (page table is still active)
+            if let Some(wb) = result.writeback {
+                let ua = unsafe { user_ptr::UserAccess::new() };
+                let _ = ua.write(wb.dst, &wb.data);
+            }
+            result.code
+        }
+        Poll::Pending => {
+            // Store as pending syscall and yield to the scheduler
+            scheduler::with_current_process(|proc| {
+                proc.set_pending_syscall(PendingSyscall::new(future));
+            });
+            unsafe {
+                scheduler::yield_current(
+                    VirtAddr::new(return_rip as u64),
+                    VirtAddr::new(user_rsp as u64),
+                );
+            }
         }
     }
 }

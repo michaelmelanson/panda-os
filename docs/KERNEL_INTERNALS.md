@@ -12,15 +12,34 @@ All syscalls use the x86-64 `syscall` instruction. The entry point performs a `s
 
 Currently all syscalls go through a unified `SYSCALL_SEND` interface. The first argument is a handle, the second is an operation code, and the remaining four are operation-specific. The handler dispatches to operation-specific functions based on the operation code.
 
-### Normal return
+### Dispatch
 
-For syscalls that complete immediately, the return value is placed in `rax`, callee-saved registers are restored, and `sysretq` returns to userspace. This is the fast path.
+The handler has three phases. First, it checks for diverging operations (yield and exit) that manipulate the scheduler directly and never return a value. Second, it creates a `UserAccess` token (proving the process page table is active) and calls `build_future()` to dispatch to the appropriate handler. All non-diverging handlers return a `SyscallFuture` — a `Pin<Box<dyn Future<Output = SyscallResult> + Send>>`. Third, it calls `poll_and_dispatch()` to poll the future once.
 
-### Blocking return
+### Immediate return
 
-When a syscall cannot complete (e.g., reading from an empty keyboard buffer), it calls `ctx.block_on(waker)`. This saves the full register state, adjusts RIP back by 2 bytes to point at the `syscall` instruction itself, marks the process as blocked, and switches to another process. When the waker fires, the process becomes runnable again. On resume, all registers are restored and the `syscall` instruction re-executes from the beginning.
+If the future resolves immediately (`Poll::Ready`), the result code is placed in `rax`. If the result includes a `WriteBack` (data to copy to userspace), that copy happens now while the page table is still active. Callee-saved registers are restored and `sysretq` returns to userspace.
 
-This re-execution model is simple but requires syscalls to be idempotent. See TODO.md for notes on potentially switching to an io_uring-style model.
+### Deferred return
+
+If the future returns `Poll::Pending`, it is stored as a `PendingSyscall` on the process, and the process yields to the scheduler. When the process is next scheduled, the scheduler polls the future again. On completion, it switches to the process's page table, performs any writeback, and returns the result to userspace via `return_from_syscall`.
+
+### Handler patterns
+
+Handlers fall into three categories:
+
+- **Synchronous** handlers (close, brk, get_pid) compute their result immediately and wrap it in `core::future::ready()`.
+- **Blocking** handlers (channel send/recv, mailbox wait, process wait, keyboard read) use `poll_fn` to retry an operation on each poll. They register a device waker on each `Pending` return so the process is woken when data is available.
+- **Async I/O** handlers (file read/write, open, spawn, mount) build a `Box::pin(async { ... })` future that does asynchronous work through the VFS layer.
+
+### Userspace memory safety
+
+Handlers never access userspace memory directly. The `UserAccess` type is a `!Send` token that proves the current process's page table is active. It cannot be captured in a `Send` future, so the compiler prevents userspace access from inside async blocks. Instead, handlers follow a copy-in/copy-out discipline:
+
+- **Copy-in**: Handlers that read from userspace (channel send, file write, spawn) receive a `&UserAccess` and copy data into kernel buffers before building their future.
+- **Copy-out**: Handlers that produce data for userspace (channel recv, file read) capture a `UserSlice` (an opaque address+length pair) in their future and return the data via `WriteBack`. The top-level dispatch copies it out after the future completes.
+
+The `UserSlice` type has private fields, so handler code cannot extract raw addresses. All handler modules have `#![deny(unsafe_code)]`, ensuring they cannot use `unsafe` to bypass these protections. Only `mod.rs` (top-level dispatch) and `user_ptr.rs` (the `UserAccess` implementation) contain `unsafe`.
 
 ## Process management
 
@@ -42,7 +61,7 @@ When a process yields or blocks, it moves from Running to Runnable or Blocked. W
 
 ### Saved state
 
-The `SavedState` struct preserves all 16 general-purpose registers plus the instruction pointer and flags. It's populated when a process blocks or is preempted, and restored when the process resumes. For blocking syscalls, the saved RIP points at the `syscall` instruction so it re-executes on resume.
+The `SavedState` struct preserves all 16 general-purpose registers plus the instruction pointer and flags. It's populated when a process is preempted by a timer interrupt and restored when the process resumes. Blocking syscalls no longer save register state — they store a future instead.
 
 ## Scheduler
 
@@ -64,7 +83,7 @@ For kernel tasks, it polls the future once. Completed tasks are removed; pending
 
 ### Key operations
 
-`add_process()` puts a new process in the Runnable queue. `block_current_on()` saves state, registers a waker, marks the process Blocked, and switches away (it doesn't return). `yield_current()` is similar but keeps the process Runnable. `wake_process()` moves a Blocked process to Runnable. `with_current_process()` runs a closure with mutable access to the current process.
+`add_process()` puts a new process in the Runnable queue. `yield_current()` saves the resume point, marks the process Runnable, and switches to another entity (it doesn't return). `wake_process()` moves a Blocked process to Runnable. `with_current_process()` runs a closure with mutable access to the current process.
 
 ## Waker system
 
@@ -72,13 +91,13 @@ Wakers enable async I/O by letting devices wake blocked processes. They're defin
 
 ### Device wakers
 
-The `Waker` struct has a signaled flag and an optional waiting process ID. Devices create wakers and return them when an operation would block. The syscall layer then blocks the process on that waker. When the device has data (typically in an interrupt handler), it calls `wake()`, which sets the signaled flag and moves the waiting process to Runnable.
+The `Waker` struct has a signaled flag and an optional waiting process ID. Blocking syscall futures call `waker.set_waiting(pid)` on each `Pending` return to register the current process. When the device has data (typically in an interrupt handler), it calls `wake()`, which sets the signaled flag and moves the waiting process to Runnable. The scheduler then polls the future again.
 
 The `is_signaled()` method allows checking without blocking, and `clear()` resets the flag after consuming data.
 
 ### Future wakers
 
-For Rust async/await integration, `ProcessWaker` implements the standard `Wake` trait. When a future's waker is invoked, it calls `wake_process()` to make the associated process runnable. This connects the kernel's async executor to the process scheduler.
+For Rust async/await integration, `ProcessWaker` implements the standard `Wake` trait. When a future's waker is invoked, it calls `wake_process()` to make the associated process runnable. Both device wakers and Rust's `core::task::Waker` converge on the same `wake_process()` function.
 
 ## Context switching
 
@@ -128,7 +147,8 @@ Kernel tasks are scheduled alongside userspace processes as `SchedulableEntity::
 
 | File | Description |
 |------|-------------|
-| `syscall/mod.rs` | Syscall handler dispatch |
+| `syscall/mod.rs` | Syscall dispatch, poll-once, copy-out |
+| `syscall/user_ptr.rs` | UserAccess, UserSlice, SyscallResult |
 | `syscall/entry.rs` | Assembly entry/exit |
 | `scheduler/mod.rs` | Process and task scheduling |
 | `process/mod.rs` | Process struct and lifecycle |

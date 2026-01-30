@@ -1,15 +1,20 @@
 //! Channel operation syscall handlers (OP_CHANNEL_*).
 
+#![deny(unsafe_code)]
+
+use alloc::boxed::Box;
 use alloc::sync::Arc;
-use core::slice;
+use alloc::vec;
+use core::task::Poll;
 
 use log::debug;
 use panda_abi::{CHANNEL_NONBLOCK, HandleType};
 
-use crate::resource::{ChannelEndpoint, ChannelError, Resource};
+use crate::resource::{ChannelError, Resource};
 use crate::scheduler;
 
-use super::SyscallContext;
+use super::poll_fn;
+use super::user_ptr::{SyscallError, SyscallFuture, SyscallResult, UserAccess, UserSlice};
 
 /// Handle channel create operation.
 /// Creates a pair of connected channel endpoints and returns handles to both.
@@ -18,14 +23,16 @@ use super::SyscallContext;
 /// - out_handles_ptr: Pointer to array of two u32s to receive handle IDs [endpoint_a, endpoint_b]
 ///
 /// Returns 0 on success, negative error code on failure.
-pub fn handle_create(out_handles_ptr: usize) -> isize {
+pub fn handle_create(ua: &UserAccess, out_handles_ptr: usize) -> SyscallFuture {
+    use crate::resource::ChannelEndpoint;
+
     debug!("channel_create: out_handles_ptr={:#x}", out_handles_ptr);
 
     // Create the channel pair
     let (endpoint_a, endpoint_b) = ChannelEndpoint::create_pair();
 
     // Insert both endpoints into the current process's handle table
-    let result = scheduler::with_current_process(|proc| {
+    let (handle_a, handle_b) = scheduler::with_current_process(|proc| {
         let handle_a = proc
             .handles_mut()
             .insert_typed(HandleType::Channel, Arc::new(endpoint_a));
@@ -36,17 +43,20 @@ pub fn handle_create(out_handles_ptr: usize) -> isize {
     });
 
     // Write the handle IDs to userspace
-    let out_handles = out_handles_ptr as *mut [u32; 2];
-    unsafe {
-        (*out_handles)[0] = result.0;
-        (*out_handles)[1] = result.1;
-    }
+    let result = ua.write_struct::<[u32; 2]>(out_handles_ptr, &[handle_a, handle_b]);
 
-    debug!(
-        "channel_create: created handles {} and {}",
-        result.0, result.1
-    );
-    0
+    let code = match result {
+        Ok(_) => {
+            debug!(
+                "channel_create: created handles {} and {}",
+                handle_a, handle_b
+            );
+            0
+        }
+        Err(_) => -1,
+    };
+
+    Box::pin(core::future::ready(SyscallResult::ok(code)))
 }
 
 /// Get the channel endpoint from a handle, returning a cloned Arc.
@@ -74,51 +84,52 @@ fn get_channel(handle: u32) -> Option<Arc<dyn Resource>> {
 ///
 /// Returns 0 on success, negative error code on failure.
 pub fn handle_send(
-    ctx: &SyscallContext,
+    ua: &UserAccess,
     handle: u32,
     buf_ptr: usize,
     buf_len: usize,
     flags: usize,
-) -> isize {
+) -> Result<SyscallFuture, SyscallError> {
     let flags = flags as u32;
-    let buf = unsafe { slice::from_raw_parts(buf_ptr as *const u8, buf_len) };
 
     debug!(
         "channel_send: handle={}, buf_len={}, flags={}",
         handle, buf_len, flags
     );
 
-    // Scope the resource Arc so it's dropped before any potential block_on call.
-    // block_on never returns (it switches to another process), so stack locals
-    // aren't dropped - we must ensure the Arc is released before blocking.
-    let waker = {
-        let Some(resource) = get_channel(handle) else {
-            return -1; // Invalid handle
+    // Copy message data from userspace NOW, while page table is active.
+    let msg = ua.read(UserSlice::new(buf_ptr, buf_len))?;
+
+    let resource = get_channel(handle);
+
+    // Future only captures msg (Vec<u8>) and resource (Arc).
+    // ua is NOT captured — compiler enforces this since UserAccess is !Send.
+    Ok(Box::pin(poll_fn(move |_cx| {
+        let Some(ref resource) = resource else {
+            return Poll::Ready(SyscallResult::err(-1));
         };
         let Some(channel) = resource.as_channel() else {
-            return -1; // Not a channel
+            return Poll::Ready(SyscallResult::err(-1));
         };
 
-        match channel.send(buf) {
+        match channel.send(&msg) {
             Ok(()) => {
                 debug!("channel_send: sent successfully");
-                return 0;
+                Poll::Ready(SyscallResult::ok(0))
             }
             Err(ChannelError::QueueFull) => {
                 if flags & CHANNEL_NONBLOCK != 0 {
-                    return -1; // Non-blocking mode: return error
+                    return Poll::Ready(SyscallResult::err(-1));
                 }
                 debug!("channel_send: queue full, blocking...");
-                channel.waker()
+                channel.waker().set_waiting(scheduler::current_process_id());
+                Poll::Pending
             }
-            Err(ChannelError::MessageTooLarge) => return -2,
-            Err(ChannelError::PeerClosed) => return -3,
-            Err(_) => return -4,
+            Err(ChannelError::MessageTooLarge) => Poll::Ready(SyscallResult::err(-2)),
+            Err(ChannelError::PeerClosed) => Poll::Ready(SyscallResult::err(-3)),
+            Err(_) => Poll::Ready(SyscallResult::err(-4)),
         }
-    };
-    // resource Arc is now dropped, safe to block
-    ctx.block_on(waker);
-    // block_on doesn't return - when resumed, syscall restarts from beginning
+    })))
 }
 
 /// Handle channel recv operation.
@@ -131,50 +142,44 @@ pub fn handle_send(
 /// - flags: CHANNEL_NONBLOCK to fail instead of blocking if queue empty
 ///
 /// Returns message length on success, negative error code on failure.
-pub fn handle_recv(
-    ctx: &SyscallContext,
-    handle: u32,
-    buf_ptr: usize,
-    buf_len: usize,
-    flags: usize,
-) -> isize {
+pub fn handle_recv(handle: u32, buf_ptr: usize, buf_len: usize, flags: usize) -> SyscallFuture {
     let flags = flags as u32;
-    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+    let dst = UserSlice::new(buf_ptr, buf_len);
 
     debug!(
         "channel_recv: handle={}, buf_len={}, flags={}",
         handle, buf_len, flags
     );
 
-    // Scope the resource Arc so it's dropped before any potential block_on call.
-    // block_on never returns (it switches to another process), so stack locals
-    // aren't dropped - we must ensure the Arc is released before blocking.
-    let waker = {
-        let Some(resource) = get_channel(handle) else {
-            return -1; // Invalid handle
+    let resource = get_channel(handle);
+
+    Box::pin(poll_fn(move |_cx| {
+        let Some(ref resource) = resource else {
+            return Poll::Ready(SyscallResult::err(-1));
         };
         let Some(channel) = resource.as_channel() else {
-            return -1; // Not a channel
+            return Poll::Ready(SyscallResult::err(-1));
         };
 
-        match channel.recv(buf) {
+        let mut kernel_buf = vec![0u8; dst.len()];
+        match channel.recv(&mut kernel_buf) {
             Ok(len) => {
                 debug!("channel_recv: received {} bytes", len);
-                return len as isize;
+                kernel_buf.truncate(len);
+                // Return data + destination for top-level to copy out
+                Poll::Ready(SyscallResult::write_back(len as isize, kernel_buf, dst))
             }
             Err(ChannelError::QueueEmpty) => {
                 if flags & CHANNEL_NONBLOCK != 0 {
-                    return -1; // Non-blocking mode: return error
+                    return Poll::Ready(SyscallResult::err(-1));
                 }
                 debug!("channel_recv: queue empty, blocking...");
-                channel.waker()
+                channel.waker().set_waiting(scheduler::current_process_id());
+                Poll::Pending
             }
-            Err(ChannelError::BufferTooSmall) => return -2,
-            Err(ChannelError::PeerClosed) => return -3,
-            Err(_) => return -4,
+            Err(ChannelError::BufferTooSmall) => Poll::Ready(SyscallResult::err(-2)),
+            Err(ChannelError::PeerClosed) => Poll::Ready(SyscallResult::err(-3)),
+            Err(_) => Poll::Ready(SyscallResult::err(-4)),
         }
-    };
-    // resource Arc is now dropped, safe to block
-    ctx.block_on(waker);
-    // block_on doesn't return - when resumed, syscall restarts from beginning
+    }))
 }

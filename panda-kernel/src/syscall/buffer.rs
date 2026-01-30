@@ -1,22 +1,24 @@
 //! Buffer operation syscall handlers (OP_BUFFER_*).
 
+#![deny(unsafe_code)]
+
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
 use panda_abi::HandleType;
 
-use crate::process::PendingSyscall;
 use crate::resource::{Buffer, SharedBuffer, VfsFile};
 use crate::scheduler;
 use crate::vfs::SeekFrom;
 
-use super::{SyscallContext, VfsFileWrapper};
+use super::VfsFileWrapper;
+use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess};
 
 /// Handle buffer allocation.
 /// Returns handle_id on success, negative on error.
 /// If info_ptr is non-zero, writes BufferAllocInfo to that address.
-pub fn handle_alloc(size: usize, info_ptr: usize) -> isize {
-    scheduler::with_current_process(|proc| {
+pub fn handle_alloc(ua: &UserAccess, size: usize, info_ptr: usize) -> SyscallFuture {
+    let result = scheduler::with_current_process(|proc| {
         match SharedBuffer::alloc(proc, size) {
             Ok((buffer, mapped_addr)) => {
                 let buffer_size = Buffer::size(&*buffer);
@@ -24,32 +26,51 @@ pub fn handle_alloc(size: usize, info_ptr: usize) -> isize {
 
                 // Write full info to userspace if pointer provided
                 if info_ptr != 0 {
-                    unsafe {
-                        let info = info_ptr as *mut panda_abi::BufferAllocInfo;
-                        (*info).addr = mapped_addr;
-                        (*info).size = buffer_size;
-                    }
+                    let info = panda_abi::BufferAllocInfo {
+                        addr: mapped_addr,
+                        size: buffer_size,
+                    };
+                    // We have ua available, use it to write
+                    Some((handle_id, Some(info)))
+                } else {
+                    Some((handle_id, None))
                 }
-
-                handle_id as isize
             }
-            Err(_) => -1,
+            Err(_) => None,
         }
-    })
+    });
+
+    match result {
+        Some((handle_id, Some(info))) => {
+            if ua.write_struct(info_ptr, &info).is_err() {
+                return Box::pin(core::future::ready(SyscallResult::err(-1)));
+            }
+            Box::pin(core::future::ready(SyscallResult::ok(handle_id as isize)))
+        }
+        Some((handle_id, None)) => {
+            Box::pin(core::future::ready(SyscallResult::ok(handle_id as isize)))
+        }
+        None => Box::pin(core::future::ready(SyscallResult::err(-1))),
+    }
 }
 
 /// Handle buffer resize.
 /// Returns 0 on success, negative on error.
 /// If info_ptr is non-zero, writes BufferAllocInfo to that address.
-pub fn handle_resize(handle_id: u32, new_size: usize, info_ptr: usize) -> isize {
-    scheduler::with_current_process(|proc| {
+pub fn handle_resize(
+    ua: &UserAccess,
+    handle_id: u32,
+    new_size: usize,
+    info_ptr: usize,
+) -> SyscallFuture {
+    let result = scheduler::with_current_process(|proc| {
         // Try in-place resize first
         let resize_result = {
             let Some(handle) = proc.handles().get(handle_id) else {
-                return -1;
+                return Err(());
             };
             let Some(buffer) = handle.as_buffer() else {
-                return -1;
+                return Err(());
             };
             buffer.resize(new_size)
         };
@@ -60,53 +81,51 @@ pub fn handle_resize(handle_id: u32, new_size: usize, info_ptr: usize) -> isize 
                 if info_ptr != 0 {
                     let buffer_size = {
                         let Some(handle) = proc.handles().get(handle_id) else {
-                            return -1;
+                            return Err(());
                         };
                         let Some(buffer) = handle.as_buffer() else {
-                            return -1;
+                            return Err(());
                         };
                         buffer.size()
                     };
-
-                    unsafe {
-                        let info = info_ptr as *mut panda_abi::BufferAllocInfo;
-                        (*info).addr = new_addr;
-                        (*info).size = buffer_size;
-                    }
+                    Ok(Some(panda_abi::BufferAllocInfo {
+                        addr: new_addr,
+                        size: buffer_size,
+                    }))
+                } else {
+                    Ok(None)
                 }
-                0
             }
             Err(_) => {
                 // In-place resize failed, need to reallocate
-                // Get old buffer data, virtual address, and size
                 let (old_data, old_vaddr, old_num_pages) = {
                     let Some(handle) = proc.handles().get(handle_id) else {
-                        return -1;
+                        return Err(());
                     };
                     let Some(buffer) = handle.as_buffer() else {
-                        return -1;
+                        return Err(());
                     };
                     let old_size = buffer.size();
                     let copy_size = old_size.min(new_size);
                     let vaddr = x86_64::VirtAddr::new(buffer.mapped_addr() as u64);
-                    let num_pages = (old_size + 4095) / 4096; // Round up to pages
+                    let num_pages = (old_size + 4095) / 4096;
                     (buffer.as_slice()[..copy_size].to_vec(), vaddr, num_pages)
                 };
 
                 // Allocate new buffer
                 let (new_buffer, new_addr) = match SharedBuffer::alloc(proc, new_size) {
                     Ok(result) => result,
-                    Err(_) => return -1,
+                    Err(_) => return Err(()),
                 };
 
                 // Replace the buffer and copy data
                 let buffer_size = {
                     let Some(handle) = proc.handles_mut().get_mut(handle_id) else {
-                        return -1;
+                        return Err(());
                     };
                     handle.replace_resource(new_buffer);
                     let Some(buffer) = handle.as_buffer() else {
-                        return -1;
+                        return Err(());
                     };
                     buffer.as_mut_slice()[..old_data.len()].copy_from_slice(&old_data);
                     buffer.size()
@@ -115,24 +134,33 @@ pub fn handle_resize(handle_id: u32, new_size: usize, info_ptr: usize) -> isize 
                 // Free the old buffer's virtual address space
                 proc.free_buffer_vaddr(old_vaddr, old_num_pages);
 
-                // Write info to userspace if pointer provided
                 if info_ptr != 0 {
-                    unsafe {
-                        let info = info_ptr as *mut panda_abi::BufferAllocInfo;
-                        (*info).addr = new_addr;
-                        (*info).size = buffer_size;
-                    }
+                    Ok(Some(panda_abi::BufferAllocInfo {
+                        addr: new_addr,
+                        size: buffer_size,
+                    }))
+                } else {
+                    Ok(None)
                 }
-
-                0
             }
         }
-    })
+    });
+
+    match result {
+        Ok(Some(info)) => {
+            if ua.write_struct(info_ptr, &info).is_err() {
+                return Box::pin(core::future::ready(SyscallResult::err(-1)));
+            }
+            Box::pin(core::future::ready(SyscallResult::ok(0)))
+        }
+        Ok(None) => Box::pin(core::future::ready(SyscallResult::ok(0))),
+        Err(()) => Box::pin(core::future::ready(SyscallResult::err(-1))),
+    }
 }
 
 /// Handle buffer free.
-pub fn handle_free(handle_id: u32) -> isize {
-    scheduler::with_current_process(|proc| {
+pub fn handle_free(handle_id: u32) -> SyscallFuture {
+    let result = scheduler::with_current_process(|proc| {
         // Get buffer's virtual address and size before removing
         let (vaddr, num_pages) = {
             let Some(handle) = proc.handles().get(handle_id) else {
@@ -142,7 +170,7 @@ pub fn handle_free(handle_id: u32) -> isize {
                 return -1;
             };
             let vaddr = x86_64::VirtAddr::new(buffer.mapped_addr() as u64);
-            let num_pages = (buffer.size() + 4095) / 4096; // Round up to pages
+            let num_pages = (buffer.size() + 4095) / 4096;
             (vaddr, num_pages)
         };
 
@@ -155,16 +183,13 @@ pub fn handle_free(handle_id: u32) -> isize {
         proc.free_buffer_vaddr(vaddr, num_pages);
 
         0
-    })
+    });
+    Box::pin(core::future::ready(SyscallResult::ok(result)))
 }
 
 /// Handle reading from file into buffer.
 /// Returns bytes read on success, negative on error.
-pub fn handle_read_buffer(
-    ctx: &SyscallContext,
-    file_handle_id: u32,
-    buffer_handle_id: u32,
-) -> isize {
+pub fn handle_read_buffer(file_handle_id: u32, buffer_handle_id: u32) -> SyscallFuture {
     // Get buffer info (shared buffer pointer and size)
     let (buffer_arc, buffer_size) = match scheduler::with_current_process(|proc| {
         let buffer_handle = proc.handles().get(buffer_handle_id)?;
@@ -172,7 +197,7 @@ pub fn handle_read_buffer(
         Some((buffer.clone(), buffer.size()))
     }) {
         Some(info) => info,
-        None => return -1,
+        None => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };
 
     // Get VFS file and current offset
@@ -187,20 +212,20 @@ pub fn handle_read_buffer(
         ))
     }) {
         Some(info) => info,
-        None => return -1,
+        None => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };
 
     // Create async future for the read
-    let future = Box::pin(async move {
+    Box::pin(async move {
         let file_lock = vfs_file.file();
         let mut file = file_lock.lock();
 
         // Seek to current offset
         if file.seek(SeekFrom::Start(file_offset)).await.is_err() {
-            return -1isize;
+            return SyscallResult::err(-1);
         }
 
-        // Read into buffer
+        // Read into buffer (SharedBuffer is kernel memory, no userspace access needed)
         let buf = buffer_arc.as_mut_slice();
         let to_read = buf.len().min(buffer_size);
         match file.read(&mut buf[..to_read]).await {
@@ -211,27 +236,20 @@ pub fn handle_read_buffer(
                         handle.set_offset(file_offset + n as u64);
                     }
                 });
-                n as isize
+                SyscallResult::ok(n as isize)
             }
-            Err(_) => -1,
+            Err(_) => SyscallResult::err(-1),
         }
-    });
-
-    scheduler::with_current_process(|proc| {
-        proc.set_pending_syscall(PendingSyscall::new(future));
-    });
-
-    ctx.yield_for_async()
+    })
 }
 
 /// Handle writing from buffer to file.
 /// Returns bytes written on success, negative on error.
 pub fn handle_write_buffer(
-    ctx: &SyscallContext,
     file_handle_id: u32,
     buffer_handle_id: u32,
     len: usize,
-) -> isize {
+) -> SyscallFuture {
     // Get buffer data (copy to owned Vec since we need it in async block)
     let (buffer_data, write_len) = match scheduler::with_current_process(|proc| {
         let buffer_handle = proc.handles().get(buffer_handle_id)?;
@@ -243,7 +261,7 @@ pub fn handle_write_buffer(
         Some((data, write_len))
     }) {
         Some(info) => info,
-        None => return -1,
+        None => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };
 
     // Get VFS file and current offset
@@ -258,17 +276,17 @@ pub fn handle_write_buffer(
         ))
     }) {
         Some(info) => info,
-        None => return -1,
+        None => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };
 
     // Create async future for the write
-    let future = Box::pin(async move {
+    Box::pin(async move {
         let file_lock = vfs_file.file();
         let mut file = file_lock.lock();
 
         // Seek to current offset
         if file.seek(SeekFrom::Start(file_offset)).await.is_err() {
-            return -1isize;
+            return SyscallResult::err(-1);
         }
 
         // Write from buffer
@@ -280,15 +298,9 @@ pub fn handle_write_buffer(
                         handle.set_offset(file_offset + n as u64);
                     }
                 });
-                n as isize
+                SyscallResult::ok(n as isize)
             }
-            Err(_) => -1,
+            Err(_) => SyscallResult::err(-1),
         }
-    });
-
-    scheduler::with_current_process(|proc| {
-        proc.set_pending_syscall(PendingSyscall::new(future));
-    });
-
-    ctx.yield_for_async()
+    })
 }

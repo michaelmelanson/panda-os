@@ -1,9 +1,5 @@
 //! CPU register state for context switching.
 
-use x86_64::registers::rflags::RFlags;
-
-use crate::syscall::CalleeSavedRegs;
-
 /// Saved CPU register state for context switching.
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
@@ -61,38 +57,6 @@ pub struct InterruptFrame {
 }
 
 impl SavedState {
-    /// Create a SavedState for re-executing a syscall after blocking.
-    ///
-    /// The RIP is set to `syscall_ip` (typically the syscall instruction address),
-    /// and all syscall argument registers are restored so the syscall re-executes.
-    pub fn for_syscall_restart(
-        syscall_ip: u64,
-        user_rsp: u64,
-        syscall_code: usize,
-        args: &[usize; 6],
-        callee_saved: &CalleeSavedRegs,
-    ) -> Self {
-        Self {
-            rax: syscall_code as u64,
-            rdi: args[0] as u64,
-            rsi: args[1] as u64,
-            rdx: args[2] as u64,
-            r10: args[3] as u64,
-            r8: args[4] as u64,
-            r9: args[5] as u64,
-            rbx: callee_saved.rbx,
-            rbp: callee_saved.rbp,
-            r12: callee_saved.r12,
-            r13: callee_saved.r13,
-            r14: callee_saved.r14,
-            r15: callee_saved.r15,
-            rip: syscall_ip,
-            rsp: user_rsp,
-            rflags: RFlags::INTERRUPT_FLAG.bits(),
-            ..Default::default()
-        }
-    }
-
     /// Create a SavedState from an interrupt context (for preemption).
     ///
     /// Captures full register state from the interrupt entry's saved GPRs

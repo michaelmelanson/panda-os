@@ -69,15 +69,19 @@ pub enum ProcessState {
 /// The scheduler polls the future when the process is woken. When the future
 /// completes, the result is returned to userspace.
 pub struct PendingSyscall {
-    /// The async operation in progress. Output is the syscall return value.
+    /// The async operation in progress. Output is the syscall result with optional writeback.
     /// Wrapped in a spinlock to make it Sync (required for Process to be in RwSpinlock).
     /// We require Send because the future may be polled from different contexts.
-    pub future: spinning_top::Spinlock<Pin<Box<dyn Future<Output = isize> + Send>>>,
+    pub future: spinning_top::Spinlock<
+        Pin<Box<dyn Future<Output = crate::syscall::user_ptr::SyscallResult> + Send>>,
+    >,
 }
 
 impl PendingSyscall {
-    /// Create a new pending syscall.
-    pub fn new(future: Pin<Box<dyn Future<Output = isize> + Send>>) -> Self {
+    /// Create a new pending syscall from a future returning SyscallResult.
+    pub fn new(
+        future: Pin<Box<dyn Future<Output = crate::syscall::user_ptr::SyscallResult> + Send>>,
+    ) -> Self {
         Self {
             future: spinning_top::Spinlock::new(future),
         }

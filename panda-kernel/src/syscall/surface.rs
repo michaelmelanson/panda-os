@@ -1,11 +1,13 @@
 //! Surface syscall handlers.
 
+#![deny(unsafe_code)]
+
 use alloc::boxed::Box;
 
-use crate::process::PendingSyscall;
 use crate::resource::Buffer;
 use crate::scheduler;
-use crate::syscall::SyscallContext;
+
+use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess};
 
 /// Handle OP_SURFACE_INFO syscall.
 ///
@@ -18,32 +20,38 @@ use crate::syscall::SyscallContext;
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_info(handle: u32, info_ptr: usize) -> isize {
+pub fn handle_info(ua: &UserAccess, handle: u32, info_ptr: usize) -> SyscallFuture {
     if info_ptr == 0 {
-        return -1;
+        return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
 
-    scheduler::with_current_process(|proc| {
+    let result = scheduler::with_current_process(|proc| {
         let Some(resource) = proc.handles().get(handle) else {
-            return -1;
+            return Err(());
         };
 
         let Some(surface) = resource.as_surface() else {
-            return -1;
+            return Err(());
         };
 
         let info = surface.info();
+        Ok(panda_abi::SurfaceInfoOut {
+            width: info.width,
+            height: info.height,
+            format: info.format as u32,
+            stride: info.stride,
+        })
+    });
 
-        unsafe {
-            let out = info_ptr as *mut panda_abi::SurfaceInfoOut;
-            (*out).width = info.width;
-            (*out).height = info.height;
-            (*out).format = info.format as u32;
-            (*out).stride = info.stride;
+    match result {
+        Ok(info) => {
+            if ua.write_struct(info_ptr, &info).is_err() {
+                return Box::pin(core::future::ready(SyscallResult::err(-1)));
+            }
+            Box::pin(core::future::ready(SyscallResult::ok(0)))
         }
-
-        0
-    })
+        Err(()) => Box::pin(core::future::ready(SyscallResult::err(-1))),
+    }
 }
 
 /// Handle OP_SURFACE_BLIT syscall.
@@ -57,14 +65,17 @@ pub fn handle_info(handle: u32, info_ptr: usize) -> isize {
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_blit(handle: u32, params_ptr: usize) -> isize {
+pub fn handle_blit(ua: &UserAccess, handle: u32, params_ptr: usize) -> SyscallFuture {
     if params_ptr == 0 {
-        return -1;
+        return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
 
-    let params = unsafe { *(params_ptr as *const panda_abi::BlitParams) };
+    let params: panda_abi::BlitParams = match ua.read_struct(params_ptr) {
+        Ok(p) => p,
+        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+    };
 
-    scheduler::with_current_process(|proc| {
+    let result = scheduler::with_current_process(|proc| {
         // Check if this is a window resource
         let is_window = {
             let Some(resource) = proc.handles().get(handle) else {
@@ -159,45 +170,42 @@ pub fn handle_blit(handle: u32, params_ptr: usize) -> isize {
             crate::compositor::mark_window_dirty(window_id);
             0
         } else {
-            // For non-window surfaces, use traditional blit
-            let buffer_slice_ptr = {
-                let Some(buffer_resource) = proc.handles().get(params.buffer_handle) else {
-                    return -1;
-                };
-                let Some(buffer) = buffer_resource.as_buffer() else {
-                    return -1;
-                };
-                buffer.as_slice().as_ptr()
+            // For non-window surfaces, use traditional blit.
+            // Get both buffer and surface handles in the same scope to avoid
+            // raw pointer reconstruction.
+            let Some(buffer_resource) = proc.handles().get(params.buffer_handle) else {
+                return -1;
             };
+            let Some(buffer) = buffer_resource.as_buffer() else {
+                return -1;
+            };
+            let buffer_slice = buffer.as_slice();
+            let expected_size = (params.width * params.height * 4) as usize;
+            if buffer_slice.len() < expected_size {
+                return -1;
+            }
 
             let Some(resource) = proc.handles().get(handle) else {
                 return -1;
             };
-
             let Some(surface) = resource.as_surface() else {
                 return -1;
             };
 
-            // Calculate expected buffer size
-            let expected_size = (params.width * params.height * 4) as usize;
-
-            // Reconstruct slice from pointer - safe because we know buffer hasn't moved
-            let buffer_slice =
-                unsafe { core::slice::from_raw_parts(buffer_slice_ptr, expected_size) };
-
-            // Blit from the buffer to the surface
             match surface.blit(
                 params.x,
                 params.y,
                 params.width,
                 params.height,
-                buffer_slice,
+                &buffer_slice[..expected_size],
             ) {
                 Ok(()) => 0,
                 Err(_) => -1,
             }
         }
-    })
+    });
+
+    Box::pin(core::future::ready(SyscallResult::ok(result)))
 }
 
 /// Handle OP_SURFACE_FILL syscall.
@@ -211,14 +219,17 @@ pub fn handle_blit(handle: u32, params_ptr: usize) -> isize {
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_fill(handle: u32, params_ptr: usize) -> isize {
+pub fn handle_fill(ua: &UserAccess, handle: u32, params_ptr: usize) -> SyscallFuture {
     if params_ptr == 0 {
-        return -1;
+        return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
 
-    let params = unsafe { *(params_ptr as *const panda_abi::FillParams) };
+    let params: panda_abi::FillParams = match ua.read_struct(params_ptr) {
+        Ok(p) => p,
+        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+    };
 
-    scheduler::with_current_process(|proc| {
+    let result = scheduler::with_current_process(|proc| {
         let Some(resource) = proc.handles().get(handle) else {
             return -1;
         };
@@ -227,7 +238,6 @@ pub fn handle_fill(handle: u32, params_ptr: usize) -> isize {
             return -1;
         };
 
-        // Surface uses interior mutability, so we can call fill on &self
         match surface.fill(
             params.x,
             params.y,
@@ -238,7 +248,9 @@ pub fn handle_fill(handle: u32, params_ptr: usize) -> isize {
             Ok(()) => 0,
             Err(_) => -1,
         }
-    })
+    });
+
+    Box::pin(core::future::ready(SyscallResult::ok(result)))
 }
 
 /// Handle OP_SURFACE_FLUSH syscall.
@@ -247,14 +259,13 @@ pub fn handle_fill(handle: u32, params_ptr: usize) -> isize {
 /// compositor has completed a frame with the updated content.
 ///
 /// Arguments:
-/// - ctx: Syscall context (needed for async waiting on windows)
 /// - handle: Surface handle
 /// - rect_ptr: Optional pointer to SurfaceRect (0 for full flush)
 ///
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_flush(ctx: &SyscallContext, handle: u32, rect_ptr: usize) -> isize {
+pub fn handle_flush(ua: &UserAccess, handle: u32, rect_ptr: usize) -> SyscallFuture {
     let is_window = scheduler::with_current_process(|proc| {
         let Some(resource) = proc.handles().get(handle) else {
             return None;
@@ -263,7 +274,7 @@ pub fn handle_flush(ctx: &SyscallContext, handle: u32, rect_ptr: usize) -> isize
     });
 
     let Some(is_window) = is_window else {
-        return -1;
+        return Box::pin(core::future::ready(SyscallResult::err(-1)));
     };
 
     if is_window {
@@ -279,12 +290,15 @@ pub fn handle_flush(ctx: &SyscallContext, handle: u32, rect_ptr: usize) -> isize
         });
 
         let Some(window_id) = window_id else {
-            return -1;
+            return Box::pin(core::future::ready(SyscallResult::err(-1)));
         };
 
         if rect_ptr != 0 {
-            // Mark specific region dirty
-            let rect = unsafe { *(rect_ptr as *const panda_abi::SurfaceRect) };
+            // Read rect from userspace
+            let rect: panda_abi::SurfaceRect = match ua.read_struct(rect_ptr) {
+                Ok(r) => r,
+                Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+            };
             let compositor_rect = crate::resource::Rect {
                 x: rect.x,
                 y: rect.y,
@@ -298,19 +312,13 @@ pub fn handle_flush(ctx: &SyscallContext, handle: u32, rect_ptr: usize) -> isize
         }
 
         // Wait for next compositor tick to complete
-        let future = Box::pin(async move {
+        Box::pin(async move {
             crate::compositor::wait_for_next_frame().await;
-            0isize
-        });
-
-        scheduler::with_current_process(|proc| {
-            proc.set_pending_syscall(PendingSyscall::new(future));
-        });
-
-        ctx.yield_for_async()
+            SyscallResult::ok(0)
+        })
     } else {
         // For non-window surfaces, use traditional synchronous flush
-        scheduler::with_current_process(|proc| {
+        let result = scheduler::with_current_process(|proc| {
             let Some(resource) = proc.handles().get(handle) else {
                 return -1;
             };
@@ -320,7 +328,10 @@ pub fn handle_flush(ctx: &SyscallContext, handle: u32, rect_ptr: usize) -> isize
             };
 
             let region = if rect_ptr != 0 {
-                let rect = unsafe { *(rect_ptr as *const panda_abi::SurfaceRect) };
+                let rect: panda_abi::SurfaceRect = match ua.read_struct(rect_ptr) {
+                    Ok(r) => r,
+                    Err(_) => return -1,
+                };
                 Some(crate::resource::Rect {
                     x: rect.x,
                     y: rect.y,
@@ -331,12 +342,13 @@ pub fn handle_flush(ctx: &SyscallContext, handle: u32, rect_ptr: usize) -> isize
                 None
             };
 
-            // Surface uses interior mutability, so we can call flush on &self
             match surface.flush(region) {
                 Ok(()) => 0,
                 Err(_) => -1,
             }
-        })
+        });
+
+        Box::pin(core::future::ready(SyscallResult::ok(result)))
     }
 }
 
@@ -351,14 +363,17 @@ pub fn handle_flush(ctx: &SyscallContext, handle: u32, rect_ptr: usize) -> isize
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_update_params(handle: u32, params_ptr: usize) -> isize {
+pub fn handle_update_params(ua: &UserAccess, handle: u32, params_ptr: usize) -> SyscallFuture {
     if params_ptr == 0 {
-        return -1;
+        return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
 
-    let params = unsafe { *(params_ptr as *const panda_abi::UpdateParamsIn) };
+    let params: panda_abi::UpdateParamsIn = match ua.read_struct(params_ptr) {
+        Ok(p) => p,
+        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+    };
 
-    scheduler::with_current_process(|proc| {
+    let result = scheduler::with_current_process(|proc| {
         let Some(resource) = proc.handles().get(handle) else {
             return -1;
         };
@@ -392,5 +407,7 @@ pub fn handle_update_params(handle: u32, params_ptr: usize) -> isize {
         }
 
         0
-    })
+    });
+
+    Box::pin(core::future::ready(SyscallResult::ok(result)))
 }

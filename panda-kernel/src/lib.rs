@@ -8,6 +8,7 @@
 #![feature(ptr_cast_array)]
 #![feature(ptr_as_ref_unchecked)]
 #![feature(allocator_api)]
+#![feature(negative_impls)]
 
 extern crate alloc;
 

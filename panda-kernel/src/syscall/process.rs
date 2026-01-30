@@ -1,82 +1,69 @@
 //! Process operation syscall handlers (OP_PROCESS_*).
+//!
+//! Diverging operations (yield, exit) are handled directly in `mod.rs` since
+//! they require unsafe scheduler calls. This module only contains safe handlers.
 
-use log::{debug, info};
+#![deny(unsafe_code)]
+
+use alloc::boxed::Box;
+use core::task::Poll;
+
+use log::debug;
 use x86_64::VirtAddr;
 
 use crate::scheduler;
 
-use super::SyscallContext;
-
-/// Handle process yield operation.
-pub fn handle_yield(ctx: &SyscallContext) -> ! {
-    unsafe {
-        scheduler::yield_current(
-            VirtAddr::new(ctx.return_rip as u64),
-            VirtAddr::new(ctx.user_rsp as u64),
-        );
-    }
-}
-
-/// Handle process exit operation.
-pub fn handle_exit(exit_code: i32) -> ! {
-    let current_pid = scheduler::current_process_id();
-    info!("Process {:?} exiting with code {exit_code}", current_pid);
-
-    // Get the process info before removing the process.
-    // We'll set the exit code after releasing the scheduler lock
-    // to avoid deadlock (set_exit_code -> wake -> wake_process needs the lock).
-    let process_info = scheduler::with_current_process(|proc| proc.info().clone());
-
-    scheduler::remove_process(current_pid);
-
-    // Set exit code after removing from scheduler (wakes any waiters)
-    process_info.set_exit_code(exit_code);
-
-    unsafe {
-        scheduler::exec_next_runnable();
-    }
-}
+use super::poll_fn;
+use super::user_ptr::{SyscallFuture, SyscallResult};
 
 /// Handle process get PID operation.
-pub fn handle_get_pid() -> isize {
-    // For now, just return 0 for self - we'll implement proper PIDs later
-    0
+pub fn handle_get_pid() -> SyscallFuture {
+    Box::pin(core::future::ready(SyscallResult::ok(0)))
 }
 
 /// Handle process wait operation.
-pub fn handle_wait(ctx: &SyscallContext, handle_id: u32) -> isize {
-    let result = scheduler::with_current_process(|proc| {
+///
+/// Blocks until the target process exits, then returns its exit code.
+pub fn handle_wait(handle_id: u32) -> SyscallFuture {
+    let resource = scheduler::with_current_process(|proc| {
         let handle = proc.handles().get(handle_id)?;
-        let process_iface = handle.as_process()?;
-        Some((process_iface.exit_code(), process_iface.waker()))
+        if handle.as_process().is_some() {
+            Some(handle.resource_arc())
+        } else {
+            None
+        }
     });
 
-    match result {
-        Some((Some(exit_code), _)) => {
-            // Process already exited, return exit code immediately
-            exit_code as isize
+    Box::pin(poll_fn(move |_cx| {
+        let Some(ref resource) = resource else {
+            return Poll::Ready(SyscallResult::err(-1));
+        };
+        let Some(process_iface) = resource.as_process() else {
+            return Poll::Ready(SyscallResult::err(-1));
+        };
+
+        match process_iface.exit_code() {
+            Some(exit_code) => Poll::Ready(SyscallResult::ok(exit_code as isize)),
+            None => {
+                // Register waker so we get woken when the process exits
+                process_iface
+                    .waker()
+                    .set_waiting(scheduler::current_process_id());
+                Poll::Pending
+            }
         }
-        Some((None, waker)) => {
-            // Process still running, block until it exits
-            ctx.block_on(waker);
-        }
-        None => {
-            // Invalid handle
-            -1
-        }
-    }
+    }))
 }
 
 /// Handle process signal operation.
-pub fn handle_signal() -> isize {
-    // TODO: Implement signals
-    -1
+pub fn handle_signal() -> SyscallFuture {
+    Box::pin(core::future::ready(SyscallResult::err(-1)))
 }
 
 /// Handle process brk operation.
-pub fn handle_brk(new_brk: usize) -> isize {
+pub fn handle_brk(new_brk: usize) -> SyscallFuture {
     debug!("BRK: requested new_brk = {:#x}", new_brk);
-    scheduler::with_current_process(|proc| {
+    let result = scheduler::with_current_process(|proc| {
         if new_brk == 0 {
             // Query current break
             let current = proc.brk().as_u64() as isize;
@@ -88,5 +75,6 @@ pub fn handle_brk(new_brk: usize) -> isize {
             debug!("BRK: set, returning {:#x}", result.as_u64());
             result.as_u64() as isize
         }
-    })
+    });
+    Box::pin(core::future::ready(SyscallResult::ok(result)))
 }

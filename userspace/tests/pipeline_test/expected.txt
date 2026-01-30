@@ -5,12 +5,12 @@ pipeline_test: created channel pair
 pipeline_test: spawned consumer
 pipeline_consumer: starting
 pipeline_test: spawned producer
+pipeline_producer: starting
+pipeline_producer: done, sent 10 values
 pipeline_test: closed write_end
 pipeline_test: closed read_end
 # @barrier
-# Producer and consumer run concurrently
-pipeline_producer: starting
-pipeline_producer: done, sent 10 values
+# Producer and consumer complete, then parent collects results
 pipeline_consumer: received 10 values, sum = 55
 pipeline_consumer: done
 # @barrier

@@ -1,21 +1,27 @@
 //! Mailbox operation syscall handlers (OP_MAILBOX_*).
 
+#![deny(unsafe_code)]
+
+use alloc::boxed::Box;
+use core::task::Poll;
+
 use panda_abi::HandleType;
 
 use crate::resource::Mailbox;
 use crate::scheduler;
 
-use super::SyscallContext;
+use super::poll_fn;
+use super::user_ptr::{SyscallFuture, SyscallResult};
 
 /// Handle mailbox create operation.
 /// Returns a new mailbox handle.
-pub fn handle_create() -> isize {
-    let mailbox = Mailbox::new();
+pub fn handle_create() -> SyscallFuture {
     let handle_id = scheduler::with_current_process(|proc| {
+        let mailbox = Mailbox::new();
         proc.handles_mut()
             .insert_typed(HandleType::Mailbox, mailbox)
     });
-    handle_id as isize
+    Box::pin(core::future::ready(SyscallResult::ok(handle_id as isize)))
 }
 
 /// Handle mailbox wait operation (blocking).
@@ -24,61 +30,50 @@ pub fn handle_create() -> isize {
 ///
 /// The result is encoded as: (handle_id << 32) | events
 /// If no events are available, blocks until one arrives.
-pub fn handle_wait(ctx: &SyscallContext, mailbox_handle: u32) -> isize {
-    // Get the mailbox
-    let result = scheduler::with_current_process(|proc| {
+pub fn handle_wait(mailbox_handle: u32) -> SyscallFuture {
+    let resource = scheduler::with_current_process(|proc| {
         let handle = proc.handles().get(mailbox_handle)?;
-        let mailbox = handle.as_mailbox()?;
-
-        // Try to get a pending event
-        if let Some((handle_id, events)) = mailbox.wait() {
-            // Event available, return it
-            Some(Ok((handle_id, events)))
+        if handle.as_mailbox().is_some() {
+            Some(handle.resource_arc())
         } else {
-            // No events, need to block
-            Some(Err(mailbox.waker()))
+            None
         }
     });
 
-    match result {
-        Some(Ok((handle_id, events))) => {
-            // Pack handle_id and events into result
-            ((handle_id as isize) << 32) | (events as isize)
+    Box::pin(poll_fn(move |_cx| {
+        let Some(ref resource) = resource else {
+            return Poll::Ready(SyscallResult::err(-1));
+        };
+        let Some(mailbox) = resource.as_mailbox() else {
+            return Poll::Ready(SyscallResult::err(-1));
+        };
+
+        if let Some((handle_id, events)) = mailbox.wait() {
+            let result = ((handle_id as isize) << 32) | (events as isize);
+            Poll::Ready(SyscallResult::ok(result))
+        } else {
+            // No events, block until one arrives
+            mailbox.waker().set_waiting(scheduler::current_process_id());
+            Poll::Pending
         }
-        Some(Err(waker)) => {
-            // Block until an event arrives
-            ctx.block_on(waker);
-        }
-        None => {
-            // Invalid mailbox handle
-            -1
-        }
-    }
+    }))
 }
 
 /// Handle mailbox poll operation (non-blocking).
-/// Returns packed (handle_id, events) or (0, 0) if no events.
+/// Returns packed (handle_id, events) or 0 if no events.
 ///
 /// The result is encoded as: (handle_id << 32) | events
-pub fn handle_poll(mailbox_handle: u32) -> isize {
+pub fn handle_poll(mailbox_handle: u32) -> SyscallFuture {
     let result = scheduler::with_current_process(|proc| {
         let handle = proc.handles().get(mailbox_handle)?;
         let mailbox = handle.as_mailbox()?;
         Some(mailbox.poll())
     });
 
-    match result {
-        Some(Some((handle_id, events))) => {
-            // Pack handle_id and events into result
-            ((handle_id as isize) << 32) | (events as isize)
-        }
-        Some(None) => {
-            // No events available
-            0
-        }
-        None => {
-            // Invalid mailbox handle
-            -1
-        }
-    }
+    let code = match result {
+        Some(Some((handle_id, events))) => ((handle_id as isize) << 32) | (events as isize),
+        Some(None) => 0,
+        None => -1,
+    };
+    Box::pin(core::future::ready(SyscallResult::ok(code)))
 }

@@ -7,7 +7,6 @@ mod rtc;
 use core::cmp::Reverse;
 
 use alloc::collections::{BTreeMap, BinaryHeap};
-use alloc::sync::Arc;
 use log::{debug, info};
 use spinning_top::RwSpinlock;
 
@@ -18,7 +17,7 @@ use crate::executor;
 use crate::interrupts;
 use crate::process::{
     Process, ProcessId, ProcessState, ProcessWaker, SavedState, return_from_interrupt,
-    return_from_syscall, waker::Waker,
+    return_from_syscall,
 };
 
 pub use rtc::RTC;
@@ -416,19 +415,27 @@ pub unsafe fn exec_next_runnable() -> ! {
                             (ip, sp, page_table)
                         };
 
-                        debug!(
-                            "exec_next_runnable: async syscall completed (pid={:?}, result={}, ip={:#x}, sp={:#x})",
-                            pid,
-                            result,
-                            ip.as_u64(),
-                            sp.as_u64()
-                        );
+                        // Switch page table before copy-out (needed for writeback)
                         unsafe {
                             crate::memory::switch_page_table(page_table);
                         }
+
+                        // Copy out writeback data if present
+                        if let Some(wb) = result.writeback {
+                            let ua = unsafe { crate::syscall::user_ptr::UserAccess::new() };
+                            let _ = ua.write(wb.dst, &wb.data);
+                        }
+
+                        debug!(
+                            "exec_next_runnable: async syscall completed (pid={:?}, result={}, ip={:#x}, sp={:#x})",
+                            pid,
+                            result.code,
+                            ip.as_u64(),
+                            sp.as_u64()
+                        );
                         start_timer_with_deadline();
                         // Return to userspace with the syscall result in rax
-                        unsafe { return_from_syscall(ip, sp, result as u64) }
+                        unsafe { return_from_syscall(ip, sp, result.code as u64) }
                     }
                     Some(Poll::Pending) => {
                         // Future not ready - put process back to blocked state
@@ -620,37 +627,6 @@ pub unsafe fn yield_current(return_ip: x86_64::VirtAddr, return_sp: x86_64::Virt
                 process.set_resume_point(return_ip, return_sp);
             },
             ProcessState::Runnable,
-        )
-    }
-}
-
-/// Block the current process on a waker: save its state and switch to the next runnable.
-/// The process will be woken when the waker's `wake()` method is called.
-///
-/// The saved state includes all registers needed to re-execute the syscall when resumed.
-/// RIP should point to the syscall instruction, and all argument registers are preserved.
-///
-/// # Safety
-/// This function does not return to the caller. It switches to a different process.
-pub unsafe fn block_current_on(
-    waker: Arc<Waker>,
-    return_ip: x86_64::VirtAddr,
-    return_sp: x86_64::VirtAddr,
-    saved_state: SavedState,
-) -> ! {
-    unsafe {
-        suspend_current(
-            |process, pid| {
-                // Save where to resume - full state for syscall re-execution
-                let mut state = saved_state;
-                state.rip = return_ip.as_u64();
-                state.rsp = return_sp.as_u64();
-                process.save_state(state);
-
-                // Register this process with the waker before blocking
-                waker.set_waiting(pid);
-            },
-            ProcessState::Blocked,
         )
     }
 }
