@@ -20,98 +20,96 @@ use libpanda::process;
 fn test_registers_preserved_simple_syscall() {
     environment::log("TEST: registers_preserved_simple_syscall");
 
-    // Set known values in callee-saved registers, do a syscall, verify they're unchanged
-    let (rbx_before, rbp_before, r12_before, r13_before, r14_before, r15_before): (
-        u64,
-        u64,
-        u64,
-        u64,
-        u64,
-        u64,
-    );
-    let (rbx_after, rbp_after, r12_after, r13_after, r14_after, r15_after): (
-        u64,
-        u64,
-        u64,
-        u64,
-        u64,
-        u64,
-    );
+    // Set known values in callee-saved registers, do a yield syscall,
+    // and capture the "after" values — all in one asm block so the compiler
+    // cannot interfere with register allocation between setup and syscall.
+    //
+    // We push the original callee-saved values to the stack, set our test
+    // values, do the syscall, capture the results, and restore originals.
+    // We test all 6 callee-saved registers in a single asm block.
+    // To avoid the compiler assigning our input/output operands to
+    // callee-saved registers (which we explicitly use), we pass results
+    // out via a single combined flag: all-pass = 1, any-fail = 0.
+    let all_ok: u64;
 
     unsafe {
         asm!(
-            // Set distinctive values in callee-saved registers
-            "mov rbx, {val1}",
-            "mov r12, {val2}",
-            "mov r13, {val3}",
-            "mov r14, {val4}",
-            "mov r15, {val5}",
-            // Save rbp specially (it's the frame pointer)
-            "mov {rbp_val}, rbp",
-            // Record "before" values
-            "mov {rbx_b}, rbx",
-            "mov {r12_b}, r12",
-            "mov {r13_b}, r13",
-            "mov {r14_b}, r14",
-            "mov {r15_b}, r15",
-            val1 = const 0xDEADBEEF11111111u64,
-            val2 = const 0xDEADBEEF22222222u64,
-            val3 = const 0xDEADBEEF33333333u64,
-            val4 = const 0xDEADBEEF44444444u64,
-            val5 = const 0xDEADBEEF55555555u64,
-            rbp_val = out(reg) rbp_before,
-            rbx_b = out(reg) rbx_before,
-            r12_b = out(reg) r12_before,
-            r13_b = out(reg) r13_before,
-            r14_b = out(reg) r14_before,
-            r15_b = out(reg) r15_before,
+            // Save original callee-saved registers
+            "push rbx",
+            "push rbp",
+            "push r12",
+            "push r13",
+            "push r14",
+            "push r15",
+            // Set test values
+            "mov rbx, 0xDEADBEEF11111111",
+            "mov rbp, 0xDEADBEEF66666666",
+            "mov r12, 0xDEADBEEF22222222",
+            "mov r13, 0xDEADBEEF33333333",
+            "mov r14, 0xDEADBEEF44444444",
+            "mov r15, 0xDEADBEEF55555555",
+            // Do yield syscall (SYSCALL_SEND=0x30, handle=SELF=0x11000003,
+            // op=OP_PROCESS_YIELD=0x20000)
+            "mov rax, 0x30",
+            "mov rdi, 0x11000003",
+            "mov rsi, 0x20000",
+            "xor edx, edx",
+            "xor r10d, r10d",
+            "xor r8d, r8d",
+            "xor r9d, r9d",
+            "syscall",
+            // Check all registers; use rax as running AND of pass/fail
+            "mov rdi, 1",  // rdi = all_ok accumulator (start true)
+            "mov rcx, 0xDEADBEEF11111111",
+            "cmp rbx, rcx",
+            "jne 50f",
+            "mov rcx, 0xDEADBEEF66666666",
+            "cmp rbp, rcx",
+            "jne 51f",
+            "mov rcx, 0xDEADBEEF22222222",
+            "cmp r12, rcx",
+            "jne 52f",
+            "mov rcx, 0xDEADBEEF33333333",
+            "cmp r13, rcx",
+            "jne 53f",
+            "mov rcx, 0xDEADBEEF44444444",
+            "cmp r14, rcx",
+            "jne 54f",
+            "mov rcx, 0xDEADBEEF55555555",
+            "cmp r15, rcx",
+            "jne 55f",
+            // All passed — rdi still 1, rsi = 0 (no failure)
+            "xor esi, esi",
+            "jmp 59f",
+            // Failure labels — set rdi=0, rsi=which register failed (1-6)
+            "50:", "xor edi, edi", "mov esi, 1", "jmp 59f",
+            "51:", "xor edi, edi", "mov esi, 2", "jmp 59f",
+            "52:", "xor edi, edi", "mov esi, 3", "jmp 59f",
+            "53:", "xor edi, edi", "mov esi, 4", "jmp 59f",
+            "54:", "xor edi, edi", "mov esi, 5", "jmp 59f",
+            "55:", "xor edi, edi", "mov esi, 6",
+            "59:",
+            // Restore original callee-saved registers
+            "pop r15",
+            "pop r14",
+            "pop r13",
+            "pop r12",
+            "pop rbp",
+            "pop rbx",
+            out("rax") _,
+            out("rcx") _,
+            out("rdx") _,
+            out("rsi") _,
+            out("rdi") all_ok,
+            out("r8") _,
+            out("r9") _,
+            out("r10") _,
+            out("r11") _,
         );
     }
 
-    // Do a syscall (yield is simple and doesn't block indefinitely)
-    process::yield_now();
-
-    unsafe {
-        asm!(
-            // Record "after" values
-            "mov {rbx_a}, rbx",
-            "mov {rbp_a}, rbp",
-            "mov {r12_a}, r12",
-            "mov {r13_a}, r13",
-            "mov {r14_a}, r14",
-            "mov {r15_a}, r15",
-            rbx_a = out(reg) rbx_after,
-            rbp_a = out(reg) rbp_after,
-            r12_a = out(reg) r12_after,
-            r13_a = out(reg) r13_after,
-            r14_a = out(reg) r14_after,
-            r15_a = out(reg) r15_after,
-        );
-    }
-
-    // Verify all callee-saved registers are preserved
-    if rbx_before != rbx_after {
-        environment::log("FAIL: rbx corrupted");
-        process::exit(1);
-    }
-    if rbp_before != rbp_after {
-        environment::log("FAIL: rbp corrupted");
-        process::exit(1);
-    }
-    if r12_before != r12_after {
-        environment::log("FAIL: r12 corrupted");
-        process::exit(1);
-    }
-    if r13_before != r13_after {
-        environment::log("FAIL: r13 corrupted");
-        process::exit(1);
-    }
-    if r14_before != r14_after {
-        environment::log("FAIL: r14 corrupted");
-        process::exit(1);
-    }
-    if r15_before != r15_after {
-        environment::log("FAIL: r15 corrupted");
+    if all_ok == 0 {
+        environment::log("FAIL: callee-saved register corrupted across syscall");
         process::exit(1);
     }
 
