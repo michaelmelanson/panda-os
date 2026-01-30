@@ -39,7 +39,16 @@ Working:
 
 ### 2. System services
 
-- **Implement system initialisation tool**: Declarative service configurations, similar to `systemd` on Linux, to describe services to start at boot.
+- **Implement system initialisation tool**: Declarative service manager with TOML configs, dependency resolution, restart policies, and runtime management. See [plans/system-init-tool.md](plans/system-init-tool.md) for the full design.
+
+  1. **Signal support**: Implement `OP_PROCESS_SIGNAL` for SIGKILL (kernel-level forced termination). Add `Signal::Terminate` variant for message-based SIGTERM delivery via `HANDLE_PARENT` channel.
+  2. **Timer resource**: Mailbox-integrated one-shot timer resource (`EVENT_TIMER`). Extends the existing `DeadlineTracker`/APIC timer infrastructure to post events to userspace mailboxes.
+  3. **Service scheme**: Kernel-side `service:` scheme that brokers channel connections to init. Init registers via `OP_SERVICE_REGISTER`; clients open `service:/manager` to get a channel.
+  4. **TOML parsing and config**: Add `toml` crate (v0.9, `no_std`) to init. `ServiceConfig` parser reads `/config/services/{name}/config.toml`.
+  5. **Planner**: Stateless planner that diffs current vs desired state, detects cycles, topologically sorts, and produces a DAG of Start/Stop/Restart actions. Used at boot and for runtime changes.
+  6. **Service manager core**: Event loop in init: executes plan steps, handles process exits, restart timers, stop grace periods, log forwarding, and command dispatch. All events flow through a single mailbox.
+  7. **Service config files and boot test**: Add `rootfs/config/services/terminal/config.toml`. Verify system boots with the new service manager.
+  8. **`svcctl` command-line tool**: CLI for runtime service management (`start`, `stop`, `status`, `list`, `add`). Uses `Value`-encoded commands/responses over the `service:/manager` channel. Integrates with structured pipelines.
 
 ### 3. Block I/O optimisations
 
@@ -60,6 +69,8 @@ Working:
 - **Multi-CPU support**: APIC infrastructure exists but no SMP/IPI support.
 
 - **CI setup**: Add GitHub Actions to run `make test` on push/PR.
+
+- **Declarative mount configuration**: Replace the hardcoded `mount("ext2", "/mnt")` in init with a declarative fstab-like config (e.g., `/config/fstab.toml`) specifying filesystem type, device, and mount point. Would allow init to mount multiple filesystems without recompilation.
 
 - **GPU-accelerated composition**: Add virtio-gpu 3D (virgl) support to offload window composition to the host GPU. Currently the compositor does CPU-side pixel-by-pixel alpha blending. See [plans/virtio-gpu-3d-composition.md](plans/virtio-gpu-3d-composition.md) for the full design.
 
