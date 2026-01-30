@@ -75,6 +75,8 @@ Working:
 
 - **GPU-accelerated composition**: Add virtio-gpu 3D (virgl) support to offload window composition to the host GPU. Currently the compositor does CPU-side pixel-by-pixel alpha blending. See [plans/virtio-gpu-3d-composition.md](plans/virtio-gpu-3d-composition.md) for the full design.
 
+- **Userspace device drivers**: Move device drivers (keyboard, block, GPU) into userspace services, building on the service protocol framework. Drivers would register as discoverable services (e.g., `service:/keyboard`) and clients would connect using typed protocols. Requires additional kernel primitives: userspace MMIO mapping (map PCI BAR regions into process address space), userspace interrupt delivery (`EVENT_IRQ` posted to driver's mailbox), DMA buffer allocation (physically contiguous memory mapped into userspace with known physical addresses), and device ownership tracking (exclusive access per PCI device). IOMMU support would be needed for secure DMA on real hardware.
+
 ## Known issues
 
 - **proc-macro2 >= 1.0.104 causes test failures**: The `log!` macros generate incorrect code when used in x86-interrupt handlers with proc-macro2 1.0.104+. Cargo.lock pins proc-macro2 to 1.0.103 as a workaround.
