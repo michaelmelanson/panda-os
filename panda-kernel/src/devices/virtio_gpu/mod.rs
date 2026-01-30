@@ -78,10 +78,19 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
     let mut gpu = VirtIOGpu::<VirtioHal, PciTransport>::new(transport)
         .expect("Could not initialize Virtio GPU device");
 
-    let (width, height) = gpu.resolution().expect("failed to get resolution");
+    // Query EDID for supported resolutions (from Standard Timings) and pick
+    // the highest one. QEMU's EDID preferred mode reflects whatever OVMF set
+    // (typically 640x480), but the Standard Timings list includes the actual
+    // supported resolutions from the xres/yres device parameters.
+    let (width, height) = gpu
+        .edid_supported_resolutions()
+        .ok()
+        .and_then(|resolutions| resolutions.into_iter().next())
+        .unwrap_or((1920, 1080));
+    log::info!("Display resolution: {}x{}", width, height);
 
     let framebuffer = gpu
-        .setup_framebuffer()
+        .setup_framebuffer_with_resolution(width, height)
         .expect("Could not create framebuffer");
     let framebuffer = VirtAddr::new(framebuffer.as_ptr() as u64);
 
@@ -109,4 +118,31 @@ pub fn flush_framebuffer() {
     if let Some(ref mut dev) = *device {
         dev.gpu.flush().ok();
     }
+}
+
+/// Change the display resolution at runtime.
+///
+/// Tears down the existing GPU framebuffer resource, creates a new one at the
+/// specified dimensions, and updates the global framebuffer surface and compositor.
+pub fn change_resolution(width: u32, height: u32) -> Result<(), &'static str> {
+    let mut device = VIRTIO_GPU_DEVICE.write();
+    let dev = device.as_mut().ok_or("GPU not initialized")?;
+
+    let framebuffer = dev
+        .gpu
+        .change_resolution(width, height)
+        .map_err(|_| "GPU resolution change failed")?;
+    let framebuffer_ptr = framebuffer.as_mut_ptr();
+    dev.framebuffer = VirtAddr::new(framebuffer_ptr as u64);
+    dev.resolution = (width, height);
+
+    unsafe {
+        init_framebuffer(framebuffer_ptr, width, height);
+    }
+
+    let new_surface = crate::resource::get_framebuffer_surface()
+        .ok_or("Failed to get new framebuffer surface")?;
+    crate::compositor::replace_framebuffer(*new_surface);
+
+    Ok(())
 }

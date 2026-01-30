@@ -193,6 +193,30 @@ pub fn init(framebuffer: FramebufferSurface) {
     });
 }
 
+/// Replace the compositor's framebuffer at runtime (e.g. after a resolution change).
+///
+/// Clears the new framebuffer, replaces the old one, discards stale dirty regions,
+/// and marks the entire screen dirty to force a full repaint.
+pub fn replace_framebuffer(new_framebuffer: FramebufferSurface) {
+    let mut compositor = COMPOSITOR.lock();
+    let compositor = compositor.as_mut().expect("Compositor not initialized");
+
+    let width = new_framebuffer.width();
+    let height = new_framebuffer.height();
+    new_framebuffer
+        .fill(0, 0, width, height, BACKGROUND_COLOR)
+        .ok();
+
+    compositor.framebuffer = new_framebuffer;
+    compositor.dirty_regions.clear();
+    compositor.mark_dirty(Rect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    });
+}
+
 /// Create a new window
 pub fn create_window() -> Arc<Spinlock<Window>> {
     let mut compositor = COMPOSITOR.lock();

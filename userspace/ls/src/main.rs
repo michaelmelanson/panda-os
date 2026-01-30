@@ -10,6 +10,15 @@ use libpanda::terminal::{self, Colour, NamedColour};
 use libpanda::{environment, file};
 use panda_abi::value::{Table, Value};
 
+fn rdtsc() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    unsafe {
+        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack));
+    }
+    ((hi as u64) << 32) | lo as u64
+}
+
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         alloc::format!("{}", bytes)
@@ -38,6 +47,7 @@ libpanda::main! { |args|
     };
 
     // Open directory
+    let t0 = rdtsc();
     let dir = match environment::opendir(&uri) {
         Ok(d) => d,
         Err(_) => {
@@ -48,6 +58,8 @@ libpanda::main! { |args|
             return 1;
         }
     };
+
+    let t1 = rdtsc();
 
     // Read entries into a vector first
     let mut entries: Vec<(String, bool)> = Vec::new();
@@ -72,6 +84,8 @@ libpanda::main! { |args|
     }
 
     file::close(dir);
+
+    let t2 = rdtsc();
 
     // Sort entries alphabetically
     entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -107,8 +121,17 @@ libpanda::main! { |args|
         }
     }
 
+    let t3 = rdtsc();
+
     let table = Table::new(3, Some(headers), cells).unwrap();
     terminal::print_value(Value::Table(table));
+
+    let t4 = rdtsc();
+
+    environment::log(&alloc::format!(
+        "[ls timing] opendir={} readdir={} stat+build={} print={}",
+        t1 - t0, t2 - t1, t3 - t2, t4 - t3
+    ));
 
     0
 }

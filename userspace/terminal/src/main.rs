@@ -24,16 +24,28 @@ use panda_abi::{
         TerminalCapabilities, TerminalQuery,
     },
     value::Value,
-    BlitParams, FillParams, UpdateParamsIn, OP_SURFACE_BLIT, OP_SURFACE_FILL, OP_SURFACE_FLUSH,
-    OP_SURFACE_UPDATE_PARAMS,
+    BlitParams, UpdateParamsIn, OP_SURFACE_BLIT, OP_SURFACE_FLUSH, OP_SURFACE_UPDATE_PARAMS,
 };
 
 use crate::input::PendingInput;
 use crate::render::{colour_to_argb, Word, WordIter};
 
+fn rdtsc() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    unsafe {
+        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack));
+    }
+    ((hi as u64) << 32) | lo as u64
+}
+
 // Terminal colours (ARGB format)
 const COLOUR_BACKGROUND: u32 = 0xFF1E1E1E; // Dark grey
 const COLOUR_DEFAULT_FG: u32 = 0xFFD4D4D4; // Light grey
+
+const BG_B: u8 = (COLOUR_BACKGROUND & 0xFF) as u8;
+const BG_G: u8 = ((COLOUR_BACKGROUND >> 8) & 0xFF) as u8;
+const BG_R: u8 = ((COLOUR_BACKGROUND >> 16) & 0xFF) as u8;
 
 const MARGIN: u32 = 10;
 const FONT_SIZE: f32 = 16.0;
@@ -41,6 +53,24 @@ const LINE_HEIGHT: u32 = 20; // Font size + spacing
 
 // Embed the Hack font at compile time
 const FONT_DATA: &[u8] = include_bytes!("../fonts/Hack-Regular.ttf");
+
+/// Dirty rectangle tracking for batched blits.
+#[derive(Clone, Copy)]
+struct DirtyRect {
+    x0: u32,
+    y0: u32,
+    x1: u32,
+    y1: u32,
+}
+
+impl DirtyRect {
+    fn expand(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        self.x0 = self.x0.min(x);
+        self.y0 = self.y0.min(y);
+        self.x1 = self.x1.max(x + w);
+        self.y1 = self.y1.max(y + h);
+    }
+}
 
 /// Terminal state
 pub struct Terminal {
@@ -63,6 +93,10 @@ pub struct Terminal {
     current_fg: u32,
     /// Average character width for grid-based calculations (terminal size, cursor positioning)
     avg_char_width: u32,
+    /// Persistent framebuffer — all rendering composites into this buffer
+    framebuffer: Buffer,
+    /// Dirty region tracking for batched blits
+    dirty: Option<DirtyRect>,
 }
 
 impl Terminal {
@@ -77,6 +111,10 @@ impl Terminal {
         // Measure average character width using 'M' (a wide character)
         let (metrics, _) = font.rasterize('M', FONT_SIZE);
         let avg_char_width = metrics.advance_width as u32;
+
+        // Allocate persistent framebuffer for the entire window surface
+        let fb_size = (width * height * 4) as usize;
+        let framebuffer = Buffer::alloc(fb_size).expect("Failed to allocate terminal framebuffer");
 
         Self {
             surface,
@@ -93,6 +131,8 @@ impl Terminal {
             pending_input: None,
             current_fg: COLOUR_DEFAULT_FG,
             avg_char_width,
+            framebuffer,
+            dirty: None,
         }
     }
 
@@ -114,21 +154,7 @@ impl Terminal {
 
     /// Clear the screen
     pub fn clear(&mut self) {
-        let fill_params = FillParams {
-            x: 0,
-            y: 0,
-            width: self.width,
-            height: self.height,
-            colour: COLOUR_BACKGROUND,
-        };
-        send(
-            self.surface,
-            OP_SURFACE_FILL,
-            &fill_params as *const FillParams as usize,
-            0,
-            0,
-            0,
-        );
+        self.fb_fill(0, 0, self.width, self.height, COLOUR_BACKGROUND);
         self.flush();
         self.cursor_x = MARGIN;
         self.cursor_y = MARGIN;
@@ -139,44 +165,26 @@ impl Terminal {
         match region {
             ClearRegion::Screen => self.clear(),
             ClearRegion::ToEndOfScreen => {
-                // Clear from cursor to end of current line
                 self.clear_to_end_of_line();
-                // Clear remaining lines
                 let y_start = self.cursor_y + LINE_HEIGHT;
                 if y_start < self.height - MARGIN {
-                    let fill_params = FillParams {
-                        x: MARGIN,
-                        y: y_start,
-                        width: self.width - 2 * MARGIN,
-                        height: self.height - y_start - MARGIN,
-                        colour: COLOUR_BACKGROUND,
-                    };
-                    send(
-                        self.surface,
-                        OP_SURFACE_FILL,
-                        &fill_params as *const FillParams as usize,
-                        0,
-                        0,
-                        0,
+                    self.fb_fill(
+                        MARGIN,
+                        y_start,
+                        self.width - 2 * MARGIN,
+                        self.height - y_start - MARGIN,
+                        COLOUR_BACKGROUND,
                     );
                 }
             }
             ClearRegion::ToEndOfLine => self.clear_to_end_of_line(),
             ClearRegion::Line => {
-                let fill_params = FillParams {
-                    x: MARGIN,
-                    y: self.cursor_y,
-                    width: self.width - 2 * MARGIN,
-                    height: LINE_HEIGHT,
-                    colour: COLOUR_BACKGROUND,
-                };
-                send(
-                    self.surface,
-                    OP_SURFACE_FILL,
-                    &fill_params as *const FillParams as usize,
-                    0,
-                    0,
-                    0,
+                self.fb_fill(
+                    MARGIN,
+                    self.cursor_y,
+                    self.width - 2 * MARGIN,
+                    LINE_HEIGHT,
+                    COLOUR_BACKGROUND,
                 );
                 self.cursor_x = MARGIN;
             }
@@ -185,24 +193,61 @@ impl Terminal {
     }
 
     fn clear_to_end_of_line(&mut self) {
-        let fill_params = FillParams {
-            x: self.cursor_x,
-            y: self.cursor_y,
-            width: self.width - self.cursor_x - MARGIN,
-            height: LINE_HEIGHT,
-            colour: COLOUR_BACKGROUND,
-        };
-        send(
-            self.surface,
-            OP_SURFACE_FILL,
-            &fill_params as *const FillParams as usize,
-            0,
-            0,
-            0,
+        let w = self.width - self.cursor_x - MARGIN;
+        self.fb_fill(
+            self.cursor_x,
+            self.cursor_y,
+            w,
+            LINE_HEIGHT,
+            COLOUR_BACKGROUND,
         );
     }
 
-    /// Draw a single character at current cursor position with colour
+    /// Mark a region as dirty, expanding the existing dirty rect or creating a new one.
+    fn mark_dirty(&mut self, x: u32, y: u32, w: u32, h: u32) {
+        // Clamp to framebuffer bounds
+        let x1 = (x + w).min(self.width);
+        let y1 = (y + h).min(self.height);
+        match self.dirty {
+            Some(ref mut d) => d.expand(x, y, x1 - x, y1 - y),
+            None => {
+                self.dirty = Some(DirtyRect {
+                    x0: x,
+                    y0: y,
+                    x1,
+                    y1,
+                });
+            }
+        }
+    }
+
+    /// Fill a rectangle in the framebuffer with a solid ARGB colour.
+    fn fb_fill(&mut self, x: u32, y: u32, w: u32, h: u32, colour: u32) {
+        let fb = self.framebuffer.as_mut_slice();
+        let stride = self.width;
+        let b = (colour & 0xFF) as u8;
+        let g = ((colour >> 8) & 0xFF) as u8;
+        let r = ((colour >> 16) & 0xFF) as u8;
+        let a = ((colour >> 24) & 0xFF) as u8;
+
+        let x_end = (x + w).min(self.width);
+        let y_end = (y + h).min(self.height);
+
+        for row in y..y_end {
+            for col in x..x_end {
+                let off = ((row * stride + col) * 4) as usize;
+                fb[off] = b;
+                fb[off + 1] = g;
+                fb[off + 2] = r;
+                fb[off + 3] = a;
+            }
+        }
+        self.mark_dirty(x, y, x_end - x, y_end - y);
+    }
+
+    /// Draw a single character at current cursor position with colour.
+    ///
+    /// Composites the glyph directly into the framebuffer — no syscalls.
     pub fn draw_char_coloured(
         &mut self,
         ch: char,
@@ -219,55 +264,57 @@ impl Terminal {
 
         let glyph_width = metrics.width;
         let glyph_height = metrics.height;
-        let buffer_size = (glyph_width * glyph_height * 4) as usize;
-
-        let Some(mut glyph_buffer) = Buffer::alloc(buffer_size) else {
-            return Err("Failed to allocate glyph buffer");
-        };
 
         // Extract RGB from foreground colour
-        let fg_r = ((fg >> 16) & 0xFF) as u8;
-        let fg_g = ((fg >> 8) & 0xFF) as u8;
-        let fg_b = (fg & 0xFF) as u8;
+        let fg_r = ((fg >> 16) & 0xFF) as u16;
+        let fg_g = ((fg >> 8) & 0xFF) as u16;
+        let fg_b = (fg & 0xFF) as u16;
 
-        // Convert grayscale bitmap to ARGB with foreground colour
-        let pixels = glyph_buffer.as_mut_slice();
-        for py in 0..glyph_height {
-            for px in 0..glyph_width {
-                let src_idx = py * glyph_width + px;
-                let dst_idx = (py * glyph_width + px) * 4;
-                let alpha = bitmap[src_idx];
-
-                // Write BGRA (little-endian ARGB) with foreground colour
-                pixels[dst_idx] = fg_b;
-                pixels[dst_idx + 1] = fg_g;
-                pixels[dst_idx + 2] = fg_r;
-                pixels[dst_idx + 3] = alpha;
-            }
-        }
-
-        // Calculate position
+        // Calculate position in framebuffer
         let glyph_x = self.cursor_x + metrics.xmin as u32;
         let glyph_y =
             self.cursor_y + (FONT_SIZE as i32 - metrics.height as i32 - metrics.ymin) as u32;
 
-        // Blit to surface
-        let blit_params = BlitParams {
-            x: glyph_x,
-            y: glyph_y,
-            width: glyph_width as u32,
-            height: glyph_height as u32,
-            buffer_handle: glyph_buffer.handle().as_raw(),
-        };
+        // Composite glyph into framebuffer with alpha blending
+        let fb = self.framebuffer.as_mut_slice();
+        let stride = self.width;
 
-        send(
-            self.surface,
-            OP_SURFACE_BLIT,
-            &blit_params as *const BlitParams as usize,
-            0,
-            0,
-            0,
-        );
+        for py in 0..glyph_height {
+            let dst_y = glyph_y + py as u32;
+            if dst_y >= self.height {
+                break;
+            }
+            for px in 0..glyph_width {
+                let dst_x = glyph_x + px as u32;
+                if dst_x >= self.width {
+                    break;
+                }
+
+                let alpha = bitmap[py * glyph_width + px] as u16;
+                if alpha == 0 {
+                    continue;
+                }
+
+                let off = ((dst_y * stride + dst_x) * 4) as usize;
+
+                if alpha == 255 {
+                    // Fully opaque — direct write
+                    fb[off] = fg_b as u8;
+                    fb[off + 1] = fg_g as u8;
+                    fb[off + 2] = fg_r as u8;
+                    fb[off + 3] = 255;
+                } else {
+                    // Alpha blend over background
+                    let inv = 255 - alpha;
+                    fb[off] = ((fg_b * alpha + BG_B as u16 * inv) / 255) as u8;
+                    fb[off + 1] = ((fg_g * alpha + BG_G as u16 * inv) / 255) as u8;
+                    fb[off + 2] = ((fg_r * alpha + BG_R as u16 * inv) / 255) as u8;
+                    fb[off + 3] = 255;
+                }
+            }
+        }
+
+        self.mark_dirty(glyph_x, glyph_y, glyph_width as u32, glyph_height as u32);
 
         // Advance cursor
         self.cursor_x += metrics.advance_width as u32;
@@ -293,29 +340,42 @@ impl Terminal {
     /// Handle backspace, erasing the given character width
     pub fn backspace_width(&mut self, char_width: u32) {
         if self.cursor_x > MARGIN {
-            // Erase by drawing a rectangle over the previous character
             self.cursor_x = self.cursor_x.saturating_sub(char_width);
-
-            let fill_params = FillParams {
-                x: self.cursor_x,
-                y: self.cursor_y,
-                width: char_width,
-                height: LINE_HEIGHT,
-                colour: COLOUR_BACKGROUND,
-            };
-            send(
-                self.surface,
-                OP_SURFACE_FILL,
-                &fill_params as *const FillParams as usize,
-                0,
-                0,
-                0,
+            self.fb_fill(
+                self.cursor_x,
+                self.cursor_y,
+                char_width,
+                LINE_HEIGHT,
+                COLOUR_BACKGROUND,
             );
         }
     }
 
-    /// Flush the surface to display
-    pub fn flush(&self) {
+    /// Flush the surface to display.
+    ///
+    /// Blits the framebuffer to the window surface (if dirty), then
+    /// asks the compositor to present the frame.
+    pub fn flush(&mut self) {
+        if self.dirty.is_some() {
+            // Blit the full framebuffer to the window surface.
+            // All pixels are fully opaque so the kernel uses the fast copy path.
+            let blit_params = BlitParams {
+                x: 0,
+                y: 0,
+                width: self.width,
+                height: self.height,
+                buffer_handle: self.framebuffer.handle().as_raw(),
+            };
+            send(
+                self.surface,
+                OP_SURFACE_BLIT,
+                &blit_params as *const BlitParams as usize,
+                0,
+                0,
+                0,
+            );
+            self.dirty = None;
+        }
         send(self.surface, OP_SURFACE_FLUSH, 0, 0, 0, 0);
     }
 
@@ -440,6 +500,7 @@ impl Terminal {
 
     /// Render a Value::Table with proper column width calculation
     fn render_value_table(&mut self, table: &panda_abi::value::Table) {
+        let t0 = rdtsc();
         let num_cols = table.cols as usize;
         if num_cols == 0 {
             return;
@@ -471,6 +532,8 @@ impl Terminal {
                 }
             }
         }
+
+        let t1 = rdtsc();
 
         // Render headers if present
         if let Some(ref headers) = table.headers {
@@ -525,6 +588,13 @@ impl Terminal {
             self.newline();
         }
         self.flush();
+
+        let t2 = rdtsc();
+        environment::log(&alloc::format!(
+            "[terminal table timing] measure={} render={}",
+            t1 - t0,
+            t2 - t1
+        ));
     }
 
     /// Measure the display width of a Value in characters
@@ -782,10 +852,14 @@ libpanda::main! {
         return 1;
     };
 
+    environment::log("terminal: creating Terminal");
     let mut term = Terminal::new(surface, keyboard, mailbox, font, window_width, window_height);
+    environment::log("terminal: calling clear");
     term.clear();
+    environment::log("terminal: clear done");
 
     term.write_line("Panda OS Terminal");
+    environment::log("terminal: wrote first line");
     term.write_line("Type 'help' for available commands.");
     term.write_str("> ");
 

@@ -49,7 +49,11 @@ Working:
 
 - **Write coalescing**: Batch multiple small writes into single larger requests to reduce virtio overhead.
 
-### 4. Future work
+### 4. Security
+
+- **Enable SMAP (Supervisor Mode Access Prevention)**: The kernel currently does not enable SMAP. With SMAP, the CPU faults when kernel code accesses user-mapped pages without explicit `stac`/`clac` bracketing. This prevents the kernel from accidentally dereferencing user pointers. Requires auditing all kernel code that intentionally accesses userspace memory (syscall handlers, `UserAccess`, shared buffer blit paths) and wrapping those accesses with `stac`/`clac`.
+
+### 5. Future work
 
 - **Ext2 write support**: Currently ext2 is read-only.
 

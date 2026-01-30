@@ -73,7 +73,6 @@ run: build ext2-image
 		-drive file=$(EXT2_IMAGE),format=raw,if=none,id=ext2disk \
 		-device virtio-blk-pci,drive=ext2disk \
 		-no-shutdown -no-reboot \
-		-display gtk \
 		-monitor vc
 
 # Create ext2 test disk image
