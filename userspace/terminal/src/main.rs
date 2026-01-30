@@ -8,6 +8,7 @@ mod commands;
 mod input;
 mod render;
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use fontdue::{Font, FontSettings};
@@ -97,6 +98,8 @@ pub struct Terminal {
     framebuffer: Buffer,
     /// Dirty region tracking for batched blits
     dirty: Option<DirtyRect>,
+    /// Glyph cache: avoids re-rasterizing the same character repeatedly
+    glyph_cache: BTreeMap<char, (fontdue::Metrics, Vec<u8>)>,
 }
 
 impl Terminal {
@@ -109,8 +112,7 @@ impl Terminal {
         height: u32,
     ) -> Self {
         // Measure average character width using 'M' (a wide character)
-        let (metrics, _) = font.rasterize('M', FONT_SIZE);
-        let avg_char_width = metrics.advance_width as u32;
+        let avg_char_width = font.metrics('M', FONT_SIZE).advance_width as u32;
 
         // Allocate persistent framebuffer for the entire window surface
         let fb_size = (width * height * 4) as usize;
@@ -133,6 +135,7 @@ impl Terminal {
             avg_char_width,
             framebuffer,
             dirty: None,
+            glyph_cache: BTreeMap::new(),
         }
     }
 
@@ -140,7 +143,7 @@ impl Terminal {
     pub fn measure_text(&self, text: &str) -> u32 {
         let mut width = 0u32;
         for ch in text.chars() {
-            let (metrics, _) = self.font.rasterize(ch, FONT_SIZE);
+            let metrics = self.font.metrics(ch, FONT_SIZE);
             width += metrics.advance_width as u32;
         }
         width
@@ -148,8 +151,7 @@ impl Terminal {
 
     /// Measure the pixel width of a single character
     pub fn measure_char(&self, ch: char) -> u32 {
-        let (metrics, _) = self.font.rasterize(ch, FONT_SIZE);
-        metrics.advance_width as u32
+        self.font.metrics(ch, FONT_SIZE).advance_width as u32
     }
 
     /// Clear the screen
@@ -254,7 +256,12 @@ impl Terminal {
         fg: u32,
         _bg: Option<u32>,
     ) -> Result<(), &'static str> {
-        let (metrics, bitmap) = self.font.rasterize(ch, FONT_SIZE);
+        if !self.glyph_cache.contains_key(&ch) {
+            let (m, b) = self.font.rasterize(ch, FONT_SIZE);
+            self.glyph_cache.insert(ch, (m, b));
+        }
+        let (metrics, bitmap) = self.glyph_cache.get(&ch).unwrap();
+        let metrics = *metrics;
 
         if metrics.width == 0 || metrics.height == 0 {
             // Space or non-visible character - just advance cursor
@@ -432,14 +439,12 @@ impl Terminal {
                 }
             }
         }
-        self.flush();
     }
 
     /// Write a line (string + newline) to the terminal
     pub fn write_line(&mut self, s: &str) {
         self.write_str(s);
         self.newline();
-        self.flush();
     }
 
     /// Render a Value object (for structured pipeline data)
@@ -862,6 +867,7 @@ libpanda::main! {
     environment::log("terminal: wrote first line");
     term.write_line("Type 'help' for available commands.");
     term.write_str("> ");
+    term.flush();
 
     let mut shift_pressed = false;
 
@@ -880,6 +886,7 @@ libpanda::main! {
                 Event::Process(ProcessEvent::Exited) => {
                     term.handle_child_exit(handle);
                     term.write_str("> ");
+                    term.flush();
                 }
                 _ => {}
             }
