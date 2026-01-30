@@ -14,7 +14,7 @@ mod state;
 pub mod waker;
 
 pub use context::Context;
-pub use exec::{return_from_interrupt, return_from_syscall};
+pub use exec::{return_from_deferred_syscall, return_from_interrupt, return_from_syscall};
 pub use info::ProcessInfo;
 pub use state::{InterruptFrame, SavedGprs, SavedState};
 pub use waker::{ProcessWaker, Waker};
@@ -75,15 +75,21 @@ pub struct PendingSyscall {
     pub future: spinning_top::Spinlock<
         Pin<Box<dyn Future<Output = crate::syscall::user_ptr::SyscallResult> + Send>>,
     >,
+    /// Callee-saved registers captured when the syscall went Pending.
+    /// Must be restored before returning to userspace, since the normal
+    /// pop epilogue in syscall_entry is bypassed for deferred syscalls.
+    pub callee_saved: crate::syscall::CalleeSavedRegs,
 }
 
 impl PendingSyscall {
     /// Create a new pending syscall from a future returning SyscallResult.
     pub fn new(
         future: Pin<Box<dyn Future<Output = crate::syscall::user_ptr::SyscallResult> + Send>>,
+        callee_saved: crate::syscall::CalleeSavedRegs,
     ) -> Self {
         Self {
             future: spinning_top::Spinlock::new(future),
+            callee_saved,
         }
     }
 }
@@ -117,6 +123,9 @@ pub struct Process {
     /// Pending async syscall future. When set, the process is blocked waiting
     /// for this future to complete. The scheduler polls it when the process is woken.
     pending_syscall: Option<PendingSyscall>,
+    /// Callee-saved registers captured at yield time. Used by the resume path
+    /// to restore rbx/rbp/r12-r15 before sysretq.
+    yield_callee_saved: Option<crate::syscall::CalleeSavedRegs>,
 }
 
 impl Process {
@@ -198,6 +207,7 @@ impl Process {
             info: Arc::new(ProcessInfo::new(id)),
             buffer_free_ranges,
             pending_syscall: None,
+            yield_callee_saved: None,
         })
     }
 
@@ -255,12 +265,24 @@ impl Process {
         self.sp = VirtAddr::new(state.rsp);
     }
 
-    /// Set only the IP/SP for resumption (used by yield).
-    /// Does NOT set saved_state, so registers won't be restored.
-    pub fn set_resume_point(&mut self, ip: VirtAddr, sp: VirtAddr) {
+    /// Set IP/SP and callee-saved registers for resumption (used by yield).
+    /// Does NOT set saved_state — callee-saved regs are restored via
+    /// `return_from_deferred_syscall` instead.
+    pub fn set_resume_point(
+        &mut self,
+        ip: VirtAddr,
+        sp: VirtAddr,
+        callee_saved: crate::syscall::CalleeSavedRegs,
+    ) {
         self.ip = ip;
         self.sp = sp;
         self.saved_state = None;
+        self.yield_callee_saved = Some(callee_saved);
+    }
+
+    /// Take and clear the yield callee-saved registers.
+    pub fn take_yield_callee_saved(&mut self) -> Option<crate::syscall::CalleeSavedRegs> {
+        self.yield_callee_saved.take()
     }
 
     /// Get the saved state, if any.

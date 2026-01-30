@@ -112,7 +112,7 @@ extern "sysv64" fn syscall_handler(
     code: usize,
     return_rip: usize,
     user_rsp: usize,
-    _callee_saved: *const CalleeSavedRegs,
+    callee_saved: *const CalleeSavedRegs,
 ) -> isize {
     // Disable interrupts for the entire syscall to prevent race conditions
     let flags = x86_64::instructions::interrupts::are_enabled();
@@ -127,6 +127,12 @@ extern "sysv64" fn syscall_handler(
             let handle = arg0 as u32;
             let operation = arg1 as u32;
 
+            // Safety: callee_saved points to registers pushed by syscall_entry
+            // on the kernel stack, valid for the duration of this call.
+            // Use read_volatile to ensure the copy happens immediately,
+            // before the compiler's register allocator overwrites the area.
+            let callee_saved = unsafe { core::ptr::read_volatile(callee_saved) };
+
             // Phase 1: diverging operations that manipulate the scheduler directly
             // and never return a value to userspace. These use unsafe scheduler
             // functions and are kept here rather than in handler modules.
@@ -135,6 +141,7 @@ extern "sysv64" fn syscall_handler(
                     scheduler::yield_current(
                         VirtAddr::new(return_rip as u64),
                         VirtAddr::new(user_rsp as u64),
+                        callee_saved,
                     );
                 },
                 panda_abi::OP_PROCESS_EXIT => {
@@ -164,7 +171,7 @@ extern "sysv64" fn syscall_handler(
             drop(ua);
 
             // Phase 3: poll the future once and dispatch.
-            poll_and_dispatch(future, return_rip, user_rsp)
+            poll_and_dispatch(future, return_rip, user_rsp, callee_saved)
         }
     };
 
@@ -259,10 +266,17 @@ fn build_future(
 
 /// Poll a syscall future once. If ready, perform copy-out and return the result code.
 /// If pending, store the future as a PendingSyscall and yield to the scheduler.
+///
+/// When the future is `Pending`, the callee-saved registers are saved so they can
+/// be correctly restored when the process resumes (via `return_from_interrupt`).
+/// Without this, userspace would see corrupted rbx/rbp/r12-r15 after a blocking
+/// syscall — a bug that only manifests in release builds where the optimiser
+/// keeps values in callee-saved registers across syscalls.
 fn poll_and_dispatch(
     mut future: user_ptr::SyscallFuture,
     return_rip: usize,
     user_rsp: usize,
+    callee_saved: CalleeSavedRegs,
 ) -> isize {
     use crate::process::{PendingSyscall, ProcessWaker};
 
@@ -280,14 +294,18 @@ fn poll_and_dispatch(
             result.code
         }
         Poll::Pending => {
-            // Store as pending syscall and yield to the scheduler
+            // Store the pending future along with the callee-saved registers.
+            // When the future completes later, return_from_deferred_syscall
+            // restores rbx/rbp/r12-r15 before sysretq — without this,
+            // userspace would see corrupted callee-saved registers.
             scheduler::with_current_process(|proc| {
-                proc.set_pending_syscall(PendingSyscall::new(future));
+                proc.set_pending_syscall(PendingSyscall::new(future, callee_saved));
             });
             unsafe {
                 scheduler::yield_current(
                     VirtAddr::new(return_rip as u64),
                     VirtAddr::new(user_rsp as u64),
+                    callee_saved,
                 );
             }
         }

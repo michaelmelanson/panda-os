@@ -16,8 +16,8 @@ use crate::apic;
 use crate::executor;
 use crate::interrupts;
 use crate::process::{
-    Process, ProcessId, ProcessState, ProcessWaker, SavedState, return_from_interrupt,
-    return_from_syscall,
+    Process, ProcessId, ProcessState, ProcessWaker, SavedState, return_from_deferred_syscall,
+    return_from_interrupt, return_from_syscall,
 };
 
 pub use rtc::RTC;
@@ -390,26 +390,30 @@ pub unsafe fn exec_next_runnable() -> ! {
                     // Poll the future without holding the scheduler lock
                     let result = pending.future.lock().as_mut().poll(&mut cx);
 
-                    // If pending, put the syscall back; if ready, it will be discarded
                     if result.is_pending() {
+                        // Future not ready — put the pending syscall back
                         let mut scheduler = SCHEDULER.write();
                         let process = scheduler.as_mut().unwrap().processes.get_mut(&pid).unwrap();
                         process.set_pending_syscall(pending);
+                        Some((Poll::Pending, None))
+                    } else {
+                        // Future completed — keep callee_saved for the return path
+                        Some((result, Some(pending.callee_saved)))
                     }
-
-                    Some(result)
                 } else {
                     None
                 };
 
                 match poll_result {
-                    Some(Poll::Ready(result)) => {
-                        // Future completed - clear pending syscall and return result
+                    Some((Poll::Ready(result), Some(callee_saved))) => {
+                        // Future completed - return result to userspace.
+                        // Use return_from_deferred_syscall to restore the callee-saved
+                        // registers (rbx/rbp/r12-r15) that were captured when the
+                        // syscall went Pending, then sysretq with the result in rax.
                         let (ip, sp, page_table) = {
                             let mut scheduler = SCHEDULER.write();
                             let scheduler = scheduler.as_mut().unwrap();
                             let process = scheduler.processes.get_mut(&pid).unwrap();
-                            process.take_pending_syscall();
                             scheduler.current_process = pid;
                             let (ip, sp, page_table, _) = process.exec_params();
                             (ip, sp, page_table)
@@ -431,13 +435,15 @@ pub unsafe fn exec_next_runnable() -> ! {
                             pid,
                             result.code,
                             ip.as_u64(),
-                            sp.as_u64()
+                            sp.as_u64(),
                         );
                         start_timer_with_deadline();
-                        // Return to userspace with the syscall result in rax
-                        unsafe { return_from_syscall(ip, sp, result.code as u64) }
+                        // Return to userspace, restoring callee-saved regs before sysretq
+                        unsafe {
+                            return_from_deferred_syscall(ip, sp, result.code as u64, &callee_saved)
+                        }
                     }
-                    Some(Poll::Pending) => {
+                    Some((Poll::Pending, _)) | Some((Poll::Ready(_), None)) => {
                         // Future not ready - put process back to blocked state
                         {
                             let mut scheduler = SCHEDULER.write();
@@ -449,18 +455,16 @@ pub unsafe fn exec_next_runnable() -> ! {
                     }
                     None => {
                         // No pending syscall - normal execution path
-                        // Update current_process before jumping to userspace
-                        {
+                        // Get process execution parameters and yield callee-saved regs
+                        let (ip, sp, page_table, saved_state, yield_callee_saved) = {
                             let mut scheduler = SCHEDULER.write();
                             let scheduler = scheduler.as_mut().unwrap();
                             scheduler.current_process = pid;
-                        }
-
-                        // Get process execution parameters
-                        let (ip, sp, page_table, saved_state) = {
-                            let scheduler = SCHEDULER.read();
-                            let scheduler = scheduler.as_ref().unwrap();
-                            scheduler.get_process_exec_params(pid)
+                            let process = scheduler.processes.get_mut(&pid).unwrap();
+                            let saved_state = process.take_saved_state();
+                            let yield_cs = process.take_yield_callee_saved();
+                            let (ip, sp, pt, _) = process.exec_params();
+                            (ip, sp, pt, saved_state, yield_cs)
                         };
 
                         debug!("exec_next_runnable: jumping to userspace (pid={:?})", pid);
@@ -469,10 +473,13 @@ pub unsafe fn exec_next_runnable() -> ! {
                         }
                         start_timer_with_deadline();
                         if let Some(state) = saved_state {
-                            // Resuming from preemption or blocked syscall - restore full state
+                            // Resuming from preemption - restore full state
                             unsafe { return_from_interrupt(&state) }
+                        } else if let Some(callee_saved) = yield_callee_saved {
+                            // Resuming from yield - restore callee-saved regs via sysretq
+                            unsafe { return_from_deferred_syscall(ip, sp, 0, &callee_saved) }
                         } else {
-                            // Fresh start or yield - use fast sysretq path
+                            // Fresh start - no registers to restore
                             unsafe { return_from_syscall(ip, sp, 0) }
                         }
                     }
@@ -619,12 +626,15 @@ unsafe fn suspend_current(
 ///
 /// # Safety
 /// This function does not return to the caller. It switches to a different process.
-pub unsafe fn yield_current(return_ip: x86_64::VirtAddr, return_sp: x86_64::VirtAddr) -> ! {
+pub unsafe fn yield_current(
+    return_ip: x86_64::VirtAddr,
+    return_sp: x86_64::VirtAddr,
+    callee_saved: crate::syscall::CalleeSavedRegs,
+) -> ! {
     unsafe {
         suspend_current(
             |process, _| {
-                // Save where to resume (only RIP/RSP needed for yield - no register restore)
-                process.set_resume_point(return_ip, return_sp);
+                process.set_resume_point(return_ip, return_sp, callee_saved);
             },
             ProcessState::Runnable,
         )

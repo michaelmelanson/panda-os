@@ -45,6 +45,59 @@ pub unsafe fn return_from_syscall(ip: VirtAddr, sp: VirtAddr, result: u64) -> ! 
     }
 }
 
+/// Return to userspace after a deferred syscall completes.
+///
+/// Like `return_from_syscall`, uses the fast `sysretq` path, but first restores
+/// the callee-saved registers (rbx, rbp, r12–r15) from the `CalleeSavedRegs`
+/// that were captured when the syscall went `Pending`.
+///
+/// This is needed because the normal restore path (the `pop` epilogue in
+/// `syscall_entry`) is skipped when a process yields mid-syscall — the
+/// scheduler resumes the process directly, bypassing that epilogue.
+///
+/// # Safety
+/// Must be called with no locks held, as this function never returns.
+pub unsafe fn return_from_deferred_syscall(
+    ip: VirtAddr,
+    sp: VirtAddr,
+    result: u64,
+    saved: &crate::syscall::CalleeSavedRegs,
+) -> ! {
+    let rflags = RFlags::INTERRUPT_FLAG.bits();
+
+    use x86_64::registers::model_specific::KernelGsBase;
+    let kernel_gs = &crate::syscall::gdt::USER_STACK_PTR as *const usize as u64;
+    KernelGsBase::write(x86_64::VirtAddr::new(kernel_gs));
+
+    debug!(
+        "Returning to userspace (deferred): IP={:#x}, SP={:#x}, result={:#x}",
+        ip.as_u64(),
+        sp.as_u64(),
+        result
+    );
+
+    unsafe {
+        asm!(
+            // Restore callee-saved registers from the struct
+            "mov rbx, [r15]",       // offset 0x00: rbx
+            "mov rbp, [r15 + 8]",   // offset 0x08: rbp
+            "mov r12, [r15 + 16]",  // offset 0x10: r12
+            "mov r13, [r15 + 24]",  // offset 0x18: r13
+            "mov r14, [r15 + 32]",  // offset 0x20: r14
+            // r15 itself — load last since we're using it as the base pointer
+            "mov r15, [r15 + 40]",  // offset 0x28: r15
+            "mov rsp, {stack_pointer}",
+            "sysretq",
+            in("rcx") ip.as_u64(),
+            in("r11") rflags,
+            in("rax") result,
+            in("r15") saved as *const crate::syscall::CalleeSavedRegs,
+            stack_pointer = in(reg) sp.as_u64(),
+            options(noreturn)
+        );
+    }
+}
+
 /// Return to userspace after an interrupt (e.g., timer preemption).
 ///
 /// Uses `iretq` which restores the full CPU state including RCX and R11.
