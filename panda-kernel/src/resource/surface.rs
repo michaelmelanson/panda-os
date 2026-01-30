@@ -205,6 +205,9 @@ impl FramebufferSurface {
     /// Get a pixel at the specified coordinates.
     /// Returns pixel in BGRA format (little-endian ARGB8888).
     pub fn get_pixel(&self, x: u32, y: u32) -> [u8; 4] {
+        if x >= self.info.width || y >= self.info.height {
+            return [0, 0, 0, 0];
+        }
         unsafe {
             let offset = (y * self.info.stride + x * 4) as isize;
             let ptr = self.framebuffer.offset(offset);
@@ -215,10 +218,12 @@ impl FramebufferSurface {
     /// Set a pixel at the specified coordinates.
     /// Pixel should be in BGRA format (little-endian ARGB8888).
     pub fn set_pixel(&mut self, x: u32, y: u32, pixel: [u8; 4]) {
+        if x >= self.info.width || y >= self.info.height {
+            return;
+        }
         unsafe {
             let offset = (y * self.info.stride + x * 4) as isize;
             let ptr = self.framebuffer.offset(offset);
-            // Direct copy - framebuffer is B8G8R8A8, pixel is [B,G,R,A]
             *ptr = pixel[0]; // B
             *ptr.offset(1) = pixel[1]; // G
             *ptr.offset(2) = pixel[2]; // R

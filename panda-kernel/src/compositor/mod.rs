@@ -66,9 +66,21 @@ impl WindowManager {
             return;
         }
 
+        let fb_width = self.framebuffer.width();
+        let fb_height = self.framebuffer.height();
+        let fb_bounds = Rect {
+            x: 0,
+            y: 0,
+            width: fb_width,
+            height: fb_height,
+        };
+
         // Process each dirty region
         for i in 0..self.dirty_regions.len() {
-            let dirty_rect = self.dirty_regions[i];
+            // Clip dirty region to framebuffer bounds
+            let Some(dirty_rect) = self.dirty_regions[i].intersection(&fb_bounds) else {
+                continue;
+            };
 
             // Clear region to background
             self.clear_region(&dirty_rect, BACKGROUND_COLOR);
@@ -137,7 +149,6 @@ impl WindowManager {
             for x in 0..clip_rect.width {
                 let src_offset = (((src_y + y) * window_size.0 + (src_x + x)) * 4) as usize;
 
-                // Bounds check
                 if src_offset + 4 > buffer.len() {
                     continue;
                 }
@@ -157,10 +168,7 @@ impl WindowManager {
                 let dst_x = clip_rect.x + x;
                 let dst_y = clip_rect.y + y;
 
-                // Get destination pixel
                 let dst_pixel = framebuffer.get_pixel(dst_x, dst_y);
-
-                // Blend and write back
                 let blended = alpha_blend(src_pixel, dst_pixel);
                 framebuffer.set_pixel(dst_x, dst_y, blended);
             }
