@@ -90,7 +90,7 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
     log::info!("Display resolution: {}x{}", width, height);
 
     let framebuffer = gpu
-        .setup_framebuffer_with_resolution(width, height)
+        .change_resolution(width, height)
         .expect("Could not create framebuffer");
     let framebuffer = VirtAddr::new(framebuffer.as_ptr() as u64);
 
