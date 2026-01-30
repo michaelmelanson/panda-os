@@ -8,6 +8,8 @@ The `init` process (`userspace/init/src/main.rs`) is a hardcoded Rust binary tha
 
 Build a service manager that reads declarative TOML service configurations, computes a plan (a DAG of actions) to bring the system into the desired state, and executes it. The service manager continues running as a supervisor — monitoring services, restarting them according to policy, and accepting runtime commands to start, stop, add, and remove services. Runtime changes go through the same planning pipeline: compute a new plan from the delta between current state and desired state, then execute it.
 
+As part of this effort, establish a **service protocol framework** — a common infrastructure for defining typed, versioned IPC protocols between services. This framework enables any userspace service (not just the service manager) to expose a typed API over channels, with capability negotiation at connection time. The service manager is the first consumer, but the framework is designed for reuse by future services such as a userspace compositor.
+
 ## Constraints
 
 - **Filesystem is read-only (ext2 has no write support).** Service configs are baked into the ext2 image at build time. Runtime service additions come via IPC commands.
@@ -15,6 +17,255 @@ Build a service manager that reads declarative TOML service configurations, comp
 - **Userspace is `no_std` + `alloc`.** Any dependencies must work without `std`.
 
 ## Design
+
+### Service protocol framework
+
+The system needs a common way for processes to communicate over channels with typed, self-describing messages. Today the terminal protocol (`Request`/`Event` in `panda-abi/src/terminal.rs`) is the only such protocol, and it uses hardcoded TLV message types with no handshake or capability negotiation. The service protocol framework generalizes this pattern so any service can define a typed protocol and any client can connect with compile-time type safety.
+
+#### Protocol and Service traits
+
+The framework is built on two traits in `panda-abi`:
+
+```rust
+/// Defines a wire protocol for a channel connection.
+///
+/// A protocol specifies the message types exchanged between two endpoints.
+/// Both sides of a connection depend on the same Protocol implementation
+/// (typically via a shared API crate) for type safety.
+trait Protocol {
+    /// Unique identifier for this protocol's wire format.
+    /// Used during handshake to verify both sides speak the same protocol.
+    /// A new UUID should be generated when the wire format changes in a
+    /// backwards-incompatible way.
+    const UUID: [u8; 16];
+
+    /// Request type (initiator -> responder).
+    type Request: Encode + Decode;
+
+    /// Response type (responder -> initiator).
+    type Response: Encode + Decode;
+
+    /// Event type (responder -> initiator, unsolicited).
+    type Event: Encode + Decode;
+}
+
+/// A discoverable service registered in the service scheme.
+///
+/// Extends Protocol with a name used for service:/ discovery.
+/// Not all protocols are services — HANDLE_PARENT uses the terminal
+/// protocol but is not discoverable via the service scheme.
+trait Service: Protocol {
+    /// The service name used for `service:/{name}` resolution.
+    const NAME: &str;
+}
+```
+
+The separation between `Protocol` and `Service` is important: a protocol defines message types and wire format, while a service adds discoverability via the `service:` scheme. The terminal protocol implements `Protocol` but not `Service` — you inherit a terminal connection from your parent via `HANDLE_PARENT`, you don't discover it by name. A compositor would implement both — it has typed messages and is discoverable via `service:/compositor`. This distinction matters because there can be many terminals (each a process with channels to its children), but services registered in the scheme are typically singletons.
+
+#### Message framing
+
+Every message on a protocol channel has a common envelope so the receiver can distinguish message kinds without knowing the specific protocol:
+
+```
++----------+----------+----------+-------------+
+| Kind(u8) | Type(u16)| Len(u32) | Payload ... |
++----------+----------+----------+-------------+
+```
+
+Where `Kind` is:
+- `0x00` — Request (initiator -> responder)
+- `0x01` — Response (responder -> initiator)
+- `0x02` — Event (responder -> initiator, unsolicited)
+- `0x03` — Handshake
+
+The `Type` and `Len` fields are the existing TLV header used by the terminal protocol. The `Kind` byte is prepended, making the framing backwards-distinguishable from the existing terminal protocol (which starts with a `u16` type field, never `0x00`-`0x03` in the high byte).
+
+#### Handshake
+
+Every protocol connection begins with a handshake. The initiator (client or parent) sends a `Hello`, the responder (service or child) replies with `Welcome` or `Rejected`:
+
+```
+Initiator -> Responder:  Hello { protocol_uuid: [u8; 16], capabilities: Vec<String> }
+Responder -> Initiator:  Welcome { capabilities: Vec<String> }
+                         or Rejected { reason: String }
+```
+
+The responder checks the UUID first. If it doesn't match the protocol it implements, it sends `Rejected`. Otherwise, it examines the offered capabilities and responds with the subset it supports. Both sides then know the agreed feature set for the lifetime of the connection.
+
+Capabilities are protocol-defined strings. Each protocol's API crate defines its capability constants:
+
+```rust
+// in service-manager-api
+pub mod capability {
+    pub const RUNTIME_ADD: &str = "runtime-add";
+    pub const LOG_STREAMING: &str = "log-streaming";
+}
+```
+
+A protocol with no optional features sends an empty capabilities list — the UUID alone establishes that both sides speak the same language.
+
+#### API crate pattern
+
+Each service publishes a `service-{name}-api` crate containing:
+- A zero-sized struct implementing `Protocol` (and `Service` if discoverable)
+- The `Request`, `Response`, and `Event` enums with `Encode`/`Decode` implementations
+- Capability constants
+
+For example, a compositor service API crate:
+
+```rust
+// service-compositor-api/src/lib.rs
+
+pub struct Compositor;
+
+impl Protocol for Compositor {
+    const UUID: [u8; 16] = [0x8a, 0x3f, ...];  // generated once
+    type Request = CompositorRequest;
+    type Response = CompositorResponse;
+    type Event = CompositorEvent;
+}
+
+impl Service for Compositor {
+    const NAME: &str = "compositor";
+}
+
+pub enum CompositorRequest {
+    CreateSurface { width: u32, height: u32 },
+    DestroySurface { id: u32 },
+    SubmitBuffer { surface_id: u32, buffer: Vec<u8> },
+}
+
+pub enum CompositorResponse {
+    SurfaceCreated { id: u32 },
+    Ok,
+    Error { code: u16, message: String },
+}
+
+pub enum CompositorEvent {
+    SurfaceResized { id: u32, width: u32, height: u32 },
+}
+
+pub mod capability {
+    pub const MULTI_BUFFER: &str = "multi-buffer";
+    pub const HDR: &str = "hdr";
+}
+```
+
+The API crate has no implementation — just types and encoding. The service binary and client code both depend on this crate.
+
+#### Client and server wrappers
+
+`libpanda` provides typed wrappers generic over the traits:
+
+```rust
+/// A typed channel connection using a specific protocol.
+///
+/// Wraps a raw channel handle with typed send/receive methods.
+/// Used for any protocol connection, whether established by spawn
+/// (HANDLE_PARENT) or by the service scheme.
+pub struct ProtocolChannel<P: Protocol> {
+    handle: Handle,
+    _marker: PhantomData<P>,
+}
+
+impl<P: Protocol> ProtocolChannel<P> {
+    /// Wrap an existing channel handle (e.g., HANDLE_PARENT).
+    pub fn from_handle(handle: Handle) -> Self { ... }
+
+    /// Perform the handshake as the initiator (client/parent).
+    pub fn handshake_initiate(&self, capabilities: &[&str]) -> Result<Vec<String>> { ... }
+
+    /// Perform the handshake as the responder (service/child).
+    pub fn handshake_respond(&self, supported: &[&str]) -> Result<Vec<String>> { ... }
+
+    /// Send a request.
+    pub fn send_request(&self, request: &P::Request) -> Result<()> { ... }
+
+    /// Receive and decode the next message (request, response, or event).
+    pub fn recv(&self, buf: &mut [u8]) -> Result<Message<P>> { ... }
+
+    /// Send a request and block until the response arrives.
+    pub fn call(&self, request: &P::Request) -> Result<P::Response> { ... }
+
+    /// Send a response.
+    pub fn send_response(&self, response: &P::Response) -> Result<()> { ... }
+
+    /// Send an unsolicited event.
+    pub fn send_event(&self, event: &P::Event) -> Result<()> { ... }
+
+    /// Get the underlying handle (for mailbox attachment).
+    pub fn handle(&self) -> Handle { ... }
+}
+
+/// A decoded message from a protocol channel.
+pub enum Message<P: Protocol> {
+    Request(P::Request),
+    Response(P::Response),
+    Event(P::Event),
+}
+
+/// Client-side connection to a discoverable service.
+///
+/// Connects via the service scheme and performs the handshake automatically.
+pub struct ServiceClient<S: Service> {
+    channel: ProtocolChannel<S>,
+    capabilities: Vec<String>,
+}
+
+impl<S: Service> ServiceClient<S> {
+    /// Connect to a service by opening service:/{name} and performing the handshake.
+    pub fn connect(mailbox: Handle, events: u32, capabilities: &[&str]) -> Result<Self> {
+        let handle = environment::open(
+            &format!("service:/{}", S::NAME),
+            mailbox, events,
+        )?;
+        let channel = ProtocolChannel::from_handle(handle);
+        let negotiated = channel.handshake_initiate(capabilities)?;
+        Ok(Self { channel, capabilities: negotiated })
+    }
+
+    /// Get the negotiated capabilities.
+    pub fn capabilities(&self) -> &[String] { &self.capabilities }
+
+    /// Send a request and wait for the response.
+    pub fn call(&self, request: &S::Request) -> Result<S::Response> {
+        self.channel.call(request)
+    }
+
+    /// Send a request without waiting for a response.
+    pub fn send(&self, request: &S::Request) -> Result<()> {
+        self.channel.send_request(request)
+    }
+
+    /// Get the underlying protocol channel.
+    pub fn channel(&self) -> &ProtocolChannel<S> { &self.channel }
+}
+```
+
+#### Terminal protocol retrofit (future work)
+
+The existing terminal protocol (`terminal::Request`/`terminal::Event`) is conceptually a `Protocol` implementation. Once the framework is in place, it can be retrofitted:
+
+```rust
+pub struct TerminalProtocol;
+
+impl Protocol for TerminalProtocol {
+    const UUID: [u8; 16] = [/* fixed UUID for terminal protocol */];
+    type Request = terminal::Request;
+    type Response = terminal::Event;  // QueryResponse, InputResponse
+    type Event = terminal::Event;     // Signal, Resize, Key
+}
+```
+
+The terminal is not a `Service` because it's not discovered by name — it's a parent-child connection inherited via `HANDLE_PARENT`. Multiple terminals coexist because each is its own process with channels to its children.
+
+Retrofitting requires:
+1. Adding the `Kind` byte prefix to terminal messages
+2. Adding the handshake to the startup sequence (after the existing startup message, or replacing it)
+3. Updating `libpanda/src/terminal.rs` to use `ProtocolChannel<TerminalProtocol>`
+4. Updating the terminal emulator to respond to the handshake
+
+This is deferred until after the service manager is working. The service manager acts as a minimal terminal protocol peer for its children using the existing unframed `Request`/`Event` messages. The retrofit unifies the patterns but is not a prerequisite.
 
 ### TOML parser
 
@@ -169,9 +420,9 @@ When a stop command arrives (or a service needs to be stopped for a restart/remo
 3. If `EVENT_PROCESS_EXITED` fires before the timer → clean exit, transition to Stopped.
 4. If `EVENT_TIMER` fires first → call `process::kill(handle)` (kernel SIGKILL), wait for exit, transition to Stopped.
 
-### IPC architecture: control plane and data plane
+### IPC architecture
 
-Following the panda IPC conventions (see [docs/IPC.md](../docs/IPC.md) and [docs/PIPELINES.md](../docs/PIPELINES.md)), the service manager uses the **control plane** (`HANDLE_PARENT` channel) for communication with managed services, and a separate **command channel** for management commands from tools like `svcctl`.
+Following the panda IPC conventions (see [docs/IPC.md](../docs/IPC.md) and [docs/PIPELINES.md](../docs/PIPELINES.md)), the service manager uses the **control plane** (`HANDLE_PARENT` channel) for communication with managed services, and a **service protocol connection** for management commands from tools like `svcctl`.
 
 **Service manager ↔ managed services:**
 
@@ -185,61 +436,70 @@ This means services don't need special awareness of the service manager — they
 
 **Service manager ↔ management tools (`svcctl`):**
 
-All resource schemes are currently kernel-side only — there is no mechanism for a userspace process to register itself as a scheme handler. To allow arbitrary processes (like `svcctl`) to connect to the service manager, add a **kernel-side `service:` scheme** that brokers channel connections to the init process.
+The service manager exposes a typed protocol via the service scheme. `svcctl` connects using `ServiceClient<ServiceManager>`, which opens `service:/manager`, performs the UUID + capabilities handshake, and then exchanges typed `ManagerRequest`/`ManagerResponse` messages.
 
-**How it works:**
+The service manager protocol is defined in `service-manager-api`:
+
+```rust
+pub struct ServiceManager;
+
+impl Protocol for ServiceManager {
+    const UUID: [u8; 16] = [/* generated */];
+    type Request = ManagerRequest;
+    type Response = ManagerResponse;
+    type Event = ManagerEvent;
+}
+
+impl Service for ServiceManager {
+    const NAME: &str = "manager";
+}
+
+pub enum ManagerRequest {
+    Start { name: String },
+    Stop { name: String },
+    Restart { name: String },
+    Status { name: String },
+    List,
+    Add { name: String, config: String },  // TOML content
+    Remove { name: String },
+}
+
+pub enum ManagerResponse {
+    Ok { message: String },
+    Error { message: String },
+    Status {
+        name: String,
+        state: String,
+        restart_count: u32,
+    },
+    List { services: Value },  // Value::Table for pipeline compatibility
+}
+
+pub enum ManagerEvent {
+    ServiceStateChanged {
+        name: String,
+        old_state: String,
+        new_state: String,
+    },
+}
+```
+
+Using typed requests instead of `Value::Map` commands provides compile-time safety — `svcctl` can't send a malformed command, and the service manager's dispatch is a `match` on `ManagerRequest` variants rather than string key lookups.
+
+The `List` response uses `Value::Table` so that `svcctl list | grep running` works with the structured pipeline system. `svcctl` writes the response `Value` to `HANDLE_PARENT` (or `HANDLE_STDOUT` in a pipeline).
+
+**Service scheme broker:**
+
+All resource schemes are currently kernel-side only. To allow arbitrary processes to connect to the service manager, add a **kernel-side `service:` scheme** that brokers channel connections.
 
 1. At boot, after init creates its mailbox, it registers a channel endpoint with the kernel via a new syscall `OP_SERVICE_REGISTER`. The kernel stores this endpoint in the `service:` scheme handler.
 2. When any process opens `service:/manager`, the kernel-side `ServiceScheme` handler creates a new channel pair, sends one endpoint to init (via the registered channel — init receives it as a message containing the new handle), and returns the other endpoint to the caller.
 3. Init attaches each incoming connection to its mailbox with `EVENT_CHANNEL_READABLE`.
+4. The handshake occurs over the new channel using the protocol framework — init verifies the UUID matches the `ServiceManager` protocol and negotiates capabilities.
 
-This is a minimal naming service — init registers once, and the kernel brokers connections. The pattern could later be generalized to let any process register named services, but for now only init uses it.
+This is a minimal naming service — init registers once, and the kernel brokers connections. The pattern could later be generalized to let any process register named services.
 
 **Alternative considered**: having init spawn `svcctl` directly so `HANDLE_PARENT` connects them. This doesn't work because users launch `svcctl` from the terminal, not from init. The kernel-side broker is necessary for process discovery.
-
-Commands and responses use `Value` encoding for consistency with the pipeline system:
-
-```rust
-// Command (svcctl → service manager via channel)
-Value::Map({
-    "action": Value::String("start"),
-    "name": Value::String("networkd"),
-})
-
-// Command: add a new service at runtime
-Value::Map({
-    "action": Value::String("add"),
-    "name": Value::String("new-daemon"),
-    "config": Value::String("...TOML content..."),
-})
-
-// Response (service manager → svcctl via channel)
-Value::Map({
-    "ok": Value::Bool(true),
-    "message": Value::String("service started"),
-})
-
-// Status query response
-Value::Map({
-    "ok": Value::Bool(true),
-    "name": Value::String("networkd"),
-    "state": Value::String("running"),
-    "restarts": Value::Int(0),
-})
-
-// List response — uses Table for structured display in pipelines
-Value::Table(Table {
-    cols: 3,
-    headers: Some(["Name", "State", "Restarts"]),
-    cells: [
-        "terminal", "running", 0,
-        "networkd", "running", 0,
-        "logger",   "exited",  3,
-    ],
-})
-```
-
-Using `Value` means `svcctl list | grep running` works out of the box with the structured pipeline system — `grep` can filter `Table` rows.
 
 **Stdout handling for services:**
 
@@ -269,7 +529,8 @@ The service manager's event loop handles all events uniformly through a single m
    c. Dispatch:
       - EVENT_PROCESS_EXITED: record exit, apply restart policy (create restart timer if needed), mark plan step complete, check if new steps are unblocked
       - EVENT_CHANNEL_READABLE (parent channel): forward service log output
-      - EVENT_CHANNEL_READABLE (command channel): parse command, run planner to compute delta plan, begin executing new plan steps
+      - EVENT_CHANNEL_READABLE (broker channel): accept new connection, perform handshake, attach to mailbox
+      - EVENT_CHANNEL_READABLE (command channel): decode ManagerRequest, dispatch, send ManagerResponse
       - EVENT_TIMER (restart timer): re-spawn service
       - EVENT_TIMER (stop grace period): escalate to SIGKILL
       - EVENT_TIMER (stability timer): reset restart counter
@@ -337,14 +598,14 @@ struct Plan {
     warnings: Vec<String>,
 }
 
-struct ServiceManager {
+struct ServiceManagerState {
     services: Vec<Service>,
     name_to_index: BTreeMap<String, usize>,
     current_plan: Option<Plan>,
     mailbox: Mailbox,
     handle_to_index: BTreeMap<u32, usize>,  // process/timer handle → service index
     broker_channel: Handle,                   // receives new connection handles from kernel
-    command_channels: Vec<Handle>,             // open management connections
+    command_channels: Vec<ProtocolChannel<ServiceManager>>,  // typed management connections
 }
 ```
 
@@ -398,15 +659,22 @@ This eliminates all need for a time syscall in the service manager — timers ex
 - `userspace/libpanda/src/sys/env.rs` — `create_timer()` raw wrapper
 - `userspace/libpanda/src/environment.rs` — `create_timer(ms: u64) -> Result<Handle>` public API
 
-### Phase 3: Service scheme
+### Phase 3: Service protocol framework
 
-All resource schemes are currently kernel-side only — there is no mechanism for a userspace process to register itself as a scheme handler. To allow arbitrary processes (like `svcctl`) to connect to the service manager, add a **kernel-side `service:` scheme** that brokers channel connections to the init process.
+Implement the `Protocol` trait, message framing, handshake, and client/server wrappers in `panda-abi` and `libpanda`. This is foundational infrastructure used by the service scheme (phase 4) and the service manager protocol (phase 8).
 
-1. At boot, after init creates its mailbox, it registers a channel endpoint with the kernel via a new syscall `OP_SERVICE_REGISTER`. The kernel stores this endpoint in the `service:` scheme handler.
-2. When any process opens `service:/manager`, the kernel-side `ServiceScheme` handler creates a new channel pair, sends one endpoint to init (via the registered channel — init receives it as a message containing the new handle), and returns the other endpoint to the caller.
-3. Init attaches each incoming connection to its mailbox with `EVENT_CHANNEL_READABLE`.
+**Files:**
+- `panda-abi/src/protocol.rs` — `Protocol` trait, `Service` trait, `MessageKind` enum (`Request`/`Response`/`Event`/`Handshake`), `Hello`/`Welcome`/`Rejected` handshake message types with `Encode`/`Decode` implementations, framing helpers for encoding/decoding the `Kind` byte prefix
+- `userspace/libpanda/src/protocol.rs` — `ProtocolChannel<P>` (typed channel wrapper with `send_request`, `send_response`, `send_event`, `recv`, `call`), `Message<P>` enum, handshake initiation/response methods
+- `userspace/libpanda/src/service.rs` — `ServiceClient<S>` (connection via `service:/` scheme + automatic handshake), convenience methods
 
-This is a minimal naming service — init registers once, and the kernel brokers connections. The pattern could later be generalized to let any process register named services, but for now only init uses it.
+### Phase 4: Service scheme
+
+Add a kernel-side `service:` scheme that brokers channel connections. The protocol framework from phase 3 provides the handshake that occurs after the channel is established.
+
+1. At boot, after init creates its mailbox, it registers a channel endpoint with the kernel via `OP_SERVICE_REGISTER`. The kernel stores this endpoint in the `service:` scheme handler.
+2. When any process opens `service:/manager`, the `ServiceScheme` handler creates a channel pair, sends one endpoint to init via the broker channel, returns the other to the caller.
+3. Init attaches each incoming connection to its mailbox. On first message, it performs the protocol handshake — verifying the UUID and negotiating capabilities.
 
 **Files:**
 - `panda-abi/src/lib.rs` — add `OP_SERVICE_REGISTER` operation code
@@ -415,13 +683,13 @@ This is a minimal naming service — init registers once, and the kernel brokers
 - `panda-kernel/src/syscall/environment.rs` — `handle_service_register()` creates a channel pair, stores one end in `ServiceScheme`, returns the other to the calling process (init)
 - `userspace/libpanda/src/environment.rs` — add `service_register()` API for init, and `open_service(name)` convenience wrapper around `environment::open("service:/name")`
 
-### Phase 4: TOML parsing and config
+### Phase 5: TOML parsing and config
 
 **Files:**
 - `userspace/init/Cargo.toml` — add `toml = { version = "0.9", default-features = false, features = ["parse"] }`
 - `userspace/init/src/config.rs` — `ServiceConfig` struct, `parse(name: &str, content: &str) -> Result<ServiceConfig>`, `scan_services(path: &str) -> Result<Vec<ServiceConfig>>`
 
-### Phase 5: Planner
+### Phase 6: Planner
 
 Implement the planning pipeline as a separate module.
 
@@ -430,15 +698,15 @@ The planner is stateless — it takes current state and desired state, returns a
 **Files:**
 - `userspace/init/src/plan.rs` — `validate()`, `detect_cycles()`, `diff()`, `topological_sort()`, `plan(current_state, desired_configs) -> Result<Plan>`
 
-### Phase 6: Service manager core
+### Phase 7: Service manager core
 
 **Files:**
 - `userspace/init/src/main.rs` — rewritten main loop
-- `userspace/init/src/manager.rs` — `ServiceManager` with event loop, plan execution, restart/stop/log-forwarding logic
+- `userspace/init/src/manager.rs` — `ServiceManagerState` with event loop, plan execution, restart/stop/log-forwarding logic
 
-**ServiceManager methods:**
+**ServiceManagerState methods:**
 ```rust
-impl ServiceManager {
+impl ServiceManagerState {
     fn new() -> Self
     fn load_and_plan(&mut self, configs: Vec<ServiceConfig>)
     fn execute_ready_steps(&mut self)
@@ -447,10 +715,10 @@ impl ServiceManager {
     fn handle_restart_timer(&mut self, handle: u32)
     fn handle_stop_timer(&mut self, handle: u32)
     fn handle_stability_timer(&mut self, handle: u32)
-    fn handle_command(&mut self, channel: Handle)
+    fn handle_new_connection(&mut self, broker_channel: Handle)
+    fn handle_command(&mut self, channel: &ProtocolChannel<ServiceManager>)
     fn handle_service_output(&mut self, handle: u32)
     fn stop_service(&mut self, index: usize)
-    fn apply_command(&mut self, command: Command)
 }
 ```
 
@@ -469,7 +737,7 @@ libpanda::main! {
         }
     };
 
-    let mut manager = ServiceManager::new();
+    let mut manager = ServiceManagerState::new();
     manager.load_and_plan(configs);
 
     for warning in &manager.current_plan_warnings() {
@@ -484,7 +752,18 @@ libpanda::main! {
 }
 ```
 
-### Phase 7: Service config files and boot test
+### Phase 8: Service manager API crate and `svcctl`
+
+Define the service manager's typed protocol in a shared API crate. Both init and `svcctl` depend on it.
+
+**Files:**
+- `userspace/service-manager-api/src/lib.rs` — `ServiceManager` struct implementing `Protocol` + `Service`, `ManagerRequest`/`ManagerResponse`/`ManagerEvent` enums with `Encode`/`Decode`, capability constants
+- `userspace/svcctl/src/main.rs` — CLI tool using `ServiceClient<ServiceManager>`: `svcctl start|stop|restart|status|list|add|remove [name] [options]`
+- `userspace/init/src/commands.rs` — `ManagerRequest` dispatch, response encoding via `ProtocolChannel<ServiceManager>`
+
+`svcctl` connects with `ServiceClient::<ServiceManager>::connect(...)`, sends typed `ManagerRequest` variants, receives `ManagerResponse`, and writes the result to `HANDLE_PARENT` (or `HANDLE_STDOUT` in a pipeline). The `List` response contains `Value::Table` for pipeline compatibility.
+
+### Phase 9: Service config files and boot test
 
 Add service definition files to the ext2 image build and verify the system boots with the new service manager.
 
@@ -496,17 +775,9 @@ Add service definition files to the ext2 image build and verify the system boots
 exec = "file:/mnt/terminal"
 ```
 
-### Phase 8: `svcctl` command-line tool
-
-**Files:**
-- `userspace/svcctl/src/main.rs` — CLI tool: `svcctl start|stop|restart|status|list|add [name] [options]`
-- `userspace/init/src/commands.rs` — command parsing (Value-based), dispatch, response encoding
-- `userspace/init/src/manager.rs` — add `handle_command()`, `apply_command()`. On receiving a new connection handle from the broker channel, attach it to the mailbox with `EVENT_CHANNEL_READABLE`.
-
-`svcctl` opens `service:/manager`, sends a `Value::Map` command, receives a `Value` response, and writes it to `HANDLE_PARENT` (or `HANDLE_STDOUT` in a pipeline). Because responses use `Value::Table`, pipeline integration works automatically.
-
 ## Testing
 
+- **Protocol framework**: Handshake with matching UUID succeeds. Mismatched UUID returns `Rejected`. Capabilities negotiation returns intersection. `ProtocolChannel` send/recv round-trips request, response, event message kinds correctly. `ServiceClient::connect` performs handshake automatically.
 - **Config parser**: Valid configs, missing `exec`, unknown fields, empty env table, multiple deps, all restart policies, all stdout targets.
 - **Planner — boot**: All configs valid, produces Start actions in dependency order.
 - **Planner — cycles**: A→B→A cycle detected, reported, excluded. Non-cyclic services still start.
