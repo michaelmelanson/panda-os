@@ -7,6 +7,7 @@ set -e
 TEST_NAME="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+CARGO_PROFILE="${CARGO_PROFILE:-}"
 
 BUILD_DIR="$PROJECT_DIR/build/test-$TEST_NAME"
 mkdir -p "$BUILD_DIR/efi/boot"
@@ -21,6 +22,7 @@ TEST_BIN=$(cargo +nightly build \
     --target "$PROJECT_DIR/x86_64-panda-uefi.json" \
     --test "$TEST_NAME" \
     --features testing \
+    $CARGO_PROFILE \
     --message-format=json 2>/dev/null | \
     jq -r 'select(.executable != null and .target.kind == ["test"]) | .executable')
 

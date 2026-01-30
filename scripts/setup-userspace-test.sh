@@ -10,17 +10,18 @@ EXTRA_BINARIES=("$@")
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROFILE_DIR="${PROFILE_DIR:-debug}"
 
 BUILD_DIR="$PROJECT_DIR/build/utest-$TEST_NAME"
 mkdir -p "$BUILD_DIR/efi/boot"
 mkdir -p "$BUILD_DIR/initrd"
 
 # Copy kernel
-cp "$PROJECT_DIR/target/x86_64-panda-uefi/debug/panda-kernel.efi" \
+cp "$PROJECT_DIR/target/x86_64-panda-uefi/$PROFILE_DIR/panda-kernel.efi" \
     "$BUILD_DIR/efi/boot/bootx64.efi"
 
 # Copy test binary as init
-cp "$PROJECT_DIR/target/x86_64-panda-userspace/debug/$TEST_NAME" \
+cp "$PROJECT_DIR/target/x86_64-panda-userspace/$PROFILE_DIR/$TEST_NAME" \
     "$BUILD_DIR/initrd/init"
 
 # Create test files in initrd
@@ -32,7 +33,7 @@ INITRD_FILES="init hello.txt"
 # Copy extra binaries if specified
 for binary in "${EXTRA_BINARIES[@]}"; do
     if [[ -n "$binary" ]]; then
-        cp "$PROJECT_DIR/target/x86_64-panda-userspace/debug/$binary" \
+        cp "$PROJECT_DIR/target/x86_64-panda-userspace/$PROFILE_DIR/$binary" \
             "$BUILD_DIR/initrd/$binary"
         INITRD_FILES="$INITRD_FILES $binary"
     fi
