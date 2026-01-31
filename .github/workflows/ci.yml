@@ -46,6 +46,9 @@ jobs:
         run: make unit-test
 
       - name: Run kernel tests
+        env:
+          MAX_PARALLEL: 4
+          TEST_TIMEOUT: 120
         run: make kernel-test
 
       - name: Upload kernel test logs
@@ -56,6 +59,9 @@ jobs:
           path: build/test-*.log
 
       - name: Run userspace tests
+        env:
+          MAX_PARALLEL: 4
+          TEST_TIMEOUT: 120
         run: make userspace-test
 
       - name: Upload userspace test logs

@@ -3,6 +3,10 @@
 # Usage: run-tests.sh <test-type> <test1> [test2] ...
 #
 # test-type: "kernel" or "userspace"
+#
+# Environment variables:
+#   MAX_PARALLEL - max concurrent tests (default: unlimited)
+#   TEST_TIMEOUT - per-test timeout in seconds (default: 60)
 
 set -e
 
@@ -12,13 +16,15 @@ TESTS=("$@")
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+MAX_PARALLEL="${MAX_PARALLEL:-0}"
+TEST_TIMEOUT="${TEST_TIMEOUT:-60}"
 
 if [ ${#TESTS[@]} -eq 0 ]; then
     echo "No tests specified"
     exit 1
 fi
 
-# Run all tests in parallel
+# Run tests with optional parallelism limit
 pids=()
 for test in "${TESTS[@]}"; do
     if [ "$TEST_TYPE" = "kernel" ]; then
@@ -33,8 +39,15 @@ for test in "${TESTS[@]}"; do
         MONITOR_FILE="$PROJECT_DIR/userspace/tests/$test/monitor.txt"
     fi
 
-    "$SCRIPT_DIR/run-qemu-test.sh" "$test" "$BUILD_DIR" "$LOG_FILE" 60 "$EXPECTED_FILE" "$MONITOR_FILE" &
+    "$SCRIPT_DIR/run-qemu-test.sh" "$test" "$BUILD_DIR" "$LOG_FILE" "$TEST_TIMEOUT" "$EXPECTED_FILE" "$MONITOR_FILE" &
     pids+=($!)
+
+    # Throttle parallelism if MAX_PARALLEL is set
+    if [ "$MAX_PARALLEL" -gt 0 ] 2>/dev/null; then
+        while [ "$(jobs -rp | wc -l)" -ge "$MAX_PARALLEL" ]; do
+            sleep 0.5
+        done
+    fi
 done
 
 # Wait for all tests and collect exit codes
