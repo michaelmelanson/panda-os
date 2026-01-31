@@ -9,12 +9,11 @@ pipeline_producer: starting
 pipeline_producer: done, sent 10 values
 pipeline_test: closed write_end
 pipeline_test: closed read_end
-# @barrier
-# Producer and consumer complete, then parent collects results
+pipeline_test: producer exited with code 0
 pipeline_consumer: received 10 values, sum = 55
 pipeline_consumer: done
 # @barrier
-pipeline_test: producer exited with code 0
+# Parent collects results after children complete
 pipeline_test: received sum = 55
 pipeline_test: consumer exited with code 0
 PASS

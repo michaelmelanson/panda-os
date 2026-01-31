@@ -208,29 +208,47 @@ elif [ -n "$MONITOR_FILE" ] && [ -f "$MONITOR_FILE" ]; then
         exit 1
     fi
 
-    # Execute monitor commands
-    while IFS= read -r line || [ -n "$line" ]; do
-        # Skip comments and blank lines
-        [[ "$line" =~ ^[[:space:]]*# ]] && continue
-        [[ -z "${line// }" ]] && continue
+    # Build a command sequence with delays, then send via a single connection
+    send_monitor_commands() {
+        while IFS= read -r line || [ -n "$line" ]; do
+            # Skip comments and blank lines
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            [[ -z "${line// }" ]] && continue
 
-        # Handle sleep command specially
-        if [[ "$line" =~ ^sleep[[:space:]]+([0-9.]+) ]]; then
-            sleep "${BASH_REMATCH[1]}"
-        else
-            # Use nc (netcat) for Unix socket if available, otherwise try socat
-            if command -v nc >/dev/null 2>&1 && nc -h 2>&1 | grep -q "Unix"; then
-                echo "$line" | nc -U "$MONITOR_SOCK" > /dev/null 2>&1
-            elif command -v socat >/dev/null 2>&1; then
-                echo "$line" | socat - "unix-connect:$MONITOR_SOCK" > /dev/null 2>&1
+            if [[ "$line" =~ ^sleep[[:space:]]+([0-9.]+) ]]; then
+                sleep "${BASH_REMATCH[1]}"
             else
-                # Fallback: use bash /dev/tcp-like feature (requires special handling for unix sockets)
-                # Use python as last resort
-                python3 -c "import socket; s=socket.socket(socket.AF_UNIX); s.connect('$MONITOR_SOCK'); s.send(b'$line\n'); s.close()" 2>/dev/null
+                echo "$line"
+                sleep 0.1
             fi
-            sleep 0.1
-        fi
-    done < "$MONITOR_FILE"
+        done < "$MONITOR_FILE"
+        # Keep connection open briefly for last command to process
+        sleep 0.5
+    }
+
+    # Send all commands through a single persistent connection
+    if command -v socat >/dev/null 2>&1; then
+        send_monitor_commands | socat - "unix-connect:$MONITOR_SOCK" > /dev/null 2>&1
+    elif command -v nc >/dev/null 2>&1 && nc -h 2>&1 | grep -q "Unix"; then
+        send_monitor_commands | nc -U "$MONITOR_SOCK" > /dev/null 2>&1
+    else
+        # Python fallback with single connection
+        python3 -c "
+import socket, time, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect('$MONITOR_SOCK')
+for line in open('$MONITOR_FILE'):
+    line = line.strip()
+    if not line or line.startswith('#'): continue
+    if line.startswith('sleep '):
+        time.sleep(float(line.split()[1]))
+    else:
+        s.send((line + '\n').encode())
+        time.sleep(0.1)
+time.sleep(0.5)
+s.close()
+" 2>/dev/null
+    fi
 
     # Wait for QEMU to exit with timeout
     ELAPSED=0

@@ -1,6 +1,6 @@
 # QEMU monitor commands to inject keyboard events
 # Tests the mailbox notification + non-blocking read pattern
-sleep 3
+sleep 5
 sendkey a
 sendkey b
 sendkey c
