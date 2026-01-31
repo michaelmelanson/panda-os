@@ -26,6 +26,9 @@ jobs:
         with:
           shared-key: "ci"
 
+      - name: Check Cargo.lock is up-to-date
+        run: cargo update --workspace --locked
+
       - name: Build kernel and userspace
         run: make build
 
