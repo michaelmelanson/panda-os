@@ -1,9 +1,9 @@
 //! Keyboard input handling utilities.
 //!
-//! Provides key code constants and character conversion for Linux input events.
-//! The virtio keyboard device emits events using the Linux evdev protocol, so
-//! all scan codes here correspond to the `KEY_*` constants defined in the Linux
-//! kernel header `linux/input-event-codes.h`.
+//! Provides key code constants and character conversion for virtio-input keyboard
+//! events. The virtio-input keyboard device uses the evdev event encoding
+//! (originally defined by Linux). Scan codes correspond to the `KEY_*` constants
+//! from `input-event-codes.h`.
 
 /// Raw keyboard input event structure (matches kernel's input event layout).
 #[repr(C)]
@@ -34,10 +34,10 @@ impl KeyValue {
     }
 }
 
-// Linux evdev key codes (from linux/input-event-codes.h).
-// These values match the KEY_* constants from the Linux kernel's
-// input subsystem. The virtio-input keyboard device uses this same
-// encoding, so we reuse the standard codes directly.
+// Virtio-input key codes (evdev encoding).
+// The virtio-input spec adopted the evdev event encoding (originally defined
+// by Linux) as its standard. These values match the KEY_* constants from
+// input-event-codes.h — panda-os does not depend on Linux itself.
 // Reference: https://github.com/torvalds/linux/blob/master/include/uapi/linux/input-event-codes.h
 pub const KEY_RESERVED: u16 = 0;
 pub const KEY_ESC: u16 = 1;
