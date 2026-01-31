@@ -14,7 +14,7 @@ MONITOR_SOCK="/tmp/qemu-keyboard-test-$$.sock"
 
 QEMU_CMD=(
     qemu-system-x86_64 -nodefaults
-    -machine pc-q35-9.2 -m 1G
+    -machine q35 -m 1G
     -serial stdio
     -boot menu=off
     -device virtio-gpu
