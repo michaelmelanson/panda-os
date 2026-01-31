@@ -49,6 +49,7 @@ USERSPACE_TESTS := \
 	print_test \
 	readdir_test \
 	resource_test \
+	segfault_test \
 	spawn_test \
 	state_test \
 	surface_test \

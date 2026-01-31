@@ -3,7 +3,7 @@ use core::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use log::debug;
+use log::{debug, error};
 use spinning_top::RwSpinlock;
 use x86_64::{
     PrivilegeLevel,
@@ -207,15 +207,40 @@ extern "x86-interrupt" fn default_page_fault_handler(
 
     // Try demand paging for userspace memory access
     if error_code.contains(PageFaultErrorCode::USER_MODE) {
-        // Try stack first (more common for initial faults)
-        if crate::memory::try_handle_stack_page_fault(VirtAddr::new(fault_address.as_u64())) {
-            return;
+        // Only attempt demand paging for not-present faults.
+        // If PROTECTION_VIOLATION is set, the page exists but access was denied
+        // (e.g., write to read-only page) — this must not trigger demand paging.
+        if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+            // Try stack first (more common for initial faults)
+            if crate::memory::try_handle_stack_page_fault(VirtAddr::new(fault_address.as_u64())) {
+                return;
+            }
+
+            // Try heap
+            let brk = crate::scheduler::with_current_process(|proc| proc.brk());
+            if crate::memory::try_handle_heap_page_fault(
+                VirtAddr::new(fault_address.as_u64()),
+                brk,
+            ) {
+                return;
+            }
         }
 
-        // Try heap
-        let brk = crate::scheduler::with_current_process(|proc| proc.brk());
-        if crate::memory::try_handle_heap_page_fault(VirtAddr::new(fault_address.as_u64()), brk) {
-            return;
+        // Unhandled user-mode page fault: either a protection violation or
+        // a not-present fault outside valid memory regions. Kill the process.
+        let current_pid = crate::scheduler::current_process_id();
+        error!(
+            "Page fault in process {:?}: address={fault_address:#x}, caused by {}, {} — killing process",
+            current_pid,
+            if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) { "write" } else { "read" },
+            if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) { "protection violation" } else { "invalid address" },
+        );
+        let process_info =
+            crate::scheduler::with_current_process(|proc| proc.info().clone());
+        crate::scheduler::remove_process(current_pid);
+        process_info.set_exit_code(1);
+        unsafe {
+            crate::scheduler::exec_next_runnable();
         }
     }
 

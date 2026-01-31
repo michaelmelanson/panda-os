@@ -393,4 +393,32 @@ if [ -n "$EXPECTED_FILE" ] && [ -f "$EXPECTED_FILE" ]; then
     fi
 fi
 
+# Check expected fault patterns (kernel ERROR: messages) if specified
+if [ -n "$EXPECTED_FILE" ]; then
+    EXPECTED_FAULT_FILE="${EXPECTED_FILE%.txt}_fault.txt"
+    if [ -f "$EXPECTED_FAULT_FILE" ]; then
+        # Extract ERROR: messages from kernel log output
+        FAULT_MESSAGES=$(grep -a "ERROR:" "$LOG_FILE" | sed 's/.*ERROR: //')
+
+        # Read expected patterns (skip comments and blank lines)
+        EXPECTED_FAULT_PATTERNS=$(grep -v '^#' "$EXPECTED_FAULT_FILE" | grep -v '^[[:space:]]*$')
+
+        # Check that each expected pattern appears in order
+        FAULT_LINE_NUM=0
+        while IFS= read -r pattern; do
+            [ -z "$pattern" ] && continue
+            FAULT_LINE_NUM=$((FAULT_LINE_NUM + 1))
+            MATCH_LINE=$(echo "$FAULT_MESSAGES" | grep -n -F "$pattern" | head -1 | cut -d: -f1)
+            if [ -z "$MATCH_LINE" ]; then
+                echo "Expected fault not found: '$pattern' (expected_fault.txt line $FAULT_LINE_NUM)" >&2
+                echo "Kernel error messages:" >&2
+                echo "$FAULT_MESSAGES" | head -5 >&2
+                exit 1
+            fi
+            # Remove all lines up to and including the match
+            FAULT_MESSAGES=$(echo "$FAULT_MESSAGES" | tail -n +$((MATCH_LINE + 1)))
+        done <<< "$EXPECTED_FAULT_PATTERNS"
+    fi
+fi
+
 exit 0  # passed

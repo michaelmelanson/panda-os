@@ -1,0 +1,4 @@
+# Verify the kernel detected a protection violation and killed the process
+Page fault in process
+protection violation
+killing process
