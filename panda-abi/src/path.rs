@@ -3,38 +3,6 @@
 //! Provides path normalization to prevent directory traversal attacks
 //! in the VFS layer.
 
-/// Canonicalize a path by resolving `.` and `..` components.
-///
-/// Converts any path to its canonical absolute form by:
-/// - Removing `.` (current directory) components
-/// - Resolving `..` (parent directory) by removing the preceding component
-/// - Collapsing repeated slashes (POSIX-compatible for local filesystems)
-///
-/// `..` components that would escape the root are silently dropped,
-/// so `/../foo` becomes `/foo`.
-///
-/// # Examples
-///
-/// ```
-/// # use panda_abi::path::canonicalize_path;
-/// assert_eq!(canonicalize_path("/initrd/../disk/secret"), "/disk/secret");
-/// assert_eq!(canonicalize_path("/initrd/./hello.txt"), "/initrd/hello.txt");
-/// assert_eq!(canonicalize_path("/../../../etc"), "/etc");
-/// assert_eq!(canonicalize_path("/a/./b/../c/./d/../e"), "/a/c/e");
-/// ```
-pub fn canonicalize_path(path: &str) -> &str {
-    // Fast path: if no `.` or `..` components and no repeated slashes, return as-is.
-    // We check this first since the vast majority of real paths are already canonical.
-    if is_canonical(path) {
-        return path;
-    }
-
-    // Slow path: needs actual canonicalization, but we can't allocate.
-    // Return the input unchanged — the caller (in the kernel, which has alloc)
-    // must use `canonicalize_path_to_buf` for non-canonical paths.
-    path
-}
-
 /// Check whether a path is already in canonical form.
 ///
 /// A canonical path:
