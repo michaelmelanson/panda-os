@@ -77,7 +77,7 @@ libpanda::main! {
     // =========================================================================
 
     // Test 8: Sending a message within MAX_MESSAGE_SIZE should succeed
-    let Ok((endpoint_a, endpoint_b)) = ipc::channel::create_pair() else {
+    let Ok((endpoint_a, endpoint_b)) = ipc::create_pair() else {
         environment::log("FAIL: could not create channel pair");
         return 1;
     };
