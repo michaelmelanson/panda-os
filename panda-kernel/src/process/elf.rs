@@ -31,7 +31,7 @@ use goblin::elf::{
 use log::{debug, trace, warn};
 use x86_64::VirtAddr;
 
-use crate::memory::{self, address_space::USER_ADDR_MAX, Mapping, MemoryMappingOptions};
+use crate::memory::{self, Mapping, MemoryMappingOptions, USER_ADDR_MAX};
 use crate::process::ProcessError;
 
 /// Validate ELF segment security constraints.

@@ -23,9 +23,9 @@ pub mod recursive;
 
 pub use address::{inspect_virtual_address, virtual_address_to_physical};
 pub use address_space::{
-    KERNEL_HEAP_BASE, KERNEL_IMAGE_BASE, MMIO_REGION_BASE, get_kernel_image_phys_base,
-    identity_to_higher_half, jump_to_higher_half, relocate_kernel_to_higher_half,
-    remove_identity_mapping,
+    KERNEL_HEAP_BASE, KERNEL_IMAGE_BASE, MMIO_REGION_BASE, USER_ADDR_MAX,
+    get_kernel_image_phys_base, identity_to_higher_half, jump_to_higher_half,
+    relocate_kernel_to_higher_half, remove_identity_mapping,
 };
 pub use demand_paging::{free_region, try_handle_heap_page_fault, try_handle_stack_page_fault};
 pub use frame::Frame;
