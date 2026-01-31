@@ -21,23 +21,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 e2fsprogs imagemagick
 
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
         with:
-          components: rust-src
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          shared-key: "ci"
 
       - name: Build kernel and userspace
         run: make build
