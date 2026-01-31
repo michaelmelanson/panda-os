@@ -31,7 +31,7 @@ export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTR
 export PROFILE_DIR CARGO_PROFILE
 
 # Cargo commands for custom targets (require build-std for no_std targets)
-CARGO := cargo +nightly
+CARGO := cargo
 CARGO_BUILD_STD := -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem
 KERNEL_TARGET := --target ./x86_64-panda-uefi.json
 USERSPACE_TARGET := --target ./x86_64-panda-userspace.json
