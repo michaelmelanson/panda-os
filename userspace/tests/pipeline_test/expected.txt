@@ -12,8 +12,7 @@ pipeline_test: closed read_end
 pipeline_test: producer exited with code 0
 pipeline_consumer: received 10 values, sum = 55
 pipeline_consumer: done
-# @barrier
-# Parent collects results after children complete
 pipeline_test: received sum = 55
 pipeline_test: consumer exited with code 0
+# @barrier
 PASS
