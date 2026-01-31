@@ -10,6 +10,12 @@ use crate::handle::Handle;
 use crate::sys;
 
 /// Buffer size for print output. Messages longer than this will be truncated.
+///
+/// 256 bytes is a conservative stack-friendly default for formatted print output.
+/// The underlying channel supports up to `MAX_MESSAGE_SIZE` (4096 bytes), so this
+/// could be increased if longer single print calls are needed. Kept small to avoid
+/// large stack allocations in `OutputWriter`, since a new writer is created on
+/// every `print!`/`println!` invocation.
 const PRINT_BUFFER_SIZE: usize = 256;
 
 /// A writer that buffers output and sends it to the parent channel.
