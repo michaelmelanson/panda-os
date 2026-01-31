@@ -82,3 +82,7 @@ harness = false
 [[test]]
 name = "elf_security"
 harness = false
+
+[[test]]
+name = "ext2_validation"
+harness = false
