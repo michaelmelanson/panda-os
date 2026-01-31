@@ -31,18 +31,88 @@ use goblin::elf::{
 use log::{debug, trace, warn};
 use x86_64::VirtAddr;
 
-use crate::memory::{self, Mapping, MemoryMappingOptions};
+use crate::memory::{self, Mapping, MemoryMappingOptions, USER_ADDR_MAX};
+use crate::process::ProcessError;
+
+/// Validate ELF segment security constraints.
+///
+/// Ensures that:
+/// 1. p_vaddr is within userspace range (< USER_ADDR_MAX)
+/// 2. p_vaddr + p_memsz doesn't overflow
+/// 3. p_vaddr + p_memsz doesn't extend into kernel space
+/// 4. p_offset + p_filesz doesn't overflow
+/// 5. p_offset + p_filesz is within actual file bounds
+///
+/// Returns Ok(segment_end) on success, or Err with a descriptive message on failure.
+fn validate_segment_security(
+    header: &goblin::elf::ProgramHeader,
+    file_size: usize,
+) -> Result<u64, ProcessError> {
+    // Validate p_vaddr is in userspace
+    if header.p_vaddr > USER_ADDR_MAX {
+        warn!(
+            "ELF security: p_vaddr {:#x} exceeds USER_ADDR_MAX {:#x}",
+            header.p_vaddr, USER_ADDR_MAX
+        );
+        return Err(ProcessError::InvalidElf("ELF segment p_vaddr in kernel space"));
+    }
+
+    // Check for p_vaddr + p_memsz overflow and ensure it doesn't extend into kernel space
+    let segment_end = header.p_vaddr.checked_add(header.p_memsz)
+        .ok_or_else(|| {
+            warn!(
+                "ELF security: p_vaddr {:#x} + p_memsz {:#x} overflows",
+                header.p_vaddr, header.p_memsz
+            );
+            ProcessError::InvalidElf("ELF segment address + size overflows")
+        })?;
+
+    if segment_end > USER_ADDR_MAX {
+        warn!(
+            "ELF security: segment end {:#x} exceeds USER_ADDR_MAX {:#x}",
+            segment_end, USER_ADDR_MAX
+        );
+        return Err(ProcessError::InvalidElf("ELF segment extends into kernel space"));
+    }
+
+    // Check for p_offset + p_filesz overflow
+    let file_end = header.p_offset.checked_add(header.p_filesz)
+        .ok_or_else(|| {
+            warn!(
+                "ELF security: p_offset {:#x} + p_filesz {:#x} overflows",
+                header.p_offset, header.p_filesz
+            );
+            ProcessError::InvalidElf("ELF file offset + size overflows")
+        })?;
+
+    // Ensure p_offset + p_filesz is within file bounds
+    if file_end as usize > file_size {
+        warn!(
+            "ELF security: file offset {:#x} + filesz {:#x} = {:#x} exceeds file size {:#x}",
+            header.p_offset, header.p_filesz, file_end, file_size
+        );
+        return Err(ProcessError::InvalidElf("ELF segment offset exceeds file size"));
+    }
+
+    Ok(segment_end)
+}
 
 /// Load an ELF binary into the current address space.
-/// Returns the list of mappings created.
-pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
+/// Returns the list of mappings created, or an error if the ELF is invalid.
+pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Result<Vec<Mapping>, ProcessError> {
     let mut mappings = Vec::new();
     let mut last_segment_end: u64 = 0;
     let mut last_segment_executable = false;
 
+    // Get the actual ELF file size for offset validation
+    let file_size = unsafe { (&(*file_ptr)).len() };
+
     for header in &elf.program_headers {
         match header.p_type {
             PT_LOAD => {
+                // Validate segment security constraints
+                validate_segment_security(header, file_size)?;
+
                 let virt_addr = VirtAddr::new(header.p_vaddr);
                 let page_offset = virt_addr.as_u64() & 0xFFF;
                 let mut aligned_virt_addr = virt_addr.align_down(4096u64);
@@ -138,5 +208,5 @@ pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
         }
     }
 
-    mappings
+    Ok(mappings)
 }

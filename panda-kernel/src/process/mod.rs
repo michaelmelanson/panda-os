@@ -7,7 +7,7 @@
 //! - Process info for inter-process communication
 
 pub mod context;
-mod elf;
+pub mod elf;
 mod exec;
 pub mod info;
 mod state;
@@ -156,7 +156,7 @@ impl Process {
             context.activate();
         }
 
-        let mappings = elf::load_elf(&elf_parsed, data);
+        let mappings = elf::load_elf(&elf_parsed, data)?;
 
         // Switch back to the original page table
         unsafe {
