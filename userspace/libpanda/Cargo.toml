@@ -12,6 +12,7 @@ os = []
 [dependencies]
 panda-abi = { path = "../../panda-abi" }
 spinning_top = { workspace = true }
+talc = { workspace = true }
 
 [dev-dependencies]
 
