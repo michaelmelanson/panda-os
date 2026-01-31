@@ -32,17 +32,86 @@ use log::{debug, trace, warn};
 use x86_64::VirtAddr;
 
 use crate::memory::{self, Mapping, MemoryMappingOptions};
+use crate::process::ProcessError;
+
+/// Upper bound of userspace addresses (lower canonical half).
+/// Imported from syscall::user_ptr.
+const USER_ADDR_MAX: u64 = 0x0000_7fff_ffff_ffff;
 
 /// Load an ELF binary into the current address space.
-/// Returns the list of mappings created.
-pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
+/// Returns the list of mappings created, or an error if the ELF is invalid.
+pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Result<Vec<Mapping>, ProcessError> {
     let mut mappings = Vec::new();
     let mut last_segment_end: u64 = 0;
     let mut last_segment_executable = false;
 
+    // Get the actual ELF file size for offset validation
+    let file_size = unsafe { (*file_ptr).len() };
+
     for header in &elf.program_headers {
         match header.p_type {
             PT_LOAD => {
+                // Security validation 1: Validate p_vaddr is in userspace
+                if header.p_vaddr > USER_ADDR_MAX {
+                    warn!(
+                        "ELF security: p_vaddr {:#x} exceeds USER_ADDR_MAX {:#x}",
+                        header.p_vaddr, USER_ADDR_MAX
+                    );
+                    return Err(ProcessError::InvalidElf(
+                        "ELF segment p_vaddr in kernel space"
+                    ));
+                }
+
+                // Security validation 2: Check for p_vaddr + p_memsz overflow
+                let segment_end = match header.p_vaddr.checked_add(header.p_memsz) {
+                    Some(end) => end,
+                    None => {
+                        warn!(
+                            "ELF security: p_vaddr {:#x} + p_memsz {:#x} overflows",
+                            header.p_vaddr, header.p_memsz
+                        );
+                        return Err(ProcessError::InvalidElf(
+                            "ELF segment address + size overflows"
+                        ));
+                    }
+                };
+
+                // Security validation 3: Ensure segment doesn't extend into kernel space
+                if segment_end > USER_ADDR_MAX {
+                    warn!(
+                        "ELF security: segment end {:#x} exceeds USER_ADDR_MAX {:#x}",
+                        segment_end, USER_ADDR_MAX
+                    );
+                    return Err(ProcessError::InvalidElf(
+                        "ELF segment extends into kernel space"
+                    ));
+                }
+
+                // Security validation 4: Check for p_offset + p_filesz overflow
+                let file_end = match header.p_offset.checked_add(header.p_filesz) {
+                    Some(end) => end,
+                    None => {
+                        warn!(
+                            "ELF security: p_offset {:#x} + p_filesz {:#x} overflows",
+                            header.p_offset, header.p_filesz
+                        );
+                        return Err(ProcessError::InvalidElf(
+                            "ELF file offset + size overflows"
+                        ));
+                    }
+                };
+
+                // Security validation 5: Ensure p_offset + p_filesz is within file bounds
+                if file_end as usize > file_size {
+                    warn!(
+                        "ELF security: file offset {:#x} + filesz {:#x} = {:#x} exceeds file size {:#x}",
+                        header.p_offset, header.p_filesz, file_end, file_size
+                    );
+                    return Err(ProcessError::InvalidElf(
+                        "ELF segment offset exceeds file size"
+                    ));
+                }
+
                 let virt_addr = VirtAddr::new(header.p_vaddr);
                 let page_offset = virt_addr.as_u64() & 0xFFF;
                 let mut aligned_virt_addr = virt_addr.align_down(4096u64);
@@ -138,5 +207,5 @@ pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
         }
     }
 
-    mappings
+    Ok(mappings)
 }
