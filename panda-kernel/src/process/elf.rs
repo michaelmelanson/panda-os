@@ -32,17 +32,64 @@ use log::{debug, trace, warn};
 use x86_64::VirtAddr;
 
 use crate::memory::{self, Mapping, MemoryMappingOptions};
+use crate::process::ProcessError;
+
+/// Upper bound of userspace addresses (lower canonical half).
+/// Same constant as in syscall/user_ptr.rs
+const USER_ADDR_MAX: u64 = 0x0000_7fff_ffff_ffff;
 
 /// Load an ELF binary into the current address space.
-/// Returns the list of mappings created.
-pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
+/// Returns the list of mappings created, or an error if the ELF is malicious/invalid.
+pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Result<Vec<Mapping>, ProcessError> {
     let mut mappings = Vec::new();
     let mut last_segment_end: u64 = 0;
     let mut last_segment_executable = false;
 
+    // Get the file size for validation
+    let file_size = unsafe { (*file_ptr).len() as u64 };
+
     for header in &elf.program_headers {
         match header.p_type {
             PT_LOAD => {
+                // Security: Validate p_vaddr is in userspace range
+                if header.p_vaddr > USER_ADDR_MAX {
+                    warn!(
+                        "ELF segment rejected: p_vaddr {:#x} exceeds USER_ADDR_MAX {:#x}",
+                        header.p_vaddr, USER_ADDR_MAX
+                    );
+                    return Err(ProcessError::InvalidElf("segment address in kernel space"));
+                }
+
+                // Security: Validate p_vaddr + p_memsz doesn't overflow and stays in userspace
+                let segment_end = header.p_vaddr.checked_add(header.p_memsz)
+                    .ok_or_else(|| {
+                        warn!("ELF segment rejected: p_vaddr + p_memsz overflow");
+                        ProcessError::InvalidElf("segment size causes address overflow")
+                    })?;
+
+                if segment_end > USER_ADDR_MAX {
+                    warn!(
+                        "ELF segment rejected: p_vaddr + p_memsz = {:#x} exceeds USER_ADDR_MAX {:#x}",
+                        segment_end, USER_ADDR_MAX
+                    );
+                    return Err(ProcessError::InvalidElf("segment extends into kernel space"));
+                }
+
+                // Security: Validate p_offset + p_filesz doesn't overflow and is within file bounds
+                let file_end = header.p_offset.checked_add(header.p_filesz)
+                    .ok_or_else(|| {
+                        warn!("ELF segment rejected: p_offset + p_filesz overflow");
+                        ProcessError::InvalidElf("file offset causes overflow")
+                    })?;
+
+                if file_end > file_size {
+                    warn!(
+                        "ELF segment rejected: p_offset + p_filesz = {:#x} exceeds file size {:#x}",
+                        file_end, file_size
+                    );
+                    return Err(ProcessError::InvalidElf("segment offset exceeds file size"));
+                }
+
                 let virt_addr = VirtAddr::new(header.p_vaddr);
                 let page_offset = virt_addr.as_u64() & 0xFFF;
                 let mut aligned_virt_addr = virt_addr.align_down(4096u64);
@@ -138,5 +185,5 @@ pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Vec<Mapping> {
         }
     }
 
-    mappings
+    Ok(mappings)
 }
