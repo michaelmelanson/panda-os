@@ -23,7 +23,7 @@ use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserSlice};
 /// The `flags` parameter can include `FILE_NONBLOCK` to return immediately if no data.
 pub fn handle_read(
     _ua: &UserAccess,
-    handle_id: u32,
+    handle_id: u64,
     buf_ptr: usize,
     buf_len: usize,
     flags: u32,
@@ -58,7 +58,7 @@ pub fn handle_read(
 /// Reads into a kernel bounce buffer, then returns a WriteBack for the top-level
 /// to copy out to userspace.
 fn handle_read_vfs(
-    handle_id: u32,
+    handle_id: u64,
     buf_len: usize,
     dst: UserSlice,
     vfs_file: Arc<dyn VfsFile>,
@@ -104,7 +104,7 @@ fn handle_read_vfs(
 ///
 /// If `flags` includes `FILE_NONBLOCK`, returns 0 immediately when no data is available
 /// instead of blocking.
-fn handle_read_sync(handle_id: u32, dst: UserSlice, flags: u32) -> SyscallFuture {
+fn handle_read_sync(handle_id: u64, dst: UserSlice, flags: u32) -> SyscallFuture {
     // Try to read immediately
     let immediate_result: Option<Option<(isize, alloc::vec::Vec<u8>)>> =
         scheduler::with_current_process(|proc| {
@@ -198,7 +198,7 @@ fn handle_read_sync(handle_id: u32, dst: UserSlice, flags: u32) -> SyscallFuture
 /// For VFS files, this is async and may yield to the scheduler if I/O is needed.
 pub fn handle_write(
     ua: &UserAccess,
-    handle_id: u32,
+    handle_id: u64,
     buf_ptr: usize,
     buf_len: usize,
 ) -> SyscallFuture {
@@ -230,7 +230,7 @@ pub fn handle_write(
 /// Copies data from userspace into a kernel buffer before building the future.
 fn handle_write_vfs(
     ua: &UserAccess,
-    handle_id: u32,
+    handle_id: u64,
     buf_ptr: usize,
     buf_len: usize,
     vfs_file: Arc<dyn VfsFile>,
@@ -275,7 +275,7 @@ fn handle_write_vfs(
 /// Synchronous write path for non-VFS resources.
 fn handle_write_sync(
     ua: &UserAccess,
-    handle_id: u32,
+    handle_id: u64,
     buf_ptr: usize,
     buf_len: usize,
 ) -> SyscallFuture {
@@ -306,7 +306,7 @@ fn handle_write_sync(
 /// Handle file seek operation.
 ///
 /// For VFS files, this updates the handle offset and performs an async stat to get size.
-pub fn handle_seek(handle_id: u32, offset_lo: usize, offset_hi: usize) -> SyscallFuture {
+pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> SyscallFuture {
     let offset = ((offset_hi as u64) << 32) | (offset_lo as u64);
     let whence = (offset_hi >> 32) as u32;
 
@@ -397,7 +397,7 @@ pub fn handle_seek(handle_id: u32, offset_lo: usize, offset_hi: usize) -> Syscal
 ///
 /// For VFS files, this performs an async stat operation.
 /// The result is written back to userspace via WriteBack.
-pub fn handle_stat(handle_id: u32, stat_ptr: usize) -> SyscallFuture {
+pub fn handle_stat(handle_id: u64, stat_ptr: usize) -> SyscallFuture {
     let dst = UserSlice::new(stat_ptr, core::mem::size_of::<FileStat>());
 
     // Check if this is a VFS file
@@ -465,7 +465,7 @@ pub fn handle_stat(handle_id: u32, stat_ptr: usize) -> SyscallFuture {
 }
 
 /// Handle file close operation.
-pub fn handle_close(handle_id: u32) -> SyscallFuture {
+pub fn handle_close(handle_id: u64) -> SyscallFuture {
     let result = scheduler::with_current_process(|proc| {
         if proc.handles_mut().remove(handle_id).is_some() {
             0
@@ -480,7 +480,7 @@ pub fn handle_close(handle_id: u32) -> SyscallFuture {
 ///
 /// The directory handle maintains a cursor that advances with each call.
 /// The cursor is stored in the handle's offset field.
-pub fn handle_readdir(ua: &UserAccess, handle_id: u32, entry_ptr: usize) -> SyscallFuture {
+pub fn handle_readdir(ua: &UserAccess, handle_id: u64, entry_ptr: usize) -> SyscallFuture {
     let result = scheduler::with_current_process(|proc| {
         let Some(handle) = proc.handles_mut().get_mut(handle_id) else {
             return Err(());

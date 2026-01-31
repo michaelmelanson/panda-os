@@ -119,7 +119,7 @@ pub fn send(
 ) -> isize {
     syscall(
         SYSCALL_SEND,
-        u32::from(handle) as usize,
+        u64::from(handle) as usize,
         operation as usize,
         arg0,
         arg1,

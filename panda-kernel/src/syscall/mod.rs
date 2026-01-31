@@ -124,7 +124,7 @@ extern "sysv64" fn syscall_handler(
         if code != panda_abi::SYSCALL_SEND {
             -1
         } else {
-            let handle = arg0 as u32;
+            let handle = arg0 as u64;
             let operation = arg1 as u32;
 
             // Safety: callee_saved points to registers pushed by syscall_entry
@@ -190,7 +190,7 @@ extern "sysv64" fn syscall_handler(
 /// any future (the compiler enforces this since it is `!Send`).
 fn build_future(
     ua: &user_ptr::UserAccess,
-    handle: u32,
+    handle: u64,
     operation: u32,
     arg0: usize,
     arg1: usize,
@@ -230,8 +230,8 @@ fn build_future(
         OP_BUFFER_FREE => Ok(buffer::handle_free(handle)),
 
         // Buffer-based file operations
-        OP_FILE_READ_BUFFER => Ok(buffer::handle_read_buffer(handle, arg0 as u32)),
-        OP_FILE_WRITE_BUFFER => Ok(buffer::handle_write_buffer(handle, arg0 as u32, arg1)),
+        OP_FILE_READ_BUFFER => Ok(buffer::handle_read_buffer(handle, arg0 as u64)),
+        OP_FILE_WRITE_BUFFER => Ok(buffer::handle_write_buffer(handle, arg0 as u64, arg1)),
 
         // Surface operations
         OP_SURFACE_INFO => Ok(surface::handle_info(ua, handle, arg0)),
@@ -242,8 +242,8 @@ fn build_future(
 
         // Mailbox operations
         OP_MAILBOX_CREATE => Ok(mailbox::handle_create()),
-        OP_MAILBOX_WAIT => Ok(mailbox::handle_wait(handle)),
-        OP_MAILBOX_POLL => Ok(mailbox::handle_poll(handle)),
+        OP_MAILBOX_WAIT => Ok(mailbox::handle_wait(ua, handle, arg0)),
+        OP_MAILBOX_POLL => Ok(mailbox::handle_poll(ua, handle, arg0)),
 
         // Channel operations
         OP_CHANNEL_CREATE => Ok(channel::handle_create(ua, arg0)),

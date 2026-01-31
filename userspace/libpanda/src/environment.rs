@@ -38,7 +38,7 @@ use panda_abi::*;
 /// ).unwrap();
 /// ```
 #[inline(always)]
-pub fn open(path: &str, mailbox: u32, event_mask: u32) -> Result<Handle> {
+pub fn open(path: &str, mailbox: u64, event_mask: u32) -> Result<Handle> {
     error::from_syscall_handle(sys::env::open(path, mailbox, event_mask))
 }
 

@@ -152,6 +152,6 @@ pub fn from_syscall_handle(result: isize) -> Result<crate::Handle> {
     if result < 0 {
         Err(Error::from_code(result))
     } else {
-        Ok(crate::Handle::from(result as u32))
+        Ok(crate::Handle::from(result as u64))
     }
 }

@@ -32,7 +32,7 @@ impl Buffer {
         }
 
         Some(Self {
-            handle: Handle::from(result as u32),
+            handle: Handle::from(result as u64),
             addr: info.addr as *mut u8,
             size: info.size,
         })

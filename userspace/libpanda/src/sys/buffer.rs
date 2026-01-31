@@ -48,7 +48,7 @@ pub fn read_from_file(file_handle: Handle, buffer_handle: Handle) -> isize {
     send(
         file_handle,
         OP_FILE_READ_BUFFER,
-        u32::from(buffer_handle) as usize,
+        u64::from(buffer_handle) as usize,
         0,
         0,
         0,
@@ -63,7 +63,7 @@ pub fn write_to_file(file_handle: Handle, buffer_handle: Handle, len: usize) -> 
     send(
         file_handle,
         OP_FILE_WRITE_BUFFER,
-        u32::from(buffer_handle) as usize,
+        u64::from(buffer_handle) as usize,
         len,
         0,
         0,

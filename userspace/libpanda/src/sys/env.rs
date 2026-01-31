@@ -13,7 +13,7 @@ use panda_abi::*;
 /// To attach the handle to a mailbox for event notifications, pass the
 /// mailbox handle and event mask. Pass `(0, 0)` for no mailbox attachment.
 #[inline(always)]
-pub fn open(path: &str, mailbox: u32, event_mask: u32) -> isize {
+pub fn open(path: &str, mailbox: u64, event_mask: u32) -> isize {
     send(
         Handle::ENVIRONMENT,
         OP_ENVIRONMENT_OPEN,
@@ -37,12 +37,13 @@ pub fn open(path: &str, mailbox: u32, event_mask: u32) -> isize {
 /// Note: This is the raw spawn syscall. Use `crate::environment::spawn` for
 /// the higher-level version that also sends startup arguments.
 #[inline(always)]
-pub fn spawn(path: &str, mailbox: u32, event_mask: u32, stdin: u32, stdout: u32) -> isize {
+pub fn spawn(path: &str, mailbox: u64, event_mask: u32, stdin: u64, stdout: u64) -> isize {
     let params = SpawnParams {
         path_ptr: path.as_ptr() as usize,
         path_len: path.len(),
         mailbox,
         event_mask,
+        _pad: 0,
         stdin,
         stdout,
     };

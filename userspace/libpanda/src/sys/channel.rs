@@ -8,31 +8,23 @@ use panda_abi::*;
 
 /// Create a channel pair (raw syscall).
 ///
-/// On success, returns a positive value encoding both handles:
-/// - High 32 bits: handle_a
-/// - Low 32 bits: handle_b
+/// On success, writes two u64 handle IDs to the `handles` output parameter
+/// and returns 0.
 ///
 /// On failure, returns a negative error code.
 ///
 /// Note: This is the raw syscall. Use `crate::ipc::channel::create_pair()` for
-/// a safer interface that returns `Result<(Handle, Handle)>`.
+/// a safer interface that returns `Result<(ChannelHandle, ChannelHandle)>`.
 #[inline(always)]
-pub fn create_raw() -> isize {
-    let mut handles: [u32; 2] = [0, 0];
-    let result = send(
-        Handle::from(0u32), // No source handle for create
+pub fn create_raw(handles: &mut [u64; 2]) -> isize {
+    send(
+        Handle::from(0u64), // No source handle for create
         OP_CHANNEL_CREATE,
         handles.as_mut_ptr() as usize,
         0,
         0,
         0,
-    );
-    if result < 0 {
-        result
-    } else {
-        // Pack both handles into a single isize for the caller to unpack
-        ((handles[0] as isize) << 32) | (handles[1] as isize)
-    }
+    )
 }
 
 /// Send a message on a channel (blocking if queue full).

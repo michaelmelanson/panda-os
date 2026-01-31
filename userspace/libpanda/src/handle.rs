@@ -17,19 +17,19 @@ use core::marker::PhantomData;
 /// For type-safe handles, see `TypedHandle<T>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
-pub struct Handle(u32);
+pub struct Handle(u64);
 
 impl Handle {
     /// Create a handle from a raw handle ID.
     ///
     /// # Safety
     /// The caller must ensure the handle ID is valid for the current process.
-    pub const unsafe fn from_raw(id: u32) -> Self {
+    pub const unsafe fn from_raw(id: u64) -> Self {
         Handle(id)
     }
 
     /// Get the raw handle ID.
-    pub const fn as_raw(self) -> u32 {
+    pub const fn as_raw(self) -> u64 {
         self.0
     }
 
@@ -72,14 +72,14 @@ impl Handle {
     }
 }
 
-impl From<Handle> for u32 {
-    fn from(handle: Handle) -> u32 {
+impl From<Handle> for u64 {
+    fn from(handle: Handle) -> u64 {
         handle.0
     }
 }
 
-impl From<u32> for Handle {
-    fn from(id: u32) -> Handle {
+impl From<u64> for Handle {
+    fn from(id: u64) -> Handle {
         Handle(id)
     }
 }
@@ -104,7 +104,7 @@ pub trait HandleKind: private::Sealed {
     const EXPECTED_TYPE: panda_abi::HandleType;
 
     /// Check if a raw handle value has a compatible type tag.
-    fn is_compatible(handle: u32) -> bool {
+    fn is_compatible(handle: u64) -> bool {
         let tag = panda_abi::HandleType::from_handle(handle);
         if let Some(actual_type) = panda_abi::HandleType::from_tag(tag) {
             actual_type.is_compatible_with(Self::EXPECTED_TYPE)
@@ -132,7 +132,7 @@ pub trait HandleKind: private::Sealed {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct TypedHandle<T: HandleKind> {
-    id: u32,
+    id: u64,
     _marker: PhantomData<T>,
 }
 
@@ -142,7 +142,7 @@ impl<T: HandleKind> TypedHandle<T> {
     /// # Safety
     /// The caller must ensure the handle ID refers to a resource of type `T`.
     #[inline]
-    pub const unsafe fn from_raw_unchecked(id: u32) -> Self {
+    pub const unsafe fn from_raw_unchecked(id: u64) -> Self {
         Self {
             id,
             _marker: PhantomData,
@@ -153,7 +153,7 @@ impl<T: HandleKind> TypedHandle<T> {
     ///
     /// Returns `None` if the handle's type tag doesn't match the expected type.
     #[inline]
-    pub fn from_raw(id: u32) -> Option<Self> {
+    pub fn from_raw(id: u64) -> Option<Self> {
         if T::is_compatible(id) {
             Some(Self {
                 id,
@@ -169,13 +169,13 @@ impl<T: HandleKind> TypedHandle<T> {
     /// # Panics
     /// Panics if the handle's type tag doesn't match the expected type.
     #[inline]
-    pub fn from_raw_or_panic(id: u32) -> Self {
+    pub fn from_raw_or_panic(id: u64) -> Self {
         Self::from_raw(id).expect("handle type mismatch")
     }
 
     /// Get the raw handle ID.
     #[inline]
-    pub const fn as_raw(&self) -> u32 {
+    pub const fn as_raw(&self) -> u64 {
         self.id
     }
 
@@ -220,8 +220,8 @@ impl<T: HandleKind> From<TypedHandle<T>> for Handle {
     }
 }
 
-impl<T: HandleKind> From<TypedHandle<T>> for u32 {
-    fn from(typed: TypedHandle<T>) -> u32 {
+impl<T: HandleKind> From<TypedHandle<T>> for u64 {
+    fn from(typed: TypedHandle<T>) -> u64 {
         typed.id
     }
 }
