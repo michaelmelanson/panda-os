@@ -115,7 +115,7 @@ fn test_reject_kernel_space_vaddr() {
 
     let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
 
-    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_ptr());
+    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_slice() as *const [u8]);
 
     match result {
         Err(ProcessError::InvalidElf(msg)) => {
@@ -143,7 +143,7 @@ fn test_reject_vaddr_memsz_overflow() {
 
     let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
 
-    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_ptr());
+    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_slice() as *const [u8]);
 
     match result {
         Err(ProcessError::InvalidElf(msg)) => {
@@ -171,7 +171,7 @@ fn test_reject_vaddr_memsz_kernel_space() {
 
     let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
 
-    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_ptr());
+    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_slice() as *const [u8]);
 
     match result {
         Err(ProcessError::InvalidElf(msg)) => {
@@ -199,7 +199,7 @@ fn test_reject_offset_filesz_overflow() {
 
     let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
 
-    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_ptr());
+    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_slice() as *const [u8]);
 
     match result {
         Err(ProcessError::InvalidElf(msg)) => {
@@ -227,7 +227,7 @@ fn test_reject_offset_exceeds_file_size() {
 
     let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
 
-    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_ptr());
+    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_slice() as *const [u8]);
 
     match result {
         Err(ProcessError::InvalidElf(msg)) => {
@@ -260,7 +260,7 @@ fn test_accept_valid_elf() {
 
     let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
 
-    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_ptr());
+    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_slice() as *const [u8]);
 
     match result {
         Ok(mappings) => {
