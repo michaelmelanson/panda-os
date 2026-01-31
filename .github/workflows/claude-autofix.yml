@@ -21,6 +21,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
+      - name: Install Rust toolchain
+        run: rustup show
+
       - name: Run Claude Autofix
         uses: anthropics/claude-code-action@v1
         with:
