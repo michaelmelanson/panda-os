@@ -11,8 +11,51 @@ else
   PROFILE_DIR := debug
 endif
 
-KERNEL_TESTS := basic heap pci memory scheduler process nx_bit raii apic resource block device_path elf_security
-USERSPACE_TESTS := vfs_test preempt_test spawn_test yield_test heap_test print_test resource_test keyboard_test mailbox_keyboard_test state_test readdir_test buffer_test surface_test window_test multi_window_test alpha_test partial_refresh_test window_move_test block_test ext2_test device_path_test channel_test mailbox_test args_test pipeline_test control_plane_test env_test error_test api_test
+KERNEL_TESTS := \
+	apic \
+	basic \
+	block \
+	device_path \
+	elf_security \
+	heap \
+	memory \
+	nx_bit \
+	pci \
+	process \
+	raii \
+	resource \
+	scheduler
+
+USERSPACE_TESTS := \
+	alpha_test \
+	api_test \
+	args_test \
+	block_test \
+	buffer_test \
+	channel_test \
+	control_plane_test \
+	device_path_test \
+	env_test \
+	error_test \
+	ext2_test \
+	heap_test \
+	keyboard_test \
+	mailbox_keyboard_test \
+	mailbox_test \
+	multi_window_test \
+	partial_refresh_test \
+	pipeline_test \
+	preempt_test \
+	print_test \
+	readdir_test \
+	resource_test \
+	spawn_test \
+	state_test \
+	surface_test \
+	vfs_test \
+	window_move_test \
+	window_test \
+	yield_test
 
 # Ext2 test disk image
 EXT2_IMAGE = build/test.ext2
