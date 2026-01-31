@@ -16,12 +16,11 @@
 
 use core::alloc::Layout;
 
-use panda_abi::{HEAP_BASE, HEAP_MAX_SIZE, OP_PROCESS_BRK};
+use panda_abi::{HEAP_BASE, HEAP_MAX_SIZE};
 use spinning_top::RawSpinlock;
 use talc::{OomHandler, Span, Talc, Talck};
 
-use crate::handle::Handle;
-use crate::sys::send;
+use crate::sys::process::brk;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -57,7 +56,7 @@ fn brk_grow(current_brk: &mut usize, min_size: usize) -> Option<(usize, usize)> 
     }
 
     // Request the kernel to extend the program break
-    let result = send(Handle::SELF, OP_PROCESS_BRK, new_brk, 0, 0, 0);
+    let result = brk(new_brk);
 
     if result as usize != new_brk {
         return None;
