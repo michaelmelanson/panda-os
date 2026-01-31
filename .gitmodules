@@ -2,3 +2,7 @@
 	path = vendor/virtio-drivers
 	url = https://github.com/michaelmelanson/virtio-drivers.git
 	branch = panda
+
+[submodule "vendor/fontdue"]
+	path = vendor/fontdue
+	url = https://github.com/michaelmelanson/fontdue.git
