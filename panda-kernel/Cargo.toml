@@ -90,3 +90,7 @@ harness = false
 [[test]]
 name = "ext2_validation"
 harness = false
+
+[[test]]
+name = "fmask"
+harness = false

@@ -1,0 +1,8 @@
+# Verify FMASK clears DF on syscall entry
+FMASK test: starting
+FMASK test: syscall with DF set completed
+FMASK test: syscall with DF set completed
+FMASK test: syscall with DF set completed
+FMASK test: syscall with DF set completed
+FMASK test: syscall with DF set completed
+FMASK test: all syscalls completed successfully
