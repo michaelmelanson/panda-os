@@ -127,15 +127,15 @@ fn test_reject_kernel_space_vaddr() {
 }
 
 fn test_reject_vaddr_memsz_overflow() {
-    // Craft an ELF where p_vaddr + p_memsz overflows
+    // Craft an ELF where p_vaddr + p_memsz overflows u64
     let mut elf_data = vec![0u8; 4096];
 
     let header = create_elf_header();
     elf_data[0..SIZEOF_EHDR].copy_from_slice(&header);
 
     let phdr = create_program_header(
-        0x7fff_ffff_ffff_0000, // near max userspace
-        0x20000,                // size that causes overflow
+        0x0000_0000_0040_0000, // valid userspace address
+        u64::MAX,               // huge memsz that causes u64 overflow when added to p_vaddr
         128,
         0x1000,
     );
