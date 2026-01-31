@@ -1,0 +1,13 @@
+# Size cap test: verifies kernel rejects oversized allocations
+Size cap test starting
+PASS: zero-size buffer alloc rejected
+PASS: valid buffer alloc succeeded
+PASS: oversized buffer alloc rejected
+PASS: usize::MAX buffer alloc rejected
+PASS: buffer resize to valid size succeeded
+PASS: buffer resize to zero rejected
+PASS: oversized buffer resize rejected
+PASS: small channel message sent and received
+PASS: MAX_MESSAGE_SIZE channel message sent and received
+PASS: oversized channel message rejected
+Size cap test passed

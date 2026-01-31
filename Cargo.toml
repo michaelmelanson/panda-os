@@ -50,6 +50,7 @@ members = [
   "userspace/tests/api_test",
   "userspace/tests/path_traversal_test",
   "userspace/tests/segfault_test",
+  "userspace/tests/size_cap_test",
   "userspace/tests/fault_recovery_test",
   "userspace/tests/fault_child"
 ]
