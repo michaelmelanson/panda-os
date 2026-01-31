@@ -78,3 +78,7 @@ harness = false
 [[test]]
 name = "device_path"
 harness = false
+
+[[test]]
+name = "elf_security"
+harness = false

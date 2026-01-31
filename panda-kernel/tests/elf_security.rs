@@ -5,23 +5,25 @@
 
 #![no_std]
 #![no_main]
-#![feature(custom_test_frameworks)]
-#![test_runner(panda_kernel::test_runner)]
-#![reexport_test_harness_main = "test_main"]
 
 extern crate alloc;
 
 use alloc::vec;
-use goblin::elf::{Elf, header::*, program_header::*};
-use panda_kernel::{entry_point, process::ProcessError};
+use goblin::elf::Elf;
+use goblin::elf::header::{ELFMAG, SELFMAG, EI_CLASS, EI_DATA, EI_VERSION, ELFCLASS64, ELFDATA2LSB, EV_CURRENT, ET_EXEC, EM_X86_64};
+use goblin::elf::program_header::{PT_LOAD, PF_R, PF_X};
+use goblin::elf64::header::SIZEOF_EHDR;
+use goblin::elf64::program_header::SIZEOF_PHDR;
+use panda_kernel::process::ProcessError;
 
-entry_point!(main);
-
-fn main(_boot_info: &'static mut panda_kernel::bootloader_api::BootInfo) -> ! {
-    panda_kernel::init();
-    test_main();
-    loop {}
-}
+panda_kernel::test_harness!(
+    test_reject_kernel_space_vaddr,
+    test_reject_vaddr_memsz_overflow,
+    test_reject_vaddr_memsz_kernel_space,
+    test_reject_offset_filesz_overflow,
+    test_reject_offset_exceeds_file_size,
+    test_accept_valid_elf,
+);
 
 /// Helper to create a minimal ELF header using goblin constants.
 fn create_elf_header() -> [u8; SIZEOF_EHDR] {
@@ -97,7 +99,6 @@ fn create_program_header(p_vaddr: u64, p_memsz: u64, p_offset: u64, p_filesz: u6
     phdr
 }
 
-#[test_case]
 fn test_reject_kernel_space_vaddr() {
     // Craft an ELF with p_vaddr in kernel space (0xffff_8000_0000_0000)
     let mut elf_data = vec![0u8; 4096];
@@ -125,7 +126,6 @@ fn test_reject_kernel_space_vaddr() {
     }
 }
 
-#[test_case]
 fn test_reject_vaddr_memsz_overflow() {
     // Craft an ELF where p_vaddr + p_memsz overflows
     let mut elf_data = vec![0u8; 4096];
@@ -153,7 +153,6 @@ fn test_reject_vaddr_memsz_overflow() {
     }
 }
 
-#[test_case]
 fn test_reject_vaddr_memsz_kernel_space() {
     // Craft an ELF where p_vaddr is in userspace but p_vaddr + p_memsz extends into kernel
     let mut elf_data = vec![0u8; 4096];
@@ -181,7 +180,6 @@ fn test_reject_vaddr_memsz_kernel_space() {
     }
 }
 
-#[test_case]
 fn test_reject_offset_filesz_overflow() {
     // Craft an ELF where p_offset + p_filesz overflows
     let mut elf_data = vec![0u8; 4096];
@@ -209,7 +207,6 @@ fn test_reject_offset_filesz_overflow() {
     }
 }
 
-#[test_case]
 fn test_reject_offset_exceeds_file_size() {
     // Craft an ELF where p_offset + p_filesz exceeds the actual file size
     let mut elf_data = vec![0u8; 4096];
@@ -237,7 +234,6 @@ fn test_reject_offset_exceeds_file_size() {
     }
 }
 
-#[test_case]
 fn test_accept_valid_elf() {
     // Craft a valid ELF that should be accepted
     let mut elf_data = vec![0u8; 4096];
