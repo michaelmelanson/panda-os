@@ -1,0 +1,7 @@
+FMASK test: starting
+FMASK test: setting DF before syscall
+FMASK test: syscall with DF succeeded
+FMASK test: setting DF again for second syscall
+FMASK test: second syscall with DF succeeded
+FMASK test: all flag sanitization tests passed
+PASS

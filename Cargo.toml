@@ -51,7 +51,8 @@ members = [
   "userspace/tests/path_traversal_test",
   "userspace/tests/segfault_test",
   "userspace/tests/fault_recovery_test",
-  "userspace/tests/fault_child"
+  "userspace/tests/fault_child",
+  "userspace/tests/fmask_test"
 ]
 
 [workspace.dependencies]

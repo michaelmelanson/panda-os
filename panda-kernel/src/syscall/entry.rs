@@ -6,7 +6,8 @@ use x86_64::{
     VirtAddr,
     registers::{
         control::{Efer, EferFlags},
-        model_specific::{KernelGsBase, LStar, Star},
+        model_specific::{KernelGsBase, LStar, SFMask, Star},
+        rflags::RFlags,
     },
 };
 
@@ -30,6 +31,18 @@ pub fn init() {
             efer.insert(EferFlags::SYSTEM_CALL_EXTENSIONS);
         });
     }
+
+    // Program FMASK MSR to clear dangerous flags on syscall entry.
+    // Without this, userspace can set flags that persist into kernel mode.
+    SFMask::write(
+        RFlags::INTERRUPT_FLAG      // IF — disable interrupts until kernel re-enables
+            | RFlags::TRAP_FLAG     // TF — prevent single-step leaking kernel flow
+            | RFlags::DIRECTION_FLAG // DF — ensure forward string operations
+            | RFlags::ALIGNMENT_CHECK // AC — prevent alignment check exceptions
+            | RFlags::NESTED_TASK   // NT — prevent IRET interference
+            | RFlags::IOPL_LOW      // IOPL bits — clear I/O privilege level
+            | RFlags::IOPL_HIGH,
+    );
 
     let user_stack_ptr_addr = &gdt::USER_STACK_PTR as *const usize as u64;
     KernelGsBase::write(VirtAddr::new(user_stack_ptr_addr));

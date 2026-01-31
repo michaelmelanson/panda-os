@@ -18,6 +18,7 @@ KERNEL_TESTS := \
 	device_path \
 	elf_security \
 	ext2_validation \
+	fmask \
 	heap \
 	memory \
 	nx_bit \
@@ -41,6 +42,7 @@ USERSPACE_TESTS := \
 	error_test \
 	ext2_test \
 	fault_recovery_test \
+	fmask_test \
 	heap_test \
 	keyboard_test \
 	mailbox_keyboard_test \
