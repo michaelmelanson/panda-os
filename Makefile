@@ -17,6 +17,7 @@ KERNEL_TESTS := \
 	block \
 	device_path \
 	elf_security \
+	ext2_validation \
 	heap \
 	memory \
 	nx_bit \
