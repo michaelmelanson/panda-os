@@ -41,7 +41,7 @@ impl PixelBuffer {
         }
 
         Ok(Self {
-            handle: Handle::from(result as u32),
+            handle: Handle::from(result as u64),
             ptr: info.addr as *mut u32,
             width,
             height,

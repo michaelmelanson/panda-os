@@ -41,7 +41,7 @@ impl File {
         if result < 0 {
             Err(Error::from_code(result))
         } else {
-            let handle = FileHandle::from_raw(result as u32).ok_or(Error::InvalidArgument)?;
+            let handle = FileHandle::from_raw(result as u64).ok_or(Error::InvalidArgument)?;
             Ok(Self { handle })
         }
     }
@@ -60,12 +60,12 @@ impl File {
     ///     panda_abi::EVENT_KEYBOARD_KEY,
     /// ).unwrap();
     /// ```
-    pub fn open_with_mailbox(path: &str, mailbox: u32, event_mask: u32) -> Result<Self> {
+    pub fn open_with_mailbox(path: &str, mailbox: u64, event_mask: u32) -> Result<Self> {
         let result = sys::env::open(path, mailbox, event_mask);
         if result < 0 {
             Err(Error::from_code(result))
         } else {
-            let handle = FileHandle::from_raw(result as u32).ok_or(Error::InvalidArgument)?;
+            let handle = FileHandle::from_raw(result as u64).ok_or(Error::InvalidArgument)?;
             Ok(Self { handle })
         }
     }

@@ -40,33 +40,33 @@ pub struct WellKnownHandle;
 impl WellKnownHandle {
     /// Standard input channel (for pipeline/redirection support).
     /// Handle ID 0 with Channel type tag.
-    pub const STDIN: u32 = HandleType::Channel.make_handle(0);
+    pub const STDIN: u64 = HandleType::Channel.make_handle(0);
 
     /// Standard output channel (for pipeline/redirection support).
     /// Handle ID 1 with Channel type tag.
-    pub const STDOUT: u32 = HandleType::Channel.make_handle(1);
+    pub const STDOUT: u64 = HandleType::Channel.make_handle(1);
 
     /// Standard error channel (reserved for future use).
     /// Handle ID 2 with Channel type tag.
-    pub const STDERR: u32 = HandleType::Channel.make_handle(2);
+    pub const STDERR: u64 = HandleType::Channel.make_handle(2);
 
     /// Handle to the current process (Process resource).
     /// Handle ID 3 with Process type tag.
-    pub const PROCESS: u32 = HandleType::Process.make_handle(3);
+    pub const PROCESS: u64 = HandleType::Process.make_handle(3);
 
     /// Handle to the system environment (Environment resource).
     /// Handle ID 4 - special handle type (no resource backing).
     /// Environment operations don't require a real handle, this is a sentinel.
-    pub const ENVIRONMENT: u32 = 4;
+    pub const ENVIRONMENT: u64 = 4;
 
     /// Handle to the process's default mailbox (Mailbox resource).
     /// Handle ID 5 with Mailbox type tag.
-    pub const MAILBOX: u32 = HandleType::Mailbox.make_handle(5);
+    pub const MAILBOX: u64 = HandleType::Mailbox.make_handle(5);
 
     /// Handle to the channel connected to the parent process (ChannelEndpoint resource).
     /// Handle ID 6 with Channel type tag.
     /// Only valid if this process was spawned by another process.
-    pub const PARENT: u32 = HandleType::Channel.make_handle(6);
+    pub const PARENT: u64 = HandleType::Channel.make_handle(6);
 }
 
 // =============================================================================
@@ -75,8 +75,8 @@ impl WellKnownHandle {
 
 /// Handle type tags encoded in the high 8 bits of a handle value.
 ///
-/// Handle format: `[8 bits: type tag][24 bits: handle id]`
-/// This allows 256 handle types and 16 million handles per process.
+/// Handle format: `[8 bits: type tag][56 bits: handle id]`
+/// This allows 256 handle types and ~72 quadrillion handles per process.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandleType {
@@ -111,32 +111,32 @@ impl HandleType {
     pub const TAG_BITS: u32 = 8;
 
     /// Number of bits used for the handle ID.
-    pub const ID_BITS: u32 = 24;
+    pub const ID_BITS: u32 = 56;
 
-    /// Mask for extracting the handle ID (low 24 bits).
-    pub const ID_MASK: u32 = (1 << Self::ID_BITS) - 1;
+    /// Mask for extracting the handle ID (low 56 bits).
+    pub const ID_MASK: u64 = (1u64 << Self::ID_BITS) - 1;
 
     /// Mask for extracting the type tag (high 8 bits).
-    pub const TAG_MASK: u32 = 0xFF << Self::ID_BITS;
+    pub const TAG_MASK: u64 = 0xFF << Self::ID_BITS;
 
     /// Maximum handle ID value.
-    pub const MAX_ID: u32 = Self::ID_MASK;
+    pub const MAX_ID: u64 = Self::ID_MASK;
 
     /// Create a tagged handle value from type and ID.
     #[inline]
-    pub const fn make_handle(self, id: u32) -> u32 {
-        ((self as u32) << Self::ID_BITS) | (id & Self::ID_MASK)
+    pub const fn make_handle(self, id: u64) -> u64 {
+        ((self as u64) << Self::ID_BITS) | (id & Self::ID_MASK)
     }
 
     /// Extract the type tag from a handle value.
     #[inline]
-    pub const fn from_handle(handle: u32) -> u8 {
+    pub const fn from_handle(handle: u64) -> u8 {
         (handle >> Self::ID_BITS) as u8
     }
 
     /// Extract the handle ID from a handle value.
     #[inline]
-    pub const fn id_from_handle(handle: u32) -> u32 {
+    pub const fn id_from_handle(handle: u64) -> u64 {
         handle & Self::ID_MASK
     }
 
@@ -173,23 +173,23 @@ impl HandleType {
 
 // Handle constants
 /// Standard input channel handle.
-pub const HANDLE_STDIN: u32 = WellKnownHandle::STDIN;
+pub const HANDLE_STDIN: u64 = WellKnownHandle::STDIN;
 /// Standard output channel handle.
-pub const HANDLE_STDOUT: u32 = WellKnownHandle::STDOUT;
+pub const HANDLE_STDOUT: u64 = WellKnownHandle::STDOUT;
 /// Standard error channel handle (reserved).
-pub const HANDLE_STDERR: u32 = WellKnownHandle::STDERR;
+pub const HANDLE_STDERR: u64 = WellKnownHandle::STDERR;
 /// Handle to the current process (Process resource)
-pub const HANDLE_PROCESS: u32 = WellKnownHandle::PROCESS;
+pub const HANDLE_PROCESS: u64 = WellKnownHandle::PROCESS;
 /// Handle to the system environment (Environment resource)
-pub const HANDLE_ENVIRONMENT: u32 = WellKnownHandle::ENVIRONMENT;
+pub const HANDLE_ENVIRONMENT: u64 = WellKnownHandle::ENVIRONMENT;
 /// Handle to the process's default mailbox (Mailbox resource)
-pub const HANDLE_MAILBOX: u32 = WellKnownHandle::MAILBOX;
+pub const HANDLE_MAILBOX: u64 = WellKnownHandle::MAILBOX;
 /// Handle to the channel connected to the parent process (ChannelEndpoint resource)
-pub const HANDLE_PARENT: u32 = WellKnownHandle::PARENT;
+pub const HANDLE_PARENT: u64 = WellKnownHandle::PARENT;
 
 // Legacy alias for backwards compatibility
 /// Alias for HANDLE_PROCESS (deprecated, use HANDLE_PROCESS instead)
-pub const HANDLE_SELF: u32 = HANDLE_PROCESS;
+pub const HANDLE_SELF: u64 = HANDLE_PROCESS;
 
 // =============================================================================
 // Operation codes
@@ -461,6 +461,21 @@ pub const OP_MAILBOX_CREATE: u32 = Operation::MailboxCreate as u32;
 pub const OP_MAILBOX_WAIT: u32 = Operation::MailboxWait as u32;
 /// Poll for an event on any attached handle (non-blocking): (mailbox) -> (handle, events) or (0, 0)
 pub const OP_MAILBOX_POLL: u32 = Operation::MailboxPoll as u32;
+
+/// Result structure for mailbox wait/poll operations.
+///
+/// Written to userspace via out-pointer. Contains the handle that
+/// generated the event and the event flags.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MailboxEventResult {
+    /// Handle ID that generated the event.
+    pub handle_id: u64,
+    /// Event flags (see EventFlags).
+    pub events: u32,
+    /// Padding for alignment.
+    pub _pad: u32,
+}
 
 // Channel operations (0x7_1000 - 0x7_1FFF)
 /// Create a channel pair: (out_handles_ptr) -> 0 or error
@@ -784,13 +799,15 @@ pub struct SpawnParams {
     /// Length of the path string.
     pub path_len: usize,
     /// Mailbox handle for event notifications (0 = none).
-    pub mailbox: u32,
+    pub mailbox: u64,
     /// Event mask for mailbox notifications.
     pub event_mask: u32,
+    /// Padding for alignment.
+    pub _pad: u32,
     /// Handle to use for child's stdin (0 = default to parent channel).
-    pub stdin: u32,
+    pub stdin: u64,
     /// Handle to use for child's stdout (0 = default to parent channel).
-    pub stdout: u32,
+    pub stdout: u64,
 }
 
 // =============================================================================
@@ -1169,7 +1186,7 @@ pub struct BlitParams {
     pub y: u32,
     pub width: u32,
     pub height: u32,
-    pub buffer_handle: u32,
+    pub buffer_handle: u64,
 }
 
 /// Parameters for fill operation.

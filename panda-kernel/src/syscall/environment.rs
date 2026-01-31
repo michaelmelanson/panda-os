@@ -32,7 +32,7 @@ pub fn handle_open(
     mailbox_handle: usize,
     event_mask: usize,
 ) -> SyscallFuture {
-    let mailbox_handle = mailbox_handle as u32;
+    let mailbox_handle = mailbox_handle as u64;
     let event_mask = event_mask as u32;
 
     let uri = match ua.read_str(uri_ptr, uri_len) {

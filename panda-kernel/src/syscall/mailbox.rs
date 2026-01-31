@@ -11,7 +11,7 @@ use crate::resource::Mailbox;
 use crate::scheduler;
 
 use super::poll_fn;
-use super::user_ptr::{SyscallFuture, SyscallResult};
+use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess};
 
 /// Handle mailbox create operation.
 /// Returns a new mailbox handle.
@@ -26,11 +26,24 @@ pub fn handle_create() -> SyscallFuture {
 
 /// Handle mailbox wait operation (blocking).
 /// Waits for an event on any handle attached to the mailbox.
-/// Returns packed (handle_id, events) in the result.
+/// Writes the result to a userspace MailboxEventResult struct via out-pointer.
 ///
-/// The result is encoded as: (handle_id << 32) | events
+/// Arguments:
+/// - mailbox_handle: The mailbox handle
+/// - out_ptr: Pointer to MailboxEventResult struct in userspace
+///
+/// Returns 0 on success, negative error code on failure.
 /// If no events are available, blocks until one arrives.
-pub fn handle_wait(mailbox_handle: u32) -> SyscallFuture {
+pub fn handle_wait(_ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> SyscallFuture {
+    if out_ptr == 0 {
+        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+    }
+
+    let dst = super::user_ptr::UserSlice::new(
+        out_ptr,
+        core::mem::size_of::<panda_abi::MailboxEventResult>(),
+    );
+
     let resource = scheduler::with_current_process(|proc| {
         let handle = proc.handles().get(mailbox_handle)?;
         if handle.as_mailbox().is_some() {
@@ -49,8 +62,12 @@ pub fn handle_wait(mailbox_handle: u32) -> SyscallFuture {
         };
 
         if let Some((handle_id, events)) = mailbox.wait() {
-            let result = ((handle_id as isize) << 32) | (events as isize);
-            Poll::Ready(SyscallResult::ok(result))
+            let event_result = panda_abi::MailboxEventResult {
+                handle_id,
+                events,
+                _pad: 0,
+            };
+            Poll::Ready(SyscallResult::write_back_struct(0, &event_result, dst))
         } else {
             // No events, block until one arrives
             mailbox.waker().set_waiting(scheduler::current_process_id());
@@ -60,20 +77,37 @@ pub fn handle_wait(mailbox_handle: u32) -> SyscallFuture {
 }
 
 /// Handle mailbox poll operation (non-blocking).
-/// Returns packed (handle_id, events) or 0 if no events.
+/// Writes the result to a userspace MailboxEventResult struct via out-pointer.
 ///
-/// The result is encoded as: (handle_id << 32) | events
-pub fn handle_poll(mailbox_handle: u32) -> SyscallFuture {
+/// Arguments:
+/// - mailbox_handle: The mailbox handle
+/// - out_ptr: Pointer to MailboxEventResult struct in userspace
+///
+/// Returns 1 if an event was available, 0 if no events, negative on error.
+pub fn handle_poll(ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> SyscallFuture {
+    if out_ptr == 0 {
+        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+    }
+
     let result = scheduler::with_current_process(|proc| {
         let handle = proc.handles().get(mailbox_handle)?;
         let mailbox = handle.as_mailbox()?;
         Some(mailbox.poll())
     });
 
-    let code = match result {
-        Some(Some((handle_id, events))) => ((handle_id as isize) << 32) | (events as isize),
-        Some(None) => 0,
-        None => -1,
-    };
-    Box::pin(core::future::ready(SyscallResult::ok(code)))
+    match result {
+        Some(Some((handle_id, events))) => {
+            let event_result = panda_abi::MailboxEventResult {
+                handle_id,
+                events,
+                _pad: 0,
+            };
+            match ua.write_struct(out_ptr, &event_result) {
+                Ok(_) => Box::pin(core::future::ready(SyscallResult::ok(1))),
+                Err(_) => Box::pin(core::future::ready(SyscallResult::err(-1))),
+            }
+        }
+        Some(None) => Box::pin(core::future::ready(SyscallResult::ok(0))),
+        None => Box::pin(core::future::ready(SyscallResult::err(-1))),
+    }
 }

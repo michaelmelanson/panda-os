@@ -29,7 +29,7 @@ fn checked_pixel_buffer_size(width: u32, height: u32) -> Option<usize> {
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_info(ua: &UserAccess, handle: u32, info_ptr: usize) -> SyscallFuture {
+pub fn handle_info(ua: &UserAccess, handle: u64, info_ptr: usize) -> SyscallFuture {
     if info_ptr == 0 {
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
@@ -74,7 +74,7 @@ pub fn handle_info(ua: &UserAccess, handle: u32, info_ptr: usize) -> SyscallFutu
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_blit(ua: &UserAccess, handle: u32, params_ptr: usize) -> SyscallFuture {
+pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFuture {
     if params_ptr == 0 {
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
@@ -235,7 +235,7 @@ pub fn handle_blit(ua: &UserAccess, handle: u32, params_ptr: usize) -> SyscallFu
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_fill(ua: &UserAccess, handle: u32, params_ptr: usize) -> SyscallFuture {
+pub fn handle_fill(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFuture {
     if params_ptr == 0 {
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
@@ -281,7 +281,7 @@ pub fn handle_fill(ua: &UserAccess, handle: u32, params_ptr: usize) -> SyscallFu
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_flush(ua: &UserAccess, handle: u32, rect_ptr: usize) -> SyscallFuture {
+pub fn handle_flush(ua: &UserAccess, handle: u64, rect_ptr: usize) -> SyscallFuture {
     let is_window = scheduler::with_current_process(|proc| {
         let Some(resource) = proc.handles().get(handle) else {
             return None;
@@ -379,7 +379,7 @@ pub fn handle_flush(ua: &UserAccess, handle: u32, rect_ptr: usize) -> SyscallFut
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_update_params(ua: &UserAccess, handle: u32, params_ptr: usize) -> SyscallFuture {
+pub fn handle_update_params(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFuture {
     if params_ptr == 0 {
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }

@@ -26,7 +26,7 @@ libpanda::main! {
     // Test 2: Channel operations on invalid handle
     environment::log("Test 2: Channel operations on invalid handle");
 
-    let invalid_handle = Handle::from(0xDEAD);
+    let invalid_handle = Handle::from(0xDEADu64);
 
     match ipc::try_send(invalid_handle, b"test") {
         Ok(_) => {

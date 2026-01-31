@@ -248,7 +248,7 @@ impl<'a> ChildBuilder<'a> {
             return Err(Error::from_code(result));
         }
 
-        let handle = Handle::from(result as u32);
+        let handle = Handle::from(result as u64);
 
         // Build environment: start with inherited if enabled, then add explicit vars
         // We use owned strings to avoid lifetime issues with inherited env

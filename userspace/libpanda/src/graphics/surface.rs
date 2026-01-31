@@ -40,7 +40,7 @@ impl Surface {
             Err(Error::from_code(result))
         } else {
             Ok(Self {
-                handle: Handle::from(result as u32),
+                handle: Handle::from(result as u64),
             })
         }
     }

@@ -44,9 +44,13 @@ impl Mailbox {
     /// The `Events` struct may contain multiple event flags.
     #[inline(always)]
     pub fn recv(&self) -> (Handle, Events) {
-        let result = sys::mailbox::wait(self.handle);
-        let (handle_id, flags) = sys::mailbox::unpack_result(result);
-        (Handle::from(handle_id), Events(flags))
+        let mut event_result = MailboxEventResult {
+            handle_id: 0,
+            events: 0,
+            _pad: 0,
+        };
+        sys::mailbox::wait(self.handle, &mut event_result);
+        (Handle::from(event_result.handle_id), Events(event_result.events))
     }
 
     /// Poll for an event (non-blocking).
@@ -54,12 +58,16 @@ impl Mailbox {
     /// Returns `Some((handle, events))` if available, `None` otherwise.
     #[inline(always)]
     pub fn try_recv(&self) -> Option<(Handle, Events)> {
-        let result = sys::mailbox::poll(self.handle);
-        if result == 0 {
+        let mut event_result = MailboxEventResult {
+            handle_id: 0,
+            events: 0,
+            _pad: 0,
+        };
+        let result = sys::mailbox::poll(self.handle, &mut event_result);
+        if result <= 0 {
             None
         } else {
-            let (handle_id, flags) = sys::mailbox::unpack_result(result);
-            Some((Handle::from(handle_id), Events(flags)))
+            Some((Handle::from(event_result.handle_id), Events(event_result.events)))
         }
     }
 }

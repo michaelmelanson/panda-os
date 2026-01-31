@@ -20,7 +20,7 @@ use super::user_ptr::{SyscallError, SyscallFuture, SyscallResult, UserAccess, Us
 /// Creates a pair of connected channel endpoints and returns handles to both.
 ///
 /// Arguments:
-/// - out_handles_ptr: Pointer to array of two u32s to receive handle IDs [endpoint_a, endpoint_b]
+/// - out_handles_ptr: Pointer to array of two u64s to receive handle IDs [endpoint_a, endpoint_b]
 ///
 /// Returns 0 on success, negative error code on failure.
 pub fn handle_create(ua: &UserAccess, out_handles_ptr: usize) -> SyscallFuture {
@@ -43,7 +43,7 @@ pub fn handle_create(ua: &UserAccess, out_handles_ptr: usize) -> SyscallFuture {
     });
 
     // Write the handle IDs to userspace
-    let result = ua.write_struct::<[u32; 2]>(out_handles_ptr, &[handle_a, handle_b]);
+    let result = ua.write_struct::<[u64; 2]>(out_handles_ptr, &[handle_a, handle_b]);
 
     let code = match result {
         Ok(_) => {
@@ -61,7 +61,7 @@ pub fn handle_create(ua: &UserAccess, out_handles_ptr: usize) -> SyscallFuture {
 
 /// Get the channel endpoint from a handle, returning a cloned Arc.
 /// This allows us to call methods on the channel outside of with_current_process.
-fn get_channel(handle: u32) -> Option<Arc<dyn Resource>> {
+fn get_channel(handle: u64) -> Option<Arc<dyn Resource>> {
     scheduler::with_current_process(|proc| {
         let h = proc.handles().get(handle)?;
         // Check that it's actually a channel
@@ -85,7 +85,7 @@ fn get_channel(handle: u32) -> Option<Arc<dyn Resource>> {
 /// Returns 0 on success, negative error code on failure.
 pub fn handle_send(
     ua: &UserAccess,
-    handle: u32,
+    handle: u64,
     buf_ptr: usize,
     buf_len: usize,
     flags: usize,
@@ -142,7 +142,7 @@ pub fn handle_send(
 /// - flags: CHANNEL_NONBLOCK to fail instead of blocking if queue empty
 ///
 /// Returns message length on success, negative error code on failure.
-pub fn handle_recv(handle: u32, buf_ptr: usize, buf_len: usize, flags: usize) -> SyscallFuture {
+pub fn handle_recv(handle: u64, buf_ptr: usize, buf_len: usize, flags: usize) -> SyscallFuture {
     let flags = flags as u32;
     let dst = UserSlice::new(buf_ptr, buf_len);
 

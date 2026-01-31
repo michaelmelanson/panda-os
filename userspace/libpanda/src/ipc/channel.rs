@@ -233,13 +233,12 @@ pub fn try_recv(handle: Handle, buf: &mut [u8]) -> Result<usize> {
 /// Returns handles to both endpoints: `(endpoint_a, endpoint_b)`.
 /// Messages sent on endpoint_a are received by endpoint_b, and vice versa.
 pub fn create_pair() -> Result<(ChannelHandle, ChannelHandle)> {
-    let result = sys::channel::create_raw();
+    let mut handles: [u64; 2] = [0, 0];
+    let result = sys::channel::create_raw(&mut handles);
     if result < 0 {
         return Err(Error::from_code(result));
     }
-    // Result encodes both handles: high 32 bits = handle_a, low 32 bits = handle_b
-    let handle_a = ChannelHandle::from_raw((result >> 32) as u32).ok_or(Error::InvalidArgument)?;
-    let handle_b =
-        ChannelHandle::from_raw((result & 0xFFFFFFFF) as u32).ok_or(Error::InvalidArgument)?;
+    let handle_a = ChannelHandle::from_raw(handles[0]).ok_or(Error::InvalidArgument)?;
+    let handle_b = ChannelHandle::from_raw(handles[1]).ok_or(Error::InvalidArgument)?;
     Ok((handle_a, handle_b))
 }

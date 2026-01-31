@@ -3,7 +3,7 @@
 //! Handles provide a unified abstraction for kernel resources accessible from userspace.
 //! Each process has its own handle table mapping handle IDs to resources.
 //!
-//! Handle format: `[8 bits: type tag][24 bits: handle id]`
+//! Handle format: `[8 bits: type tag][56 bits: handle id]`
 //! The type tag allows userspace to verify handle types at runtime.
 
 use alloc::collections::BTreeMap;
@@ -17,8 +17,8 @@ use crate::resource::{
 };
 
 /// Handle identifier (similar to file descriptor but for any resource).
-/// Includes type tag in high 8 bits, handle ID in low 24 bits.
-pub type HandleId = u32;
+/// Includes type tag in high 8 bits, handle ID in low 56 bits.
+pub type HandleId = u64;
 
 /// A kernel resource handle with per-handle state.
 pub struct Handle {
@@ -136,7 +136,7 @@ impl Handle {
 /// Per-process handle table mapping handle IDs to resources.
 pub struct HandleTable {
     handles: BTreeMap<HandleId, Handle>,
-    next_id: u32,
+    next_id: u64,
 }
 
 impl HandleTable {
@@ -163,6 +163,10 @@ impl HandleTable {
         resource: Arc<dyn Resource>,
     ) -> HandleId {
         let id = self.next_id;
+        assert!(
+            id <= HandleType::MAX_ID,
+            "handle ID space exhausted (56-bit wraparound)"
+        );
         self.next_id += 1;
         let tagged_id = handle_type.make_handle(id);
         self.handles.insert(tagged_id, Handle::new(resource));

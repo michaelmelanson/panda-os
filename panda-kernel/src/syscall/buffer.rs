@@ -59,7 +59,7 @@ pub fn handle_alloc(ua: &UserAccess, size: usize, info_ptr: usize) -> SyscallFut
 /// If info_ptr is non-zero, writes BufferAllocInfo to that address.
 pub fn handle_resize(
     ua: &UserAccess,
-    handle_id: u32,
+    handle_id: u64,
     new_size: usize,
     info_ptr: usize,
 ) -> SyscallFuture {
@@ -159,7 +159,7 @@ pub fn handle_resize(
 }
 
 /// Handle buffer free.
-pub fn handle_free(handle_id: u32) -> SyscallFuture {
+pub fn handle_free(handle_id: u64) -> SyscallFuture {
     let result = scheduler::with_current_process(|proc| {
         // Get buffer's virtual address and size before removing
         let (vaddr, num_pages) = {
@@ -189,7 +189,7 @@ pub fn handle_free(handle_id: u32) -> SyscallFuture {
 
 /// Handle reading from file into buffer.
 /// Returns bytes read on success, negative on error.
-pub fn handle_read_buffer(file_handle_id: u32, buffer_handle_id: u32) -> SyscallFuture {
+pub fn handle_read_buffer(file_handle_id: u64, buffer_handle_id: u64) -> SyscallFuture {
     // Get buffer info (shared buffer pointer and size)
     let (buffer_arc, buffer_size) = match scheduler::with_current_process(|proc| {
         let buffer_handle = proc.handles().get(buffer_handle_id)?;
@@ -246,8 +246,8 @@ pub fn handle_read_buffer(file_handle_id: u32, buffer_handle_id: u32) -> Syscall
 /// Handle writing from buffer to file.
 /// Returns bytes written on success, negative on error.
 pub fn handle_write_buffer(
-    file_handle_id: u32,
-    buffer_handle_id: u32,
+    file_handle_id: u64,
+    buffer_handle_id: u64,
     len: usize,
 ) -> SyscallFuture {
     // Get buffer data (copy to owned Vec since we need it in async block)

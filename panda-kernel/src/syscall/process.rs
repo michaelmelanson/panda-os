@@ -24,7 +24,7 @@ pub fn handle_get_pid() -> SyscallFuture {
 /// Handle process wait operation.
 ///
 /// Blocks until the target process exits, then returns its exit code.
-pub fn handle_wait(handle_id: u32) -> SyscallFuture {
+pub fn handle_wait(handle_id: u64) -> SyscallFuture {
     let resource = scheduler::with_current_process(|proc| {
         let handle = proc.handles().get(handle_id)?;
         if handle.as_process().is_some() {
