@@ -1,0 +1,2 @@
+Segfault test: starting
+Segfault test: writing to read-only code page

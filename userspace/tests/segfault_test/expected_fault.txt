@@ -1,0 +1,3 @@
+# Verify the kernel detects and reports the protection violation
+Segmentation fault in process
+protection violation

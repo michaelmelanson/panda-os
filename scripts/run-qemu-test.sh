@@ -393,4 +393,32 @@ if [ -n "$EXPECTED_FILE" ] && [ -f "$EXPECTED_FILE" ]; then
     fi
 fi
 
+# Check expected kernel log patterns (for fault/exception tests)
+EXPECTED_FAULT_FILE=""
+if [ -n "$EXPECTED_FILE" ]; then
+    EXPECTED_FAULT_FILE="${EXPECTED_FILE%.txt}_fault.txt"
+fi
+
+if [ -n "$EXPECTED_FAULT_FILE" ] && [ -f "$EXPECTED_FAULT_FILE" ]; then
+    # Extract all kernel INFO: messages (not just LOG: messages)
+    KERNEL_MESSAGES=$(grep -a "INFO:" "$LOG_FILE" | sed 's/.*INFO: //')
+
+    # Ordered mode: patterns must appear in strict order
+    FAULT_PATTERNS=$(grep -v '^#' "$EXPECTED_FAULT_FILE" | grep -v '^[[:space:]]*$')
+
+    LINE_NUM=0
+    while IFS= read -r pattern; do
+        LINE_NUM=$((LINE_NUM + 1))
+        MATCH_LINE=$(echo "$KERNEL_MESSAGES" | grep -n -F "$pattern" | head -1 | cut -d: -f1)
+        if [ -z "$MATCH_LINE" ]; then
+            echo "Expected kernel log not found: '$pattern' (expected_fault.txt line $LINE_NUM)" >&2
+            echo "Kernel messages:" >&2
+            echo "$KERNEL_MESSAGES" | head -10 >&2
+            exit 1
+        fi
+        # Remove all lines up to and including the match
+        KERNEL_MESSAGES=$(echo "$KERNEL_MESSAGES" | tail -n +$((MATCH_LINE + 1)))
+    done <<< "$FAULT_PATTERNS"
+fi
+
 exit 0  # passed

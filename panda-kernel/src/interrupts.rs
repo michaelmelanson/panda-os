@@ -207,15 +207,42 @@ extern "x86-interrupt" fn default_page_fault_handler(
 
     // Try demand paging for userspace memory access
     if error_code.contains(PageFaultErrorCode::USER_MODE) {
-        // Try stack first (more common for initial faults)
-        if crate::memory::try_handle_stack_page_fault(VirtAddr::new(fault_address.as_u64())) {
-            return;
+        // Only attempt demand paging for not-present faults.
+        // If PROTECTION_VIOLATION is set, the page exists but the access was
+        // disallowed (e.g. write to read-only) -- this must NOT trigger demand paging.
+        if !error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+            // Try stack first (more common for initial faults)
+            if crate::memory::try_handle_stack_page_fault(VirtAddr::new(fault_address.as_u64())) {
+                return;
+            }
+
+            // Try heap
+            let brk = crate::scheduler::with_current_process(|proc| proc.brk());
+            if crate::memory::try_handle_heap_page_fault(VirtAddr::new(fault_address.as_u64()), brk)
+            {
+                return;
+            }
         }
 
-        // Try heap
-        let brk = crate::scheduler::with_current_process(|proc| proc.brk());
-        if crate::memory::try_handle_heap_page_fault(VirtAddr::new(fault_address.as_u64()), brk) {
-            return;
+        // Unhandled user-mode page fault: either a protection violation or an
+        // access outside valid memory regions. Kill the process with SIGSEGV-like
+        // exit code (-11).
+        let current_pid = crate::scheduler::current_process_id();
+        log::info!(
+            "Segmentation fault in process {:?} at {fault_address:#x} ({})",
+            current_pid,
+            if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+                "protection violation"
+            } else {
+                "unmapped address"
+            }
+        );
+        let process_info =
+            crate::scheduler::with_current_process(|proc| proc.info().clone());
+        crate::scheduler::remove_process(current_pid);
+        process_info.set_exit_code(-11);
+        unsafe {
+            crate::scheduler::exec_next_runnable();
         }
     }
 
