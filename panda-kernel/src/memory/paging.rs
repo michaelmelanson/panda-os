@@ -4,7 +4,7 @@ use log::debug;
 use x86_64::{
     PhysAddr, VirtAddr,
     instructions::tlb,
-    registers::control::{Cr0, Cr0Flags, Cr3},
+    registers::control::Cr3,
     structures::paging::{
         PageTable, PageTableFlags, PhysFrame,
         page_table::{PageTableEntry, PageTableLevel},
@@ -13,6 +13,7 @@ use x86_64::{
 
 use super::mapping::{Mapping, MappingBacking};
 use super::recursive;
+use super::write_protection::without_write_protection;
 use super::{MemoryMappingOptions, allocate_frame, allocate_frame_raw, deallocate_frame_raw};
 
 /// Get the current page table pointer via recursive mapping.
@@ -85,19 +86,6 @@ pub fn create_user_page_table() -> PhysAddr {
     core::mem::forget(frame);
 
     frame_phys
-}
-
-/// Execute a closure with write protection disabled.
-pub fn without_write_protection(f: impl FnOnce()) {
-    unsafe {
-        Cr0::update(|cr0| cr0.remove(Cr0Flags::WRITE_PROTECT));
-    }
-
-    f();
-
-    unsafe {
-        Cr0::update(|cr0| cr0.insert(Cr0Flags::WRITE_PROTECT));
-    }
 }
 
 /// Update permissions for already-mapped pages.
