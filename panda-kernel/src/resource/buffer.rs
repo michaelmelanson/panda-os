@@ -69,7 +69,7 @@ impl SharedBuffer {
     /// The buffer will be mapped into the process's address space.
     /// Returns the buffer Arc and its mapped address.
     pub fn alloc(process: &mut Process, size: usize) -> Result<(Arc<Self>, usize), BufferError> {
-        if size == 0 {
+        if size == 0 || size > panda_abi::MAX_BUFFER_SIZE {
             return Err(BufferError::InvalidSize);
         }
 
@@ -148,7 +148,7 @@ impl Buffer for SharedBuffer {
     }
 
     fn resize(&self, new_size: usize) -> Result<usize, BufferError> {
-        if new_size == 0 {
+        if new_size == 0 || new_size > panda_abi::MAX_BUFFER_SIZE {
             return Err(BufferError::InvalidSize);
         }
 

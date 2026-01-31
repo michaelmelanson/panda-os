@@ -161,7 +161,9 @@ pub fn handle_recv(handle: u32, buf_ptr: usize, buf_len: usize, flags: usize) ->
             return Poll::Ready(SyscallResult::err(-1));
         };
 
-        let mut kernel_buf = vec![0u8; dst.len()];
+        // Cap allocation to MAX_MESSAGE_SIZE (messages can never exceed this)
+        let alloc_len = dst.len().min(panda_abi::MAX_MESSAGE_SIZE);
+        let mut kernel_buf = vec![0u8; alloc_len];
         match channel.recv(&mut kernel_buf) {
             Ok(len) => {
                 debug!("channel_recv: received {} bytes", len);

@@ -82,7 +82,8 @@ fn handle_read_vfs(
             return SyscallResult::err(-1);
         }
 
-        // Read into kernel bounce buffer
+        // Read into kernel bounce buffer (capped to prevent kernel heap exhaustion)
+        let buf_len = buf_len.min(panda_abi::MAX_FILE_IO_SIZE);
         let mut kernel_buf = vec![0u8; buf_len];
         match file.read(&mut kernel_buf).await {
             Ok(n) => {
@@ -242,6 +243,9 @@ fn handle_write_vfs(
             .unwrap_or(0)
     });
 
+    // Cap write size to prevent kernel heap exhaustion
+    let buf_len = buf_len.min(panda_abi::MAX_FILE_IO_SIZE);
+
     // Copy data from userspace into kernel buffer before building future
     let data = match ua.read(UserSlice::new(buf_ptr, buf_len)) {
         Ok(d) => d,
@@ -279,6 +283,9 @@ fn handle_write_sync(
     buf_ptr: usize,
     buf_len: usize,
 ) -> SyscallFuture {
+    // Cap write size to prevent kernel heap exhaustion
+    let buf_len = buf_len.min(panda_abi::MAX_FILE_IO_SIZE);
+
     // Copy data from userspace
     let data = match ua.read(UserSlice::new(buf_ptr, buf_len)) {
         Ok(d) => d,

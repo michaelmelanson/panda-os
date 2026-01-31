@@ -56,6 +56,7 @@ USERSPACE_TESTS := \
 	readdir_test \
 	resource_test \
 	segfault_test \
+	size_cap_test \
 	spawn_test \
 	state_test \
 	surface_test \
