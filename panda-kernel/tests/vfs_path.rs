@@ -120,7 +120,7 @@ fn ensure_mounts() {
     }
 
     // Build tar archive 1: hello.txt and sub/nested.txt
-    let buf = unsafe { &mut TAR_BUF_1 };
+    let buf = unsafe { &mut *(&raw mut TAR_BUF_1) };
     let mut pos = 0;
 
     let content1 = b"Hello, world!";
@@ -141,7 +141,7 @@ fn ensure_mounts() {
     vfs::mount("/test", Arc::new(fs));
 
     // Build tar archive 2: secret.txt
-    let buf2 = unsafe { &mut TAR_BUF_2 };
+    let buf2 = unsafe { &mut *(&raw mut TAR_BUF_2) };
     let content3 = b"Secret file";
     let header3 = make_tar_header(b"secret.txt", content3.len());
     buf2[0..512].copy_from_slice(&header3);
