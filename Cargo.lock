@@ -644,6 +644,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "size_cap_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "spawn_child"
 version = "0.1.0"
 dependencies = [
