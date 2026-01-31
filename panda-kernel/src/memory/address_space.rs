@@ -79,6 +79,11 @@ pub const KERNEL_HEAP_BASE: u64 = 0xffff_a000_0000_0000;
 /// Base address for the relocated kernel image.
 pub const KERNEL_IMAGE_BASE: u64 = 0xffff_c000_0000_0000;
 
+/// Upper bound of userspace addresses (lower canonical half).
+/// Addresses must be < USER_ADDR_MAX to be valid userspace addresses.
+/// Imported from syscall::user_ptr.
+pub const USER_ADDR_MAX: u64 = 0x0000_7fff_ffff_ffff;
+
 /// Map the kernel heap region at KERNEL_HEAP_BASE.
 ///
 /// This maps the given physical memory to virtual addresses starting at `KERNEL_HEAP_BASE`,

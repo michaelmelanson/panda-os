@@ -23,30 +23,30 @@ fn main(_boot_info: &'static mut panda_kernel::bootloader_api::BootInfo) -> ! {
     loop {}
 }
 
-/// Helper to create a minimal ELF header
-fn create_elf_header() -> [u8; 64] {
-    let mut header = [0u8; 64];
+/// Helper to create a minimal ELF header using goblin constants.
+fn create_elf_header() -> [u8; SIZEOF_EHDR] {
+    let mut header = [0u8; SIZEOF_EHDR];
 
     // ELF magic number
-    header[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+    header[0..SELFMAG].copy_from_slice(ELFMAG);
     header[EI_CLASS] = ELFCLASS64;
     header[EI_DATA] = ELFDATA2LSB;
     header[EI_VERSION] = EV_CURRENT;
 
     // e_type: ET_EXEC (executable)
-    header[16..18].copy_from_slice(&2u16.to_le_bytes());
+    header[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
 
     // e_machine: EM_X86_64
-    header[18..20].copy_from_slice(&62u16.to_le_bytes());
+    header[18..20].copy_from_slice(&EM_X86_64.to_le_bytes());
 
     // e_version
-    header[20..24].copy_from_slice(&1u32.to_le_bytes());
+    header[20..24].copy_from_slice(&(EV_CURRENT as u32).to_le_bytes());
 
     // e_entry
     header[24..32].copy_from_slice(&0x400000u64.to_le_bytes());
 
     // e_phoff (program header offset - right after ELF header)
-    header[32..40].copy_from_slice(&64u64.to_le_bytes());
+    header[32..40].copy_from_slice(&(SIZEOF_EHDR as u64).to_le_bytes());
 
     // e_shoff (section header offset - 0 for minimal binary)
     header[40..48].copy_from_slice(&0u64.to_le_bytes());
@@ -55,10 +55,10 @@ fn create_elf_header() -> [u8; 64] {
     header[48..52].copy_from_slice(&0u32.to_le_bytes());
 
     // e_ehsize (ELF header size)
-    header[52..54].copy_from_slice(&64u16.to_le_bytes());
+    header[52..54].copy_from_slice(&(SIZEOF_EHDR as u16).to_le_bytes());
 
     // e_phentsize (program header entry size)
-    header[54..56].copy_from_slice(&56u16.to_le_bytes());
+    header[54..56].copy_from_slice(&(SIZEOF_PHDR as u16).to_le_bytes());
 
     // e_phnum (number of program headers)
     header[56..58].copy_from_slice(&1u16.to_le_bytes());
@@ -66,15 +66,15 @@ fn create_elf_header() -> [u8; 64] {
     header
 }
 
-/// Helper to create a PT_LOAD program header
-fn create_program_header(p_vaddr: u64, p_memsz: u64, p_offset: u64, p_filesz: u64) -> [u8; 56] {
-    let mut phdr = [0u8; 56];
+/// Helper to create a PT_LOAD program header using goblin constants.
+fn create_program_header(p_vaddr: u64, p_memsz: u64, p_offset: u64, p_filesz: u64) -> [u8; SIZEOF_PHDR] {
+    let mut phdr = [0u8; SIZEOF_PHDR];
 
     // p_type: PT_LOAD
-    phdr[0..4].copy_from_slice(&1u32.to_le_bytes());
+    phdr[0..4].copy_from_slice(&PT_LOAD.to_le_bytes());
 
     // p_flags: PF_R | PF_X (readable + executable)
-    phdr[4..8].copy_from_slice(&5u32.to_le_bytes());
+    phdr[4..8].copy_from_slice(&(PF_R | PF_X).to_le_bytes());
 
     // p_offset
     phdr[8..16].copy_from_slice(&p_offset.to_le_bytes());
@@ -103,7 +103,7 @@ fn test_reject_kernel_space_vaddr() {
     let mut elf_data = vec![0u8; 4096];
 
     let header = create_elf_header();
-    elf_data[0..64].copy_from_slice(&header);
+    elf_data[0..SIZEOF_EHDR].copy_from_slice(&header);
 
     let phdr = create_program_header(
         0xffff_8000_0000_0000, // kernel space address
@@ -111,7 +111,7 @@ fn test_reject_kernel_space_vaddr() {
         128,                    // file offset
         0x1000,                 // file size
     );
-    elf_data[64..120].copy_from_slice(&phdr);
+    elf_data[SIZEOF_EHDR..SIZEOF_EHDR + SIZEOF_PHDR].copy_from_slice(&phdr);
 
     let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
 
@@ -131,7 +131,7 @@ fn test_reject_vaddr_memsz_overflow() {
     let mut elf_data = vec![0u8; 4096];
 
     let header = create_elf_header();
-    elf_data[0..64].copy_from_slice(&header);
+    elf_data[0..SIZEOF_EHDR].copy_from_slice(&header);
 
     let phdr = create_program_header(
         0x7fff_ffff_ffff_0000, // near max userspace
@@ -139,7 +139,7 @@ fn test_reject_vaddr_memsz_overflow() {
         128,
         0x1000,
     );
-    elf_data[64..120].copy_from_slice(&phdr);
+    elf_data[SIZEOF_EHDR..SIZEOF_EHDR + SIZEOF_PHDR].copy_from_slice(&phdr);
 
     let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
 
@@ -159,7 +159,7 @@ fn test_reject_vaddr_memsz_kernel_space() {
     let mut elf_data = vec![0u8; 4096];
 
     let header = create_elf_header();
-    elf_data[0..64].copy_from_slice(&header);
+    elf_data[0..SIZEOF_EHDR].copy_from_slice(&header);
 
     let phdr = create_program_header(
         0x0000_7fff_ffff_0000, // valid userspace
@@ -167,7 +167,7 @@ fn test_reject_vaddr_memsz_kernel_space() {
         128,
         0x1000,
     );
-    elf_data[64..120].copy_from_slice(&phdr);
+    elf_data[SIZEOF_EHDR..SIZEOF_EHDR + SIZEOF_PHDR].copy_from_slice(&phdr);
 
     let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
 
@@ -187,7 +187,7 @@ fn test_reject_offset_filesz_overflow() {
     let mut elf_data = vec![0u8; 4096];
 
     let header = create_elf_header();
-    elf_data[0..64].copy_from_slice(&header);
+    elf_data[0..SIZEOF_EHDR].copy_from_slice(&header);
 
     let phdr = create_program_header(
         0x400000,              // valid address
@@ -195,7 +195,7 @@ fn test_reject_offset_filesz_overflow() {
         0xffff_ffff_ffff_ff00, // offset near max
         0x200,                  // causes overflow
     );
-    elf_data[64..120].copy_from_slice(&phdr);
+    elf_data[SIZEOF_EHDR..SIZEOF_EHDR + SIZEOF_PHDR].copy_from_slice(&phdr);
 
     let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
 
@@ -215,7 +215,7 @@ fn test_reject_offset_exceeds_file_size() {
     let mut elf_data = vec![0u8; 4096];
 
     let header = create_elf_header();
-    elf_data[0..64].copy_from_slice(&header);
+    elf_data[0..SIZEOF_EHDR].copy_from_slice(&header);
 
     let phdr = create_program_header(
         0x400000,  // valid address
@@ -223,7 +223,7 @@ fn test_reject_offset_exceeds_file_size() {
         0x200,      // file offset
         0x2000,     // file size that exceeds actual file (4096 - 0x200 = 3840 bytes available)
     );
-    elf_data[64..120].copy_from_slice(&phdr);
+    elf_data[SIZEOF_EHDR..SIZEOF_EHDR + SIZEOF_PHDR].copy_from_slice(&phdr);
 
     let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
 
@@ -243,7 +243,7 @@ fn test_accept_valid_elf() {
     let mut elf_data = vec![0u8; 4096];
 
     let header = create_elf_header();
-    elf_data[0..64].copy_from_slice(&header);
+    elf_data[0..SIZEOF_EHDR].copy_from_slice(&header);
 
     let phdr = create_program_header(
         0x400000,  // valid userspace address
@@ -251,7 +251,7 @@ fn test_accept_valid_elf() {
         128,        // valid offset
         0x100,      // valid file size
     );
-    elf_data[64..120].copy_from_slice(&phdr);
+    elf_data[SIZEOF_EHDR..SIZEOF_EHDR + SIZEOF_PHDR].copy_from_slice(&phdr);
 
     // Add some dummy code data
     for i in 0..0x100 {
