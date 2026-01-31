@@ -108,7 +108,15 @@ pub fn handle_blit(ua: &UserAccess, handle: u32, params_ptr: usize) -> SyscallFu
 
                 // Copy pixels from source buffer into window's pixel_data at (x, y) offset
                 let src_data = source_buffer.as_ref().as_slice();
-                let expected_src_size = (params.width * params.height * 4) as usize;
+
+                // Use checked arithmetic to prevent integer overflow
+                let expected_src_size = match params.width
+                    .checked_mul(params.height)
+                    .and_then(|v| v.checked_mul(4))
+                {
+                    Some(size) => size as usize,
+                    None => return -1, // Overflow detected
+                };
 
                 if src_data.len() < expected_src_size {
                     return -1;
@@ -180,7 +188,16 @@ pub fn handle_blit(ua: &UserAccess, handle: u32, params_ptr: usize) -> SyscallFu
                 return -1;
             };
             let buffer_slice = buffer.as_slice();
-            let expected_size = (params.width * params.height * 4) as usize;
+
+            // Use checked arithmetic to prevent integer overflow
+            let expected_size = match params.width
+                .checked_mul(params.height)
+                .and_then(|v| v.checked_mul(4))
+            {
+                Some(size) => size as usize,
+                None => return -1, // Overflow detected
+            };
+
             if buffer_slice.len() < expected_size {
                 return -1;
             }
@@ -392,7 +409,16 @@ pub fn handle_update_params(ua: &UserAccess, handle: u32, params_ptr: usize) -> 
             let new_size = (params.width, params.height);
             if window.size != new_size {
                 window.size = new_size;
-                let buffer_size = (params.width * params.height * 4) as usize;
+
+                // Use checked arithmetic to prevent integer overflow
+                let buffer_size = match params.width
+                    .checked_mul(params.height)
+                    .and_then(|v| v.checked_mul(4))
+                {
+                    Some(size) => size as usize,
+                    None => return -1, // Overflow detected
+                };
+
                 window.pixel_data.resize(buffer_size, 0);
             }
 
