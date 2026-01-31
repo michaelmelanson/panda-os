@@ -12,6 +12,7 @@ extern crate std;
 extern crate alloc;
 
 pub mod encoding;
+pub mod path;
 pub mod terminal;
 pub mod value;
 

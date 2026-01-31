@@ -1,0 +1,13 @@
+# Expected log output for path_traversal_test
+path_traversal_test: Starting
+path_traversal_test: Test 1 - Normal open
+path_traversal_test: Test 1 passed
+path_traversal_test: Test 2 - Dot components
+path_traversal_test: Test 2 passed
+path_traversal_test: Test 3 - Dotdot past root clamped
+path_traversal_test: Test 3 passed
+path_traversal_test: Test 4 - Escape to nonexistent mount
+path_traversal_test: Test 4 passed
+path_traversal_test: Test 5 - Repeated slashes
+path_traversal_test: Test 5 passed
+path_traversal_test: All tests passed!

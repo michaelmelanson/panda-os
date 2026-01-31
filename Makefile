@@ -24,7 +24,8 @@ KERNEL_TESTS := \
 	process \
 	raii \
 	resource \
-	scheduler
+	scheduler \
+	vfs_path
 
 USERSPACE_TESTS := \
 	alpha_test \
@@ -44,6 +45,7 @@ USERSPACE_TESTS := \
 	mailbox_test \
 	multi_window_test \
 	partial_refresh_test \
+	path_traversal_test \
 	pipeline_test \
 	preempt_test \
 	print_test \
