@@ -95,7 +95,7 @@ pub fn set_heap_phys_base(base: u64) {
 ///   virt = KERNEL_HEAP_BASE + (phys - heap_phys_base)
 pub fn heap_phys_to_virt(phys: PhysAddr) -> VirtAddr {
     let heap_phys_base = HEAP_PHYS_BASE.load(Ordering::Acquire);
-    debug_assert!(
+    assert!(
         phys.as_u64() >= heap_phys_base,
         "physical address {:#x} is below heap base {:#x}",
         phys.as_u64(),

@@ -178,9 +178,20 @@ pub struct Superblock {
 }
 
 impl Superblock {
+    /// Maximum valid log_block_size (6 = 64KB blocks).
+    const MAX_LOG_BLOCK_SIZE: u32 = 6;
+
+    /// Maximum reasonable block group count to prevent excessive allocations.
+    const MAX_BLOCK_GROUPS: u32 = 1_000_000;
+
     /// Calculate block size from log_block_size.
-    pub fn block_size(&self) -> u32 {
-        1024 << self.log_block_size
+    ///
+    /// Returns `None` if `log_block_size` is out of the valid range [0, 6].
+    pub fn block_size(&self) -> Option<u32> {
+        if self.log_block_size > Self::MAX_LOG_BLOCK_SIZE {
+            return None;
+        }
+        Some(1024 << self.log_block_size)
     }
 
     /// Get inode size (128 for rev0, variable for rev1+).
@@ -193,8 +204,58 @@ impl Superblock {
     }
 
     /// Calculate number of block groups.
-    pub fn block_group_count(&self) -> u32 {
-        self.blocks_count.div_ceil(self.blocks_per_group)
+    ///
+    /// Returns `None` if `blocks_per_group` is zero.
+    pub fn block_group_count(&self) -> Option<u32> {
+        if self.blocks_per_group == 0 {
+            return None;
+        }
+        Some(self.blocks_count.div_ceil(self.blocks_per_group))
+    }
+
+    /// Validate superblock fields for safety.
+    ///
+    /// Returns `Ok(())` if all critical fields are valid, or an error message.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.log_block_size > Self::MAX_LOG_BLOCK_SIZE {
+            log::warn!(
+                "ext2: invalid log_block_size {} (max {})",
+                self.log_block_size,
+                Self::MAX_LOG_BLOCK_SIZE
+            );
+            return Err("ext2: log_block_size out of range");
+        }
+
+        if self.blocks_count == 0 {
+            return Err("ext2: blocks_count is zero");
+        }
+
+        if self.inodes_count == 0 {
+            return Err("ext2: inodes_count is zero");
+        }
+
+        if self.blocks_per_group == 0 {
+            return Err("ext2: blocks_per_group is zero");
+        }
+
+        if self.inodes_per_group == 0 {
+            return Err("ext2: inodes_per_group is zero");
+        }
+
+        // Validate inode size for rev1+ filesystems
+        if self.rev_level >= 1 && (self.inode_size < 128 || self.inode_size > 1024) {
+            log::warn!("ext2: invalid inode_size {}", self.inode_size);
+            return Err("ext2: inode_size out of range");
+        }
+
+        // Validate block group count isn't excessive
+        let bg_count = self.blocks_count.div_ceil(self.blocks_per_group);
+        if bg_count > Self::MAX_BLOCK_GROUPS {
+            log::warn!("ext2: excessive block group count {}", bg_count);
+            return Err("ext2: too many block groups");
+        }
+
+        Ok(())
     }
 
     /// Check if the filesystem has unsupported incompatible features.

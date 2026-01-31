@@ -90,6 +90,8 @@ pub struct Ext2Fs {
     block_size: u32,
     /// Inode size in bytes.
     inode_size: u32,
+    /// Total number of blocks in the filesystem.
+    blocks_count: u32,
     /// Inodes per block group.
     inodes_per_group: u32,
     /// Block group descriptors.
@@ -99,19 +101,24 @@ pub struct Ext2Fs {
 impl Ext2Fs {
     /// Mount an ext2 filesystem from a block device.
     pub async fn mount(device: Arc<dyn BlockDevice>) -> Result<Arc<Self>, &'static str> {
-        // Read superblock
+        // Read superblock (buffer is exactly 1024 bytes, matching Superblock struct size)
         let mut sb_buf = [0u8; 1024];
         device
             .read_at(SUPERBLOCK_OFFSET, &mut sb_buf)
             .await
             .map_err(|_| "failed to read superblock")?;
 
-        // Safety: We're reading a well-defined C struct from disk
+        // Safety: sb_buf is 1024 bytes and Superblock is repr(C) with size 1024.
+        // We validate all fields before use below.
         let sb: Superblock = unsafe { core::ptr::read(sb_buf.as_ptr() as *const _) };
 
         if sb.magic != EXT2_SUPER_MAGIC {
             return Err("invalid ext2 magic number");
         }
+
+        // Validate superblock fields to prevent overflow, division by zero,
+        // and excessive allocations from malicious disk images.
+        sb.validate()?;
 
         // Check for unsupported incompatible features
         let unsupported = sb.unsupported_incompat_features();
@@ -123,9 +130,10 @@ impl Ext2Fs {
             return Err("ext2 filesystem has unsupported features");
         }
 
-        let block_size = sb.block_size();
+        // Safe to unwrap: validate() already checked these won't fail
+        let block_size = sb.block_size().unwrap();
         let inode_size = sb.inode_size();
-        let block_group_count = sb.block_group_count();
+        let block_group_count = sb.block_group_count().unwrap();
 
         // Block group descriptor table location:
         // - For 1KB blocks: starts at block 2 (byte offset 2048)
@@ -135,7 +143,7 @@ impl Ext2Fs {
         } else {
             block_size as u64
         };
-        let bgdt_size = block_group_count as usize * 32; // 32 bytes per descriptor
+        let bgdt_size = block_group_count as usize * core::mem::size_of::<BlockGroupDescriptor>();
 
         let mut bgdt_buf = alloc::vec![0u8; bgdt_size];
         device
@@ -143,14 +151,20 @@ impl Ext2Fs {
             .await
             .map_err(|_| "failed to read block group descriptors")?;
 
+        let desc_size = core::mem::size_of::<BlockGroupDescriptor>();
         let block_groups: Vec<BlockGroupDescriptor> = (0..block_group_count as usize)
-            .map(|i| unsafe { core::ptr::read(bgdt_buf[i * 32..].as_ptr() as *const _) })
+            .map(|i| {
+                // Safety: We allocated bgdt_buf with exactly block_group_count * desc_size bytes,
+                // so i * desc_size + desc_size <= bgdt_buf.len() always holds.
+                unsafe { core::ptr::read(bgdt_buf[i * desc_size..].as_ptr() as *const _) }
+            })
             .collect();
 
         Ok(Arc::new(Self {
             device,
             block_size,
             inode_size,
+            blocks_count: sb.blocks_count,
             inodes_per_group: sb.inodes_per_group,
             block_groups,
         }))
@@ -164,12 +178,21 @@ impl Ext2Fs {
 
         let group = (ino - 1) / self.inodes_per_group;
         let index = (ino - 1) % self.inodes_per_group;
+
+        // Validate group index is within our block_groups array
+        if group as usize >= self.block_groups.len() {
+            log::warn!("ext2: inode {} references out-of-bounds group {}", ino, group);
+            return Err(FsError::NotFound);
+        }
         let bgd = &self.block_groups[group as usize];
 
         let offset =
             bgd.inode_table as u64 * self.block_size as u64 + index as u64 * self.inode_size as u64;
 
-        let mut buf = [0u8; 128]; // Read at least 128 bytes (minimum inode size)
+        // Safety: buf is 128 bytes and Inode is repr(C) with size <= 128 bytes.
+        // The compile-time assert below ensures the buffer is large enough.
+        const _: () = assert!(core::mem::size_of::<Inode>() <= 128);
+        let mut buf = [0u8; 128];
         self.device
             .read_at(offset, &mut buf)
             .await
@@ -207,8 +230,10 @@ impl Ext2Fs {
     /// Find directory entry by name.
     async fn find_entry(&self, dir: &Inode, name: &str) -> Result<u32, FsError> {
         let size = dir.size();
+        let block_len = self.block_size as usize;
+        let dir_entry_size = core::mem::size_of::<DirEntryRaw>();
         let mut offset = 0u64;
-        let mut block_buf = alloc::vec![0u8; self.block_size as usize];
+        let mut block_buf = alloc::vec![0u8; block_len];
 
         while offset < size {
             let file_block = (offset / self.block_size as u64) as u32;
@@ -218,18 +243,35 @@ impl Ext2Fs {
                 self.read_block(block_num, &mut block_buf).await?;
 
                 let mut pos = 0usize;
-                while pos < self.block_size as usize {
-                    let entry: DirEntryRaw =
-                        unsafe { core::ptr::read(block_buf[pos..].as_ptr() as *const _) };
-
-                    if entry.rec_len == 0 {
+                while pos < block_len {
+                    // Bounds check before reading DirEntryRaw
+                    if pos + dir_entry_size > block_len {
                         break;
                     }
 
-                    if entry.inode != 0 && entry.name_len as usize == name.len() {
-                        let entry_name = &block_buf[pos + 8..][..entry.name_len as usize];
-                        if entry_name == name.as_bytes() {
-                            return Ok(entry.inode);
+                    let entry: DirEntryRaw =
+                        unsafe { core::ptr::read(block_buf[pos..].as_ptr() as *const _) };
+
+                    // rec_len must be at least 8 (header size) and must not extend past block
+                    if entry.rec_len < 8 || pos + entry.rec_len as usize > block_len {
+                        log::warn!("ext2: invalid dir entry rec_len {} at offset {}", entry.rec_len, pos);
+                        break;
+                    }
+
+                    if entry.inode != 0 {
+                        let name_len = entry.name_len as usize;
+                        // Validate name_len fits within the record
+                        if name_len > entry.rec_len as usize - 8 || name_len > 255 {
+                            log::warn!("ext2: invalid dir entry name_len {} at offset {}", name_len, pos);
+                            pos += entry.rec_len as usize;
+                            continue;
+                        }
+                        if name_len == name.len() {
+                            let name_start = pos + 8;
+                            let entry_name = &block_buf[name_start..name_start + name_len];
+                            if entry_name == name.as_bytes() {
+                                return Ok(entry.inode);
+                            }
                         }
                     }
                     pos += entry.rec_len as usize;
@@ -244,8 +286,10 @@ impl Ext2Fs {
     async fn list_dir(&self, dir: &Inode) -> Result<Vec<DirEntry>, FsError> {
         let mut entries = Vec::new();
         let size = dir.size();
+        let block_len = self.block_size as usize;
+        let dir_entry_size = core::mem::size_of::<DirEntryRaw>();
         let mut offset = 0u64;
-        let mut block_buf = alloc::vec![0u8; self.block_size as usize];
+        let mut block_buf = alloc::vec![0u8; block_len];
 
         while offset < size {
             let file_block = (offset / self.block_size as u64) as u32;
@@ -255,16 +299,31 @@ impl Ext2Fs {
                 self.read_block(block_num, &mut block_buf).await?;
 
                 let mut pos = 0usize;
-                while pos < self.block_size as usize {
+                while pos < block_len {
+                    // Bounds check before reading DirEntryRaw
+                    if pos + dir_entry_size > block_len {
+                        break;
+                    }
+
                     let entry: DirEntryRaw =
                         unsafe { core::ptr::read(block_buf[pos..].as_ptr() as *const _) };
 
-                    if entry.rec_len == 0 {
+                    // rec_len must be at least 8 (header size) and must not extend past block
+                    if entry.rec_len < 8 || pos + entry.rec_len as usize > block_len {
+                        log::warn!("ext2: invalid dir entry rec_len {} at offset {}", entry.rec_len, pos);
                         break;
                     }
 
                     if entry.inode != 0 {
-                        let name_bytes = &block_buf[pos + 8..][..entry.name_len as usize];
+                        let name_len = entry.name_len as usize;
+                        // Validate name_len fits within the record
+                        if name_len > entry.rec_len as usize - 8 || name_len > 255 {
+                            log::warn!("ext2: invalid dir entry name_len {} at offset {}", name_len, pos);
+                            pos += entry.rec_len as usize;
+                            continue;
+                        }
+                        let name_start = pos + 8;
+                        let name_bytes = &block_buf[name_start..name_start + name_len];
                         if let Ok(name) = core::str::from_utf8(name_bytes) {
                             if name != "." && name != ".." {
                                 entries.push(DirEntry {
@@ -289,6 +348,10 @@ impl Ext2Fs {
 
     /// Read a full block.
     async fn read_block(&self, block: u32, buf: &mut [u8]) -> Result<(), FsError> {
+        if block >= self.blocks_count {
+            log::warn!("ext2: block {} out of range (total {})", block, self.blocks_count);
+            return Err(FsError::NotReadable);
+        }
         let offset = block as u64 * self.block_size as u64;
         self.device
             .read_at(offset, buf)

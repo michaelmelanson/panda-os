@@ -284,6 +284,27 @@ To update a screenshot after intentional changes:
 cp build/utest-my_test/my_test_actual.png userspace/tests/my_test/expected.png
 ```
 
+### Expected fault testing
+
+For tests that intentionally trigger a fault (e.g., writing to a read-only page), the test process gets killed by the kernel before it can log any results. To validate that the kernel handled the fault correctly, use `expected_fault.txt` alongside `expected.txt`.
+
+The kernel emits a `<<<PROCESS_FAULT>>>` marker in the error log when it kills a process due to a page fault. This marker only appears when a process is killed for a fault, so it will not appear during normal operation.
+
+1. Create `userspace/tests/my_test/expected_fault.txt` with a single pattern to match the kernel's fault log line:
+
+```
+# Verify the kernel detected the fault and killed the process
+<<<PROCESS_FAULT>>> Page fault in process
+```
+
+2. The test harness extracts all `ERROR:` lines from the QEMU serial output and checks that each pattern in `expected_fault.txt` appears in order (same semantics as ordered `expected.txt`).
+
+3. Use `expected.txt` to verify the test started correctly, and `expected_fault.txt` to verify the kernel's error handling.
+
+**Important:** Each pattern in `expected_fault.txt` matches and consumes a log line. Since the kernel emits the fault details on a single line, use one pattern per fault event rather than splitting across multiple patterns.
+
+This pattern is useful for any test where the expected behaviour is for the kernel to kill the process (protection violations, invalid memory access, etc.).
+
 ### Exit codes
 
 - Exit code 0: Test passed
