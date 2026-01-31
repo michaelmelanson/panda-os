@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   build-and-test:
@@ -19,7 +19,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 e2fsprogs jq
+          sudo apt-get install -y qemu-system-x86 e2fsprogs
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@nightly

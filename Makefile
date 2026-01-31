@@ -112,7 +112,8 @@ ifdef TEST
 kernel-test:
 	@if echo "$(KERNEL_TESTS)" | grep -q -w "$(TEST)"; then \
 		echo "Building kernel test $(TEST)..."; \
-		$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package panda-kernel $(KERNEL_TARGET) --tests --features testing 2>&1 | grep -E "Compiling|Executable" || true; \
+		$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package panda-kernel $(KERNEL_TARGET) \
+			--test $(TEST) --features testing; \
 		./scripts/setup-kernel-test.sh $(TEST); \
 		echo "Running kernel test $(TEST)..."; \
 		./scripts/run-tests.sh kernel $(TEST); \
@@ -123,10 +124,10 @@ kernel-test:
 else
 kernel-test:
 	@echo "Building kernel tests..."
-	@$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package panda-kernel $(KERNEL_TARGET) --tests --features testing 2>&1 | grep -E "Compiling|Executable" || true
-	@echo ""
+	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package panda-kernel $(KERNEL_TARGET) \
+		--tests --features testing
 	@for test in $(KERNEL_TESTS); do \
-		./scripts/setup-kernel-test.sh $$test; \
+		./scripts/setup-kernel-test.sh $$test || exit 1; \
 	done
 	@echo "Running kernel tests..."
 	@./scripts/run-tests.sh kernel $(KERNEL_TESTS)

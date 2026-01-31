@@ -7,25 +7,20 @@ set -e
 TEST_NAME="$1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-CARGO_PROFILE="${CARGO_PROFILE:-}"
+PROFILE_DIR="${PROFILE_DIR:-debug}"
 
 BUILD_DIR="$PROJECT_DIR/build/test-$TEST_NAME"
+DEPS_DIR="$PROJECT_DIR/target/x86_64-panda-uefi/$PROFILE_DIR/deps"
+
+# Find the test binary (newest .efi matching the test name)
+TEST_BIN=$(ls -t "$DEPS_DIR/$TEST_NAME"-*.efi 2>/dev/null | head -1)
+
+if [ -z "$TEST_BIN" ]; then
+    echo "ERROR: No test binary found for '$TEST_NAME' in $DEPS_DIR" >&2
+    exit 1
+fi
+
 mkdir -p "$BUILD_DIR/efi/boot"
-
-# Find the test binary
-# Use 'cargo build' instead of 'cargo test' to avoid dual-profile issues with build-std
-# (cargo test builds deps in both test and dev profiles, causing duplicate core crates)
-TEST_BIN=$(cargo +nightly build \
-    -Z build-std=core,alloc \
-    -Z build-std-features=compiler-builtins-mem \
-    --package panda-kernel \
-    --target "$PROJECT_DIR/x86_64-panda-uefi.json" \
-    --test "$TEST_NAME" \
-    --features testing \
-    $CARGO_PROFILE \
-    --message-format=json 2>/dev/null | \
-    jq -r 'select(.executable != null and .target.kind == ["test"]) | .executable')
-
 cp "$TEST_BIN" "$BUILD_DIR/efi/boot/bootx64.efi"
 echo 'fs0:\efi\boot\bootx64.efi' > "$BUILD_DIR/efi/boot/startup.nsh"
 
