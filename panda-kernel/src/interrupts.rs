@@ -229,11 +229,11 @@ extern "x86-interrupt" fn default_page_fault_handler(
         // Unhandled user-mode page fault: either a protection violation or
         // a not-present fault outside valid memory regions. Kill the process.
         let current_pid = crate::scheduler::current_process_id();
+        let cause = if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) { "write" } else { "read" };
+        let kind = if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) { "protection violation" } else { "invalid address" };
         error!(
-            "Page fault in process {:?}: address={fault_address:#x}, caused by {}, {} — killing process",
+            "<<<PROCESS_FAULT>>> Page fault in process {:?}: address={fault_address:#x}, caused by {cause}, {kind} — killing process",
             current_pid,
-            if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) { "write" } else { "read" },
-            if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) { "protection violation" } else { "invalid address" },
         );
         let process_info =
             crate::scheduler::with_current_process(|proc| proc.info().clone());
