@@ -8,7 +8,7 @@ The `init` process (`userspace/init/src/main.rs`) is a hardcoded Rust binary tha
 
 Build a service manager that reads declarative TOML service configurations, computes a plan (a DAG of actions) to bring the system into the desired state, and executes it. The service manager continues running as a supervisor — monitoring services, restarting them according to policy, and accepting runtime commands to start, stop, add, and remove services. Runtime changes go through the same planning pipeline: compute a new plan from the delta between current state and desired state, then execute it.
 
-As part of this effort, establish a **service protocol framework** — a common infrastructure for defining typed, versioned IPC protocols between services. This framework enables any userspace service (not just the service manager) to expose a typed API over channels, with capability negotiation at connection time. The service manager is the first consumer, but the framework is designed for reuse by future services such as a userspace compositor.
+As part of this effort, establish a **service protocol framework** — a common infrastructure for defining typed IPC protocols between processes. Protocols are the primary interface abstraction in the system: a protocol defines the contract between a service and its clients, identified by a UUID and negotiated via capabilities. This framework is foundational — not just for the service manager, but for any service in the system, including future userspace device drivers.
 
 ## Constraints
 
@@ -20,7 +20,19 @@ As part of this effort, establish a **service protocol framework** — a common 
 
 ### Service protocol framework
 
-The system needs a common way for processes to communicate over channels with typed, self-describing messages. Today the terminal protocol (`Request`/`Event` in `panda-abi/src/terminal.rs`) is the only such protocol, and it uses hardcoded TLV message types with no handshake or capability negotiation. The service protocol framework generalizes this pattern so any service can define a typed protocol and any client can connect with compile-time type safety.
+#### Protocols as interface contracts
+
+A **protocol** is the fundamental interface abstraction in panda's IPC system. It defines the typed messages exchanged between two endpoints over a channel, identified by a UUID and negotiated via capabilities at connection time.
+
+Today, the kernel exposes device functionality through scheme names: `keyboard:`, `block:`, `console:`. These scheme names implicitly define an interface — opening `keyboard:/pci/input/0` gives you a resource that produces key events. But the interface contract is embedded in the kernel's scheme handler code with no formal definition or type safety.
+
+Protocols make this contract explicit and portable. `Keyboard`, `Block`, `Console` become **protocol definitions** — each with a UUID, typed request/response/event messages, and capability constants. A protocol can be implemented by a kernel-side driver today and a userspace service tomorrow, and clients don't change because they program against the protocol, not the transport.
+
+This means:
+- The **protocol UUID** is the real type safety mechanism. When a client connects to any service, the handshake verifies both sides speak the same protocol. The service name is just how you find it.
+- **Multiple implementations** of the same protocol are possible. A PS/2 keyboard driver and a virtio keyboard driver both implement the `Keyboard` protocol, registered under different service names (`service:/ps2-keyboard`, `service:/virtio-keyboard`).
+- **Discovery by protocol** is supported. A client that wants "any keyboard" can ask the service manager for services implementing a given protocol UUID, rather than hardcoding a service name.
+- The **existing kernel schemes** (`keyboard:`, `block:`, etc.) are the current transport for these interfaces. When drivers move to userspace, the same protocol definitions apply — only the transport changes from kernel resource to service channel.
 
 #### Protocol and Service traits
 
@@ -32,6 +44,10 @@ The framework is built on two traits in `panda-abi`:
 /// A protocol specifies the message types exchanged between two endpoints.
 /// Both sides of a connection depend on the same Protocol implementation
 /// (typically via a shared API crate) for type safety.
+///
+/// Protocols are the primary interface abstraction: keyboard, block, console,
+/// compositor, service-manager are all protocols. The UUID identifies the
+/// interface contract, not the implementation.
 trait Protocol {
     /// Unique identifier for this protocol's wire format.
     /// Used during handshake to verify both sides speak the same protocol.
@@ -60,7 +76,12 @@ trait Service: Protocol {
 }
 ```
 
-The separation between `Protocol` and `Service` is important: a protocol defines message types and wire format, while a service adds discoverability via the `service:` scheme. The terminal protocol implements `Protocol` but not `Service` — you inherit a terminal connection from your parent via `HANDLE_PARENT`, you don't discover it by name. A compositor would implement both — it has typed messages and is discoverable via `service:/compositor`. This distinction matters because there can be many terminals (each a process with channels to its children), but services registered in the scheme are typically singletons.
+The separation between `Protocol` and `Service` is important:
+
+- A **protocol** defines message types and wire format. It's the interface contract.
+- A **service** adds discoverability via the `service:` scheme. It's a running process that implements a protocol and is reachable by name.
+
+Not all protocol connections are services. The terminal protocol is used over `HANDLE_PARENT` — a connection inherited from your parent process, not discovered by name. Multiple terminals can coexist because each is its own process with channels to its children. A service like a compositor is discovered by name via `service:/compositor` and is typically a singleton.
 
 #### Message framing
 
@@ -95,10 +116,10 @@ The responder checks the UUID first. If it doesn't match the protocol it impleme
 Capabilities are protocol-defined strings. Each protocol's API crate defines its capability constants:
 
 ```rust
-// in service-manager-api
+// in service-keyboard-api
 pub mod capability {
-    pub const RUNTIME_ADD: &str = "runtime-add";
-    pub const LOG_STREAMING: &str = "log-streaming";
+    pub const RAW_SCANCODES: &str = "raw-scancodes";
+    pub const REPEAT_EVENTS: &str = "repeat-events";
 }
 ```
 
@@ -106,52 +127,98 @@ A protocol with no optional features sends an empty capabilities list — the UU
 
 #### API crate pattern
 
-Each service publishes a `service-{name}-api` crate containing:
+Each protocol is published as an API crate containing:
 - A zero-sized struct implementing `Protocol` (and `Service` if discoverable)
 - The `Request`, `Response`, and `Event` enums with `Encode`/`Decode` implementations
 - Capability constants
 
-For example, a compositor service API crate:
+These crates contain no implementation — just types and encoding. The service binary and client code both depend on the same API crate.
+
+Examples of protocol API crates:
 
 ```rust
-// service-compositor-api/src/lib.rs
+// service-keyboard-api/src/lib.rs — keyboard interface contract
 
-pub struct Compositor;
+pub struct Keyboard;
 
-impl Protocol for Compositor {
-    const UUID: [u8; 16] = [0x8a, 0x3f, ...];  // generated once
-    type Request = CompositorRequest;
-    type Response = CompositorResponse;
-    type Event = CompositorEvent;
+impl Protocol for Keyboard {
+    const UUID: [u8; 16] = [/* generated once */];
+    type Request = KeyboardRequest;
+    type Response = KeyboardResponse;
+    type Event = KeyboardEvent;
 }
 
-impl Service for Compositor {
-    const NAME: &str = "compositor";
+pub enum KeyboardRequest {
+    SetRepeatRate { delay_ms: u16, interval_ms: u16 },
 }
 
-pub enum CompositorRequest {
-    CreateSurface { width: u32, height: u32 },
-    DestroySurface { id: u32 },
-    SubmitBuffer { surface_id: u32, buffer: Vec<u8> },
-}
-
-pub enum CompositorResponse {
-    SurfaceCreated { id: u32 },
+pub enum KeyboardResponse {
     Ok,
-    Error { code: u16, message: String },
+    Error { message: String },
 }
 
-pub enum CompositorEvent {
-    SurfaceResized { id: u32, width: u32, height: u32 },
+pub enum KeyboardEvent {
+    Key { code: u16, value: u8 },  // press/release/repeat
 }
 
 pub mod capability {
-    pub const MULTI_BUFFER: &str = "multi-buffer";
-    pub const HDR: &str = "hdr";
+    pub const RAW_SCANCODES: &str = "raw-scancodes";
+    pub const REPEAT_EVENTS: &str = "repeat-events";
 }
 ```
 
-The API crate has no implementation — just types and encoding. The service binary and client code both depend on this crate.
+```rust
+// service-manager-api/src/lib.rs — service manager interface contract
+
+pub struct Manager;
+
+impl Protocol for Manager {
+    const UUID: [u8; 16] = [/* generated once */];
+    type Request = ManagerRequest;
+    type Response = ManagerResponse;
+    type Event = ManagerEvent;
+}
+
+impl Service for Manager {
+    const NAME: &str = "manager";
+}
+
+pub enum ManagerRequest {
+    Start { name: String },
+    Stop { name: String },
+    Restart { name: String },
+    Status { name: String },
+    List,
+    ListByProtocol { protocol_uuid: [u8; 16] },
+    Add { name: String, config: String },
+    Remove { name: String },
+}
+
+pub enum ManagerResponse {
+    Ok { message: String },
+    Error { message: String },
+    Status {
+        name: String,
+        state: String,
+        protocol_uuid: Option<[u8; 16]>,
+        restart_count: u32,
+    },
+    List { services: Value },  // Value::Table for pipeline compatibility
+}
+
+pub enum ManagerEvent {
+    ServiceStateChanged {
+        name: String,
+        old_state: String,
+        new_state: String,
+    },
+}
+
+pub mod capability {
+    pub const RUNTIME_ADD: &str = "runtime-add";
+    pub const LOG_STREAMING: &str = "log-streaming";
+}
+```
 
 #### Client and server wrappers
 
@@ -267,6 +334,22 @@ Retrofitting requires:
 
 This is deferred until after the service manager is working. The service manager acts as a minimal terminal protocol peer for its children using the existing unframed `Request`/`Event` messages. The retrofit unifies the patterns but is not a prerequisite.
 
+### Service scheme and discovery
+
+The `service:` scheme is a flat name → channel broker. The path is exactly one segment — the service name:
+
+```
+service:/{name}
+```
+
+The scheme maps names to channels, nothing more. The service name is an organizational label — the **protocol UUID** is the real interface contract. Two services with different names can implement the same protocol (e.g., `service:/ps2-keyboard` and `service:/virtio-keyboard` both speak the `Keyboard` protocol). A client that knows the service name connects directly; a client that wants "any service implementing this protocol" queries the service manager via `ManagerRequest::ListByProtocol`.
+
+This design keeps the scheme trivial and puts richer semantics (protocol-based discovery, categorization) in the service manager where they're easier to evolve.
+
+**Relationship to existing kernel schemes:**
+
+Today, `keyboard:`, `block:`, `console:` are kernel-side schemes because the drivers are kernel-side. These scheme names implicitly define an interface contract. As drivers move to userspace, the protocol definitions (`Keyboard`, `Block`, `Console`) become the explicit contract, and the transport shifts from kernel resource to service channel. The existing kernel schemes would eventually become unnecessary — clients would connect to `service:/keyboard` instead of opening `keyboard:/pci/input/0`. During migration, both paths can coexist.
+
 ### TOML parser
 
 Use the `toml` crate (v0.9+) with `default-features = false, features = ["parse"]` for `no_std` + `alloc` TOML parsing. If it doesn't compile cleanly in panda's userspace (untested), fall back to `toml_edit` with `default-features = false` or a hand-written parser for the TOML subset needed (string values, string arrays, tables).
@@ -307,6 +390,7 @@ max_attempts = 10
 exec = "file:/path"           # Required. Executable URI.
 args = ["arg1", "arg2"]       # Optional. Default: []
 stdout = "inherit"             # Optional. "inherit", "log", "null", "console". Default: "inherit"
+protocol = "keyboard"          # Optional. Protocol name for discovery. Default: none.
 
 [service.env]                  # Optional. Environment variables.
 KEY = "value"
@@ -319,6 +403,8 @@ policy = "no"                  # Optional. "no", "on-failure", "always". Default
 delay_ms = 1000                # Optional. Delay between restart attempts. Default: 1000
 max_attempts = 10              # Optional. Max consecutive restarts before giving up. Default: 10
 ```
+
+The `protocol` field declares which protocol this service implements. This is metadata used by the service manager for protocol-based discovery queries (`ManagerRequest::ListByProtocol`). The actual protocol verification happens at connection time via the UUID handshake — the config field is for indexing, not enforcement.
 
 ### Planning: from desired state to action DAG
 
@@ -436,55 +522,9 @@ This means services don't need special awareness of the service manager — they
 
 **Service manager ↔ management tools (`svcctl`):**
 
-The service manager exposes a typed protocol via the service scheme. `svcctl` connects using `ServiceClient<ServiceManager>`, which opens `service:/manager`, performs the UUID + capabilities handshake, and then exchanges typed `ManagerRequest`/`ManagerResponse` messages.
+The service manager exposes the `Manager` protocol via the service scheme. `svcctl` connects using `ServiceClient<Manager>`, which opens `service:/manager`, performs the UUID + capabilities handshake, and then exchanges typed `ManagerRequest`/`ManagerResponse` messages.
 
-The service manager protocol is defined in `service-manager-api`:
-
-```rust
-pub struct ServiceManager;
-
-impl Protocol for ServiceManager {
-    const UUID: [u8; 16] = [/* generated */];
-    type Request = ManagerRequest;
-    type Response = ManagerResponse;
-    type Event = ManagerEvent;
-}
-
-impl Service for ServiceManager {
-    const NAME: &str = "manager";
-}
-
-pub enum ManagerRequest {
-    Start { name: String },
-    Stop { name: String },
-    Restart { name: String },
-    Status { name: String },
-    List,
-    Add { name: String, config: String },  // TOML content
-    Remove { name: String },
-}
-
-pub enum ManagerResponse {
-    Ok { message: String },
-    Error { message: String },
-    Status {
-        name: String,
-        state: String,
-        restart_count: u32,
-    },
-    List { services: Value },  // Value::Table for pipeline compatibility
-}
-
-pub enum ManagerEvent {
-    ServiceStateChanged {
-        name: String,
-        old_state: String,
-        new_state: String,
-    },
-}
-```
-
-Using typed requests instead of `Value::Map` commands provides compile-time safety — `svcctl` can't send a malformed command, and the service manager's dispatch is a `match` on `ManagerRequest` variants rather than string key lookups.
+Using typed requests provides compile-time safety — `svcctl` can't send a malformed command, and the service manager's dispatch is a `match` on `ManagerRequest` variants rather than string key lookups.
 
 The `List` response uses `Value::Table` so that `svcctl list | grep running` works with the structured pipeline system. `svcctl` writes the response `Value` to `HANDLE_PARENT` (or `HANDLE_STDOUT` in a pipeline).
 
@@ -495,9 +535,9 @@ All resource schemes are currently kernel-side only. To allow arbitrary processe
 1. At boot, after init creates its mailbox, it registers a channel endpoint with the kernel via a new syscall `OP_SERVICE_REGISTER`. The kernel stores this endpoint in the `service:` scheme handler.
 2. When any process opens `service:/manager`, the kernel-side `ServiceScheme` handler creates a new channel pair, sends one endpoint to init (via the registered channel — init receives it as a message containing the new handle), and returns the other endpoint to the caller.
 3. Init attaches each incoming connection to its mailbox with `EVENT_CHANNEL_READABLE`.
-4. The handshake occurs over the new channel using the protocol framework — init verifies the UUID matches the `ServiceManager` protocol and negotiates capabilities.
+4. The handshake occurs over the new channel using the protocol framework — init verifies the UUID matches the `Manager` protocol and negotiates capabilities.
 
-This is a minimal naming service — init registers once, and the kernel brokers connections. The pattern could later be generalized to let any process register named services.
+Initially only init can register services. The design generalizes to per-process registration (any process calls `OP_SERVICE_REGISTER` with a name and gets a broker channel) for the userspace driver migration, but that's out of scope here.
 
 **Alternative considered**: having init spawn `svcctl` directly so `HANDLE_PARENT` connects them. This doesn't work because users launch `svcctl` from the terminal, not from init. The kernel-side broker is necessary for process discovery.
 
@@ -550,6 +590,7 @@ struct ServiceConfig {
     restart_delay_ms: u64,
     restart_max_attempts: u32,
     stdout: StdoutTarget,
+    protocol: Option<String>,  // protocol name for discovery
 }
 
 enum RestartPolicy { No, OnFailure, Always }
@@ -605,7 +646,7 @@ struct ServiceManagerState {
     mailbox: Mailbox,
     handle_to_index: BTreeMap<u32, usize>,  // process/timer handle → service index
     broker_channel: Handle,                   // receives new connection handles from kernel
-    command_channels: Vec<ProtocolChannel<ServiceManager>>,  // typed management connections
+    command_channels: Vec<ProtocolChannel<Manager>>,  // typed management connections
 }
 ```
 
@@ -661,7 +702,7 @@ This eliminates all need for a time syscall in the service manager — timers ex
 
 ### Phase 3: Service protocol framework
 
-Implement the `Protocol` trait, message framing, handshake, and client/server wrappers in `panda-abi` and `libpanda`. This is foundational infrastructure used by the service scheme (phase 4) and the service manager protocol (phase 8).
+Implement the `Protocol` trait, message framing, handshake, and client/server wrappers in `panda-abi` and `libpanda`. This is foundational infrastructure used by the service scheme (phase 4), the service manager protocol (phase 8), and all future service protocols.
 
 **Files:**
 - `panda-abi/src/protocol.rs` — `Protocol` trait, `Service` trait, `MessageKind` enum (`Request`/`Response`/`Event`/`Handshake`), `Hello`/`Welcome`/`Rejected` handshake message types with `Encode`/`Decode` implementations, framing helpers for encoding/decoding the `Kind` byte prefix
@@ -670,24 +711,26 @@ Implement the `Protocol` trait, message framing, handshake, and client/server wr
 
 ### Phase 4: Service scheme
 
-Add a kernel-side `service:` scheme that brokers channel connections. The protocol framework from phase 3 provides the handshake that occurs after the channel is established.
+Add a kernel-side `service:` scheme that brokers channel connections. The path is a flat namespace — `service:/{name}` — where the name maps to a broker channel. The protocol framework from phase 3 provides the handshake that occurs after the channel is established.
 
 1. At boot, after init creates its mailbox, it registers a channel endpoint with the kernel via `OP_SERVICE_REGISTER`. The kernel stores this endpoint in the `service:` scheme handler.
 2. When any process opens `service:/manager`, the `ServiceScheme` handler creates a channel pair, sends one endpoint to init via the broker channel, returns the other to the caller.
 3. Init attaches each incoming connection to its mailbox. On first message, it performs the protocol handshake — verifying the UUID and negotiating capabilities.
 
+Initially only init registers. The design generalizes to per-process registration for the userspace driver migration.
+
 **Files:**
 - `panda-abi/src/lib.rs` — add `OP_SERVICE_REGISTER` operation code
-- `panda-kernel/src/resource/service_scheme.rs` — `ServiceScheme` implementing `SchemeHandler`. Stores the init-side broker channel endpoint. On `open("/manager")`, creates a channel pair, sends one endpoint to init as a message on the broker channel, returns the other to the caller.
+- `panda-kernel/src/resource/service_scheme.rs` — `ServiceScheme` implementing `SchemeHandler`. Stores a `BTreeMap<String, Handle>` mapping service names to broker channel endpoints. On `open("/{name}")`, creates a channel pair, sends one endpoint to the registrant via the broker channel, returns the other to the caller.
 - `panda-kernel/src/resource/scheme.rs` — register `service:` scheme in `init()`
-- `panda-kernel/src/syscall/environment.rs` — `handle_service_register()` creates a channel pair, stores one end in `ServiceScheme`, returns the other to the calling process (init)
-- `userspace/libpanda/src/environment.rs` — add `service_register()` API for init, and `open_service(name)` convenience wrapper around `environment::open("service:/name")`
+- `panda-kernel/src/syscall/environment.rs` — `handle_service_register(name)` creates a channel pair, stores one end in `ServiceScheme` under the given name, returns the other to the calling process
+- `userspace/libpanda/src/environment.rs` — add `service_register(name)` API, and `open_service(name)` convenience wrapper around `environment::open("service:/name")`
 
 ### Phase 5: TOML parsing and config
 
 **Files:**
 - `userspace/init/Cargo.toml` — add `toml = { version = "0.9", default-features = false, features = ["parse"] }`
-- `userspace/init/src/config.rs` — `ServiceConfig` struct, `parse(name: &str, content: &str) -> Result<ServiceConfig>`, `scan_services(path: &str) -> Result<Vec<ServiceConfig>>`
+- `userspace/init/src/config.rs` — `ServiceConfig` struct (including `protocol` field), `parse(name: &str, content: &str) -> Result<ServiceConfig>`, `scan_services(path: &str) -> Result<Vec<ServiceConfig>>`
 
 ### Phase 6: Planner
 
@@ -716,7 +759,7 @@ impl ServiceManagerState {
     fn handle_stop_timer(&mut self, handle: u32)
     fn handle_stability_timer(&mut self, handle: u32)
     fn handle_new_connection(&mut self, broker_channel: Handle)
-    fn handle_command(&mut self, channel: &ProtocolChannel<ServiceManager>)
+    fn handle_command(&mut self, channel: &ProtocolChannel<Manager>)
     fn handle_service_output(&mut self, handle: u32)
     fn stop_service(&mut self, index: usize)
 }
@@ -757,11 +800,11 @@ libpanda::main! {
 Define the service manager's typed protocol in a shared API crate. Both init and `svcctl` depend on it.
 
 **Files:**
-- `userspace/service-manager-api/src/lib.rs` — `ServiceManager` struct implementing `Protocol` + `Service`, `ManagerRequest`/`ManagerResponse`/`ManagerEvent` enums with `Encode`/`Decode`, capability constants
-- `userspace/svcctl/src/main.rs` — CLI tool using `ServiceClient<ServiceManager>`: `svcctl start|stop|restart|status|list|add|remove [name] [options]`
-- `userspace/init/src/commands.rs` — `ManagerRequest` dispatch, response encoding via `ProtocolChannel<ServiceManager>`
+- `userspace/service-manager-api/src/lib.rs` — `Manager` struct implementing `Protocol` + `Service`, `ManagerRequest`/`ManagerResponse`/`ManagerEvent` enums with `Encode`/`Decode`, capability constants. Includes `ListByProtocol` request for protocol-based service discovery.
+- `userspace/svcctl/src/main.rs` — CLI tool using `ServiceClient<Manager>`: `svcctl start|stop|restart|status|list|add|remove [name] [options]`
+- `userspace/init/src/commands.rs` — `ManagerRequest` dispatch, response encoding via `ProtocolChannel<Manager>`
 
-`svcctl` connects with `ServiceClient::<ServiceManager>::connect(...)`, sends typed `ManagerRequest` variants, receives `ManagerResponse`, and writes the result to `HANDLE_PARENT` (or `HANDLE_STDOUT` in a pipeline). The `List` response contains `Value::Table` for pipeline compatibility.
+`svcctl` connects with `ServiceClient::<Manager>::connect(...)`, sends typed `ManagerRequest` variants, receives `ManagerResponse`, and writes the result to `HANDLE_PARENT` (or `HANDLE_STDOUT` in a pipeline). The `List` response contains `Value::Table` for pipeline compatibility.
 
 ### Phase 9: Service config files and boot test
 
@@ -778,7 +821,8 @@ exec = "file:/mnt/terminal"
 ## Testing
 
 - **Protocol framework**: Handshake with matching UUID succeeds. Mismatched UUID returns `Rejected`. Capabilities negotiation returns intersection. `ProtocolChannel` send/recv round-trips request, response, event message kinds correctly. `ServiceClient::connect` performs handshake automatically.
-- **Config parser**: Valid configs, missing `exec`, unknown fields, empty env table, multiple deps, all restart policies, all stdout targets.
+- **Service scheme**: `service_register("manager")` succeeds. `open("service:/manager")` returns a channel. Opening an unregistered name fails.
+- **Config parser**: Valid configs, missing `exec`, unknown fields, empty env table, multiple deps, all restart policies, all stdout targets, optional `protocol` field.
 - **Planner — boot**: All configs valid, produces Start actions in dependency order.
 - **Planner — cycles**: A→B→A cycle detected, reported, excluded. Non-cyclic services still start.
 - **Planner — missing deps**: Reference to undefined service reported, service excluded.
@@ -791,6 +835,7 @@ exec = "file:/mnt/terminal"
 - **Restart delay**: Timer fires after `delay_ms`, not before.
 - **Stop with SIGTERM**: Service handles SIGTERM and exits → clean stop.
 - **Stop with SIGKILL escalation**: Service ignores SIGTERM → grace timer fires → SIGKILL → forced stop.
+- **Protocol-based discovery**: `ListByProtocol` returns services matching a given protocol name.
 - **`svcctl` commands**: `list`, `status`, `start`, `stop` produce correct responses. `list | grep running` works via pipeline.
 
 ## Risks
