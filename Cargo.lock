@@ -251,6 +251,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "fault_child"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
+name = "fault_recovery_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
+name = "fmask_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -613,6 +634,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "segfault_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
 ]
 
 [[package]]
