@@ -1,0 +1,40 @@
+name: Claude Autofix
+
+on:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  autofix:
+    if: github.event.label.name == 'autofix'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude Autofix
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--model claude-opus-4-5-20251101"
+          allowed_bots: "claude"
+          prompt: |
+            This PR has the "autofix" label. Please review the PR and fix any issues:
+
+            1. Check the CI status for this PR using `gh pr checks ${{ github.event.pull_request.number }}`.
+            2. If there are CI failures, read the failing workflow logs and fix the build/test errors.
+            3. Review any code review comments on the PR and address the feedback.
+            4. Commit and push your fixes to the PR branch.
+
+            PR: ${{ github.repository }}#${{ github.event.pull_request.number }}
+            Branch: ${{ github.event.pull_request.head.ref }}
+          additional_permissions: |
+            actions: read
