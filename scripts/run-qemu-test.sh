@@ -208,28 +208,51 @@ elif [ -n "$MONITOR_FILE" ] && [ -f "$MONITOR_FILE" ]; then
         exit 1
     fi
 
+    # Wait for the test to be ready before sending monitor commands
+    # Look for a readiness marker in the log instead of using a fixed sleep
+    READY_TIMEOUT=$((TIMEOUT))
+    READY_MARKER=""
+    # Check if the monitor file has a "sleep" as first command - replace with log-based wait
+    FIRST_CMD=$(grep -v '^#' "$MONITOR_FILE" | grep -v '^[[:space:]]*$' | head -1)
+    if [[ "$FIRST_CMD" =~ ^sleep ]]; then
+        # Use the log to detect readiness: wait for the test to print something
+        # indicating it's ready for input
+        for i in $(seq 1 $((READY_TIMEOUT * 2))); do
+            if grep -qa "Waiting for key events\|ready for input\|Keyboard opened" "$LOG_FILE" 2>/dev/null; then
+                READY_MARKER=1
+                sleep 1  # Extra settle time after readiness
+                break
+            fi
+            if ! kill -0 $QEMU_PID 2>/dev/null; then
+                break
+            fi
+            sleep 0.5
+        done
+    fi
+
     # Send monitor commands over a single persistent connection using Python
-    # Python handles timing within the connection reliably, unlike piping
-    # through nc/socat where long sleeps can cause the pipe to close
     python3 -c "
-import socket, time
+import socket, time, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect('$MONITOR_SOCK')
 # Read initial prompt
-s.settimeout(1.0)
+s.settimeout(2.0)
 try:
     s.recv(4096)
 except:
     pass
-s.settimeout(None)
+first_sleep_skipped = ${READY_MARKER:-0}
 for line in open('$MONITOR_FILE'):
     line = line.strip()
     if not line or line.startswith('#'): continue
     if line.startswith('sleep '):
+        if first_sleep_skipped:
+            first_sleep_skipped = 0
+            continue  # Already waited via log marker
         time.sleep(float(line.split()[1]))
     else:
         s.send((line + '\n').encode())
-        time.sleep(0.2)
+        time.sleep(0.3)
         try:
             s.settimeout(0.5)
             s.recv(4096)
@@ -237,7 +260,7 @@ for line in open('$MONITOR_FILE'):
             pass
 time.sleep(1.0)
 s.close()
-" 2>/dev/null || echo "Warning: failed to send monitor commands" >&2
+" 2>&1 | head -5 >&2 || echo "Warning: failed to send monitor commands" >&2
 
     # Wait for QEMU to exit with timeout
     ELAPSED=0
