@@ -58,6 +58,10 @@ impl MockCharOutput {
 }
 
 impl Resource for MockCharOutput {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        panda_abi::HandleType::File
+    }
+
     fn as_char_output(&self) -> Option<&dyn CharacterOutput> {
         Some(self)
     }
