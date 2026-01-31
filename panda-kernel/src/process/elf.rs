@@ -105,7 +105,7 @@ pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Result<Vec<Mapping>, Pr
     let mut last_segment_executable = false;
 
     // Get the actual ELF file size for offset validation
-    let file_size = unsafe { (*file_ptr).len() };
+    let file_size = unsafe { (&(*file_ptr)).len() };
 
     for header in &elf.program_headers {
         match header.p_type {
