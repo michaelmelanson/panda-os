@@ -1,0 +1,3 @@
+# Verify the test started before being killed
+Segfault test starting
+Writing to read-only code page...
