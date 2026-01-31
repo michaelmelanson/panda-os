@@ -37,6 +37,8 @@ impl TarFs {
     /// Create a TarFs from raw TAR archive data.
     ///
     /// Returns an error if the archive is malformed or contains invalid filenames.
+    /// Entries containing `..` path components are silently skipped as a
+    /// defence-in-depth measure against malicious archives.
     pub fn from_tar_data(data: *const [u8]) -> Result<Self, TarFsError> {
         let bytes = unsafe { data.as_ref().unwrap() };
         let archive = TarArchiveRef::new(bytes).map_err(|_| TarFsError::InvalidArchive)?;
@@ -52,6 +54,12 @@ impl TarFs {
 
             // Store with normalized path (no leading ./)
             let normalized = name.trim_start_matches("./");
+
+            // Defence-in-depth: reject paths with .. components
+            if normalized.split('/').any(|c| c == ".." || c == ".") {
+                continue;
+            }
+
             let data_ptr = entry.data().as_ptr();
             let data_len = entry.data().len();
             files.insert(String::from(normalized), (data_ptr, data_len));

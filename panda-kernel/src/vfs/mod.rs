@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker as TaskWaker};
+use panda_abi::path;
 use spinning_top::RwSpinlock;
 
 // =============================================================================
@@ -144,6 +145,22 @@ struct Mount {
 
 static MOUNTS: RwSpinlock<Vec<Mount>> = RwSpinlock::new(Vec::new());
 
+/// Canonicalize a VFS path, allocating a new String only if needed.
+///
+/// Returns the path with `.`, `..`, and repeated slashes resolved.
+/// If the path is already canonical, returns it borrowed in a `String`
+/// without reprocessing.
+fn canonicalize(input: &str) -> String {
+    if path::is_canonical(input) {
+        return String::from(input);
+    }
+    let mut buf = [0u8; 4096];
+    match path::canonicalize_path_to_buf(input, &mut buf) {
+        Some(s) => String::from(s),
+        None => String::from("/"), // Path too long or too deep; fall back to root
+    }
+}
+
 /// Mount a filesystem at the given path.
 pub fn mount(path: &str, fs: Arc<dyn Filesystem>) {
     let mut mounts = MOUNTS.write();
@@ -189,22 +206,34 @@ fn resolve_path(path: &str) -> Option<(usize, String)> {
 }
 
 /// Open a file at the given absolute path (async).
+///
+/// The path is canonicalized before mount-point resolution to prevent
+/// directory traversal attacks via `..` components.
 pub async fn open(path: &str) -> Result<Box<dyn File>, FsError> {
-    let (index, relative) = resolve_path(path).ok_or(FsError::NotFound)?;
+    let canonical = canonicalize(path);
+    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
     let mounts = MOUNTS.read();
     mounts[index].fs.open(&relative).await
 }
 
 /// Get metadata for an absolute path (async).
+///
+/// The path is canonicalized before mount-point resolution to prevent
+/// directory traversal attacks via `..` components.
 pub async fn stat(path: &str) -> Result<FileStat, FsError> {
-    let (index, relative) = resolve_path(path).ok_or(FsError::NotFound)?;
+    let canonical = canonicalize(path);
+    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
     let mounts = MOUNTS.read();
     mounts[index].fs.stat(&relative).await
 }
 
 /// List directory contents at an absolute path (async).
+///
+/// The path is canonicalized before mount-point resolution to prevent
+/// directory traversal attacks via `..` components.
 pub async fn readdir(path: &str) -> Result<Vec<DirEntry>, FsError> {
-    let (index, relative) = resolve_path(path).ok_or(FsError::NotFound)?;
+    let canonical = canonicalize(path);
+    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
     let mounts = MOUNTS.read();
     mounts[index].fs.readdir(&relative).await
 }

@@ -202,6 +202,10 @@ impl Ext2Fs {
     }
 
     /// Resolve path to inode number.
+    ///
+    /// Defence-in-depth: `.` and `..` components are rejected here even though
+    /// the VFS layer should have already canonicalized the path. This prevents
+    /// mount-point escape if canonicalization is ever bypassed.
     pub async fn lookup(&self, path: &str) -> Result<u32, FsError> {
         let path = path.trim_matches('/');
         if path.is_empty() {
@@ -210,6 +214,10 @@ impl Ext2Fs {
 
         let mut current = EXT2_ROOT_INO;
         for component in path.split('/').filter(|s| !s.is_empty()) {
+            // Reject . and .. to prevent traversal beyond mount boundary
+            if component == "." || component == ".." {
+                return Err(FsError::NotFound);
+            }
             let inode = self.read_inode(current).await?;
             if !inode.is_dir() {
                 return Err(FsError::NotFound);
