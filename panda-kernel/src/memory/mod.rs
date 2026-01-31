@@ -20,6 +20,7 @@ mod mapping;
 mod mmio;
 mod paging;
 pub mod recursive;
+mod write_protection;
 
 pub use address::{inspect_virtual_address, virtual_address_to_physical};
 pub use address_space::{
@@ -33,8 +34,9 @@ pub use mapping::{Mapping, MappingBacking};
 pub use mmio::PhysicalMapping;
 pub use paging::{
     allocate_and_map, create_user_page_table, current_page_table_phys, map_external,
-    switch_page_table, unmap_page, unmap_region, update_permissions, without_write_protection,
+    switch_page_table, unmap_page, unmap_region, update_permissions,
 };
+pub use write_protection::without_write_protection;
 
 /// Mapping options for memory regions.
 #[derive(Clone, Copy)]

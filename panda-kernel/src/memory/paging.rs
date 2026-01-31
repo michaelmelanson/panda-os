@@ -4,7 +4,7 @@ use log::debug;
 use x86_64::{
     PhysAddr, VirtAddr,
     instructions::tlb,
-    registers::control::{Cr0, Cr0Flags, Cr3},
+    registers::control::Cr3,
     structures::paging::{
         PageTable, PageTableFlags, PhysFrame,
         page_table::{PageTableEntry, PageTableLevel},
@@ -13,6 +13,7 @@ use x86_64::{
 
 use super::mapping::{Mapping, MappingBacking};
 use super::recursive;
+use super::write_protection::without_write_protection;
 use super::{MemoryMappingOptions, allocate_frame, allocate_frame_raw, deallocate_frame_raw};
 
 /// Get the current page table pointer via recursive mapping.
@@ -85,44 +86,6 @@ pub fn create_user_page_table() -> PhysAddr {
     core::mem::forget(frame);
 
     frame_phys
-}
-
-/// Execute a closure with write protection disabled.
-///
-/// Interrupts are disabled for the duration to prevent interrupt handlers
-/// from running with write protection off. A scope guard ensures WP is
-/// re-enabled even if the closure panics.
-pub fn without_write_protection(f: impl FnOnce()) {
-    use x86_64::instructions::interrupts;
-
-    let were_enabled = interrupts::are_enabled();
-    interrupts::disable();
-
-    unsafe {
-        Cr0::update(|cr0| cr0.remove(Cr0Flags::WRITE_PROTECT));
-    }
-
-    // RAII guard that re-enables write protection and restores interrupt state on drop.
-    struct WriteProtectGuard {
-        interrupts_were_enabled: bool,
-    }
-
-    impl Drop for WriteProtectGuard {
-        fn drop(&mut self) {
-            unsafe {
-                Cr0::update(|cr0| cr0.insert(Cr0Flags::WRITE_PROTECT));
-            }
-            if self.interrupts_were_enabled {
-                interrupts::enable();
-            }
-        }
-    }
-
-    let _guard = WriteProtectGuard {
-        interrupts_were_enabled: were_enabled,
-    };
-
-    f();
 }
 
 /// Update permissions for already-mapped pages.
