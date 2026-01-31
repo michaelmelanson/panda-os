@@ -37,6 +37,7 @@ jobs:
             2. If there are CI failures, read the failing workflow logs and fix the build/test errors.
             3. Review any code review comments on the PR and address the feedback.
             4. Commit and push your fixes to the PR branch.
+            5. When done, leave a comment on the PR summarizing what you did using `gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"`. Include what issues you found, what you fixed, and what commits you pushed. If nothing needed fixing, say so.
 
             PR: ${{ github.repository }}#${{ github.event.pull_request.number }}
             Branch: ${{ github.event.pull_request.head.ref }}
