@@ -26,7 +26,8 @@ use x86_64::{PhysAddr, VirtAddr};
 use crate::uefi::KernelImageInfo;
 
 use super::allocate_frame_raw;
-use super::paging::{current_page_table, without_write_protection};
+use super::paging::current_page_table;
+use super::write_protection::without_write_protection;
 use super::recursive::RECURSIVE_INDEX;
 
 /// Early boot frame allocator - uses a bump allocator from the end of the heap region.

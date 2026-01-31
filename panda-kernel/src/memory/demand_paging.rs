@@ -14,7 +14,8 @@ use x86_64::{
     structures::paging::{PageTableFlags, PhysFrame, page_table::PageTableLevel},
 };
 
-use super::paging::{map_external, without_write_protection};
+use super::paging::map_external;
+use super::write_protection::without_write_protection;
 use super::recursive;
 use super::{MemoryMappingOptions, deallocate_frame_raw};
 
