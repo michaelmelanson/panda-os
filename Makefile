@@ -38,6 +38,7 @@ USERSPACE_TESTS := \
 	env_test \
 	error_test \
 	ext2_test \
+	fault_recovery_test \
 	heap_test \
 	keyboard_test \
 	mailbox_keyboard_test \
@@ -71,7 +72,8 @@ args_test_EXTRAS := args_child
 pipeline_test_EXTRAS := pipeline_producer pipeline_consumer
 control_plane_test_EXTRAS := control_plane_child
 env_test_EXTRAS := env_child
-export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS
+fault_recovery_test_EXTRAS := fault_child
+export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS fault_recovery_test_EXTRAS
 export PROFILE_DIR CARGO_PROFILE
 
 # Cargo commands for custom targets (require build-std for no_std targets)

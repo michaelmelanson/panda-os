@@ -1,0 +1,2 @@
+# Verify the kernel detected the fault and killed the child process
+<<<PROCESS_FAULT>>> Page fault in process

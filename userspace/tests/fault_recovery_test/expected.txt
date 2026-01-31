@@ -1,0 +1,10 @@
+# @unordered
+Fault recovery test: starting
+# @barrier
+Fault recovery test: child spawned, waiting for exit...
+Fault child: starting
+Fault child: writing to read-only code page...
+# @barrier
+Fault recovery test: child was killed with non-zero exit code
+Fault recovery test: system kept running after fault
+PASS
