@@ -4,10 +4,10 @@
 
 use alloc::boxed::Box;
 
-use crate::resource::Buffer;
+use crate::resource::{Buffer, BufferExt};
 use crate::scheduler;
 
-use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess};
+use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr};
 
 /// Calculate the byte size for a pixel buffer of given dimensions (4 bytes per pixel).
 /// Returns `None` if the calculation would overflow.
@@ -34,6 +34,8 @@ pub fn handle_info(ua: &UserAccess, handle: u64, info_ptr: usize) -> SyscallFutu
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
 
+    let out: UserPtr<panda_abi::SurfaceInfoOut> = UserPtr::new(info_ptr);
+
     let result = scheduler::with_current_process(|proc| {
         let Some(resource) = proc.handles().get(handle) else {
             return Err(());
@@ -54,7 +56,7 @@ pub fn handle_info(ua: &UserAccess, handle: u64, info_ptr: usize) -> SyscallFutu
 
     match result {
         Ok(info) => {
-            if ua.write_struct(info_ptr, &info).is_err() {
+            if ua.write_user(out, &info).is_err() {
                 return Box::pin(core::future::ready(SyscallResult::err(-1)));
             }
             Box::pin(core::future::ready(SyscallResult::ok(0)))
@@ -79,7 +81,7 @@ pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFu
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
 
-    let params: panda_abi::BlitParams = match ua.read_struct(params_ptr) {
+    let params: panda_abi::BlitParams = match ua.read_user(UserPtr::new(params_ptr)) {
         Ok(p) => p,
         Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };
@@ -115,62 +117,68 @@ pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFu
             let window_id = {
                 let mut window = window_arc.lock();
 
-                // Copy pixels from source buffer into window's pixel_data at (x, y) offset
-                let src_data = source_buffer.as_ref().as_slice();
+                // Copy pixels from source buffer into window's pixel_data at (x, y) offset.
+                // SMAP: use with_slice to temporarily allow kernel access to user-mapped buffer.
+                let blit_result = source_buffer.as_ref().with_slice(|src_data| {
+                    let Some(expected_src_size) = checked_pixel_buffer_size(params.width, params.height) else {
+                        return -1;
+                    };
 
-                let Some(expected_src_size) = checked_pixel_buffer_size(params.width, params.height) else {
-                    return -1;
-                };
+                    if src_data.len() < expected_src_size {
+                        return -1;
+                    }
 
-                if src_data.len() < expected_src_size {
-                    return -1;
-                }
+                    let window_width = window.size.0;
+                    let window_height = window.size.1;
 
-                let window_width = window.size.0;
-                let window_height = window.size.1;
+                    // Bounds check
+                    if params.x + params.width > window_width
+                        || params.y + params.height > window_height
+                    {
+                        return -1;
+                    }
 
-                // Bounds check
-                if params.x + params.width > window_width
-                    || params.y + params.height > window_height
-                {
-                    return -1;
-                }
+                    // Blit with alpha blending
+                    for row in 0..params.height {
+                        for col in 0..params.width {
+                            let src_offset = ((row * params.width + col) * 4) as usize;
+                            let dst_offset =
+                                (((params.y + row) * window_width + params.x + col) * 4) as usize;
 
-                // Blit with alpha blending
-                for row in 0..params.height {
-                    for col in 0..params.width {
-                        let src_offset = ((row * params.width + col) * 4) as usize;
-                        let dst_offset =
-                            (((params.y + row) * window_width + params.x + col) * 4) as usize;
-
-                        if dst_offset + 4 > window.pixel_data.len() {
-                            return -1;
-                        }
-
-                        let src_a = src_data[src_offset + 3] as u16;
-
-                        if src_a == 0 {
-                            // Fully transparent - skip
-                            continue;
-                        } else if src_a == 255 {
-                            // Fully opaque - direct copy
-                            window.pixel_data[dst_offset..dst_offset + 4]
-                                .copy_from_slice(&src_data[src_offset..src_offset + 4]);
-                        } else {
-                            // Alpha blend: out = src * alpha + dst * (1 - alpha)
-                            let inv_a = 255 - src_a;
-                            for i in 0..3 {
-                                let src_c = src_data[src_offset + i] as u16;
-                                let dst_c = window.pixel_data[dst_offset + i] as u16;
-                                window.pixel_data[dst_offset + i] =
-                                    ((src_c * src_a + dst_c * inv_a) / 255) as u8;
+                            if dst_offset + 4 > window.pixel_data.len() {
+                                return -1;
                             }
-                            // Output alpha: src_a + dst_a * (1 - src_a)
-                            let dst_a = window.pixel_data[dst_offset + 3] as u16;
-                            window.pixel_data[dst_offset + 3] =
-                                (src_a + (dst_a * inv_a) / 255) as u8;
+
+                            let src_a = src_data[src_offset + 3] as u16;
+
+                            if src_a == 0 {
+                                // Fully transparent - skip
+                                continue;
+                            } else if src_a == 255 {
+                                // Fully opaque - direct copy
+                                window.pixel_data[dst_offset..dst_offset + 4]
+                                    .copy_from_slice(&src_data[src_offset..src_offset + 4]);
+                            } else {
+                                // Alpha blend: out = src * alpha + dst * (1 - alpha)
+                                let inv_a = 255 - src_a;
+                                for i in 0..3 {
+                                    let src_c = src_data[src_offset + i] as u16;
+                                    let dst_c = window.pixel_data[dst_offset + i] as u16;
+                                    window.pixel_data[dst_offset + i] =
+                                        ((src_c * src_a + dst_c * inv_a) / 255) as u8;
+                                }
+                                // Output alpha: src_a + dst_a * (1 - src_a)
+                                let dst_a = window.pixel_data[dst_offset + 3] as u16;
+                                window.pixel_data[dst_offset + 3] =
+                                    (src_a + (dst_a * inv_a) / 255) as u8;
+                            }
                         }
                     }
+                    0
+                });
+
+                if blit_result != 0 {
+                    return blit_result;
                 }
 
                 // Keep buffer reference for backwards compatibility
@@ -191,33 +199,36 @@ pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFu
             let Some(buffer) = buffer_resource.as_buffer() else {
                 return -1;
             };
-            let buffer_slice = buffer.as_slice();
 
             let Some(expected_size) = checked_pixel_buffer_size(params.width, params.height) else {
                 return -1;
             };
 
-            if buffer_slice.len() < expected_size {
-                return -1;
-            }
+            // SMAP: access user-mapped buffer within with_slice closure
+            let blit_result = buffer.with_slice(|buffer_slice| {
+                if buffer_slice.len() < expected_size {
+                    return -1;
+                }
 
-            let Some(resource) = proc.handles().get(handle) else {
-                return -1;
-            };
-            let Some(surface) = resource.as_surface() else {
-                return -1;
-            };
+                let Some(resource) = proc.handles().get(handle) else {
+                    return -1;
+                };
+                let Some(surface) = resource.as_surface() else {
+                    return -1;
+                };
 
-            match surface.blit(
-                params.x,
-                params.y,
-                params.width,
-                params.height,
-                &buffer_slice[..expected_size],
-            ) {
-                Ok(()) => 0,
-                Err(_) => -1,
-            }
+                match surface.blit(
+                    params.x,
+                    params.y,
+                    params.width,
+                    params.height,
+                    &buffer_slice[..expected_size],
+                ) {
+                    Ok(()) => 0,
+                    Err(_) => -1,
+                }
+            });
+            blit_result
         }
     });
 
@@ -240,7 +251,7 @@ pub fn handle_fill(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFu
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
 
-    let params: panda_abi::FillParams = match ua.read_struct(params_ptr) {
+    let params: panda_abi::FillParams = match ua.read_user(UserPtr::new(params_ptr)) {
         Ok(p) => p,
         Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };
@@ -311,7 +322,7 @@ pub fn handle_flush(ua: &UserAccess, handle: u64, rect_ptr: usize) -> SyscallFut
 
         if rect_ptr != 0 {
             // Read rect from userspace
-            let rect: panda_abi::SurfaceRect = match ua.read_struct(rect_ptr) {
+            let rect: panda_abi::SurfaceRect = match ua.read_user(UserPtr::new(rect_ptr)) {
                 Ok(r) => r,
                 Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
             };
@@ -344,7 +355,7 @@ pub fn handle_flush(ua: &UserAccess, handle: u64, rect_ptr: usize) -> SyscallFut
             };
 
             let region = if rect_ptr != 0 {
-                let rect: panda_abi::SurfaceRect = match ua.read_struct(rect_ptr) {
+                let rect: panda_abi::SurfaceRect = match ua.read_user(UserPtr::new(rect_ptr)) {
                     Ok(r) => r,
                     Err(_) => return -1,
                 };
@@ -384,7 +395,7 @@ pub fn handle_update_params(ua: &UserAccess, handle: u64, params_ptr: usize) -> 
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
 
-    let params: panda_abi::UpdateParamsIn = match ua.read_struct(params_ptr) {
+    let params: panda_abi::UpdateParamsIn = match ua.read_user(UserPtr::new(params_ptr)) {
         Ok(p) => p,
         Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };

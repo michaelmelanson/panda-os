@@ -4,6 +4,7 @@
 //! accessed when the process's page table is active.
 //!
 //! - `UserSlice`: An opaque (address, length) pair. `Send + Copy`, safe to capture in futures.
+//! - `UserPtr<T>`: A typed pointer to userspace memory. `Send + Copy`, encodes the expected type.
 //! - `UserAccess`: A `!Send` token proving the page table is active. Cannot be captured in futures.
 //! - `SyscallResult`: Return type for syscall futures, with optional writeback to userspace.
 //! - `SyscallError`: Early-return error type for syscall setup (bad pointer, invalid handle, etc.).
@@ -11,7 +12,10 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::future::Future;
+use core::marker::PhantomData;
 use core::pin::Pin;
+
+use crate::memory::smap;
 
 /// Upper bound of userspace addresses (lower canonical half).
 const USER_ADDR_MAX: usize = 0x0000_7fff_ffff_ffff;
@@ -40,6 +44,38 @@ impl UserSlice {
     }
 }
 
+/// A typed pointer to userspace memory. Cannot be dereferenced without a
+/// `UserAccess` token and SMAP bracketing.
+///
+/// `Send + Copy` — safe to capture in futures (it's just an address).
+/// The type parameter encodes the expected layout at compile time, preventing
+/// accidental type mismatches when reading/writing userspace structs.
+#[derive(Clone, Copy)]
+pub struct UserPtr<T: Copy> {
+    addr: usize,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Copy> UserPtr<T> {
+    /// Create from a raw userspace address.
+    pub fn new(addr: usize) -> Self {
+        Self {
+            addr,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Get the raw address.
+    pub fn addr(&self) -> usize {
+        self.addr
+    }
+
+    /// Convert to a `UserSlice` covering `size_of::<T>()` bytes.
+    pub fn as_slice(&self) -> UserSlice {
+        UserSlice::new(self.addr, core::mem::size_of::<T>())
+    }
+}
+
 /// Proof that the current process's page table is active.
 ///
 /// Not `Send` — cannot be captured in a `Send` future. This is the key
@@ -49,7 +85,8 @@ impl UserSlice {
 ///
 /// All reads and writes validate that the pointer falls within the userspace
 /// address range (lower canonical half: `0` to `0x0000_7fff_ffff_ffff`)
-/// before accessing memory.
+/// before accessing memory. SMAP is temporarily disabled via `stac`/`clac`
+/// for each access.
 pub struct UserAccess(());
 
 impl !Send for UserAccess {}
@@ -81,39 +118,58 @@ impl UserAccess {
     /// Copy data from userspace into a kernel `Vec`.
     pub fn read(&self, src: UserSlice) -> Result<Vec<u8>, SyscallError> {
         self.validate(src)?;
-        let slice = unsafe { core::slice::from_raw_parts(src.addr as *const u8, src.len) };
-        Ok(slice.to_vec())
+        Ok(smap::with_userspace_access(|| {
+            let slice = unsafe { core::slice::from_raw_parts(src.addr as *const u8, src.len) };
+            slice.to_vec()
+        }))
     }
 
     /// Copy data from kernel into userspace. Returns the number of bytes written.
     pub fn write(&self, dst: UserSlice, data: &[u8]) -> Result<usize, SyscallError> {
         self.validate(dst)?;
-        let slice = unsafe { core::slice::from_raw_parts_mut(dst.addr as *mut u8, dst.len) };
-        let n = data.len().min(slice.len());
-        slice[..n].copy_from_slice(&data[..n]);
-        Ok(n)
+        Ok(smap::with_userspace_access(|| {
+            let slice =
+                unsafe { core::slice::from_raw_parts_mut(dst.addr as *mut u8, dst.len) };
+            let n = data.len().min(slice.len());
+            slice[..n].copy_from_slice(&data[..n]);
+            n
+        }))
     }
 
-    /// Read a `Copy` struct from userspace.
-    pub fn read_struct<T: Copy>(&self, addr: usize) -> Result<T, SyscallError> {
-        let slice = UserSlice::new(addr, core::mem::size_of::<T>());
-        self.validate(slice)?;
-        Ok(unsafe { core::ptr::read(addr as *const T) })
+    /// Read a `Copy` struct from userspace via a typed `UserPtr<T>`.
+    pub fn read_user<T: Copy>(&self, ptr: UserPtr<T>) -> Result<T, SyscallError> {
+        self.validate(ptr.as_slice())?;
+        Ok(smap::with_userspace_access(|| unsafe {
+            core::ptr::read(ptr.addr as *const T)
+        }))
     }
 
-    /// Write a `Copy` struct to userspace.
-    pub fn write_struct<T: Copy>(&self, addr: usize, value: &T) -> Result<(), SyscallError> {
-        let slice = UserSlice::new(addr, core::mem::size_of::<T>());
-        self.validate(slice)?;
-        unsafe { core::ptr::write(addr as *mut T, *value) };
+    /// Write a `Copy` struct to userspace via a typed `UserPtr<T>`.
+    pub fn write_user<T: Copy>(&self, ptr: UserPtr<T>, value: &T) -> Result<(), SyscallError> {
+        self.validate(ptr.as_slice())?;
+        smap::with_userspace_access(|| unsafe {
+            core::ptr::write(ptr.addr as *mut T, *value);
+        });
         Ok(())
+    }
+
+    /// Read a `Copy` struct from userspace (untyped address).
+    pub fn read_struct<T: Copy>(&self, addr: usize) -> Result<T, SyscallError> {
+        self.read_user(UserPtr::new(addr))
+    }
+
+    /// Write a `Copy` struct to userspace (untyped address).
+    pub fn write_struct<T: Copy>(&self, addr: usize, value: &T) -> Result<(), SyscallError> {
+        self.write_user(UserPtr::new(addr), value)
     }
 
     /// Read a UTF-8 string from userspace.
     pub fn read_str(&self, addr: usize, len: usize) -> Result<&str, SyscallError> {
         let slice = UserSlice::new(addr, len);
         self.validate(slice)?;
-        let bytes = unsafe { core::slice::from_raw_parts(addr as *const u8, len) };
+        let bytes = smap::with_userspace_access(|| {
+            unsafe { core::slice::from_raw_parts(addr as *const u8, len) }
+        });
         core::str::from_utf8(bytes).map_err(|_| SyscallError::BadUserPointer)
     }
 }

@@ -7,12 +7,12 @@ use alloc::sync::Arc;
 
 use panda_abi::HandleType;
 
-use crate::resource::{Buffer, SharedBuffer, VfsFile};
+use crate::resource::{Buffer, BufferExt, SharedBuffer, VfsFile};
 use crate::scheduler;
 use crate::vfs::SeekFrom;
 
 use super::VfsFileWrapper;
-use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess};
+use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr};
 
 /// Handle buffer allocation.
 /// Returns handle_id on success, negative on error.
@@ -42,7 +42,7 @@ pub fn handle_alloc(ua: &UserAccess, size: usize, info_ptr: usize) -> SyscallFut
 
     match result {
         Some((handle_id, Some(info))) => {
-            if ua.write_struct(info_ptr, &info).is_err() {
+            if ua.write_user(UserPtr::new(info_ptr), &info).is_err() {
                 return Box::pin(core::future::ready(SyscallResult::err(-1)));
             }
             Box::pin(core::future::ready(SyscallResult::ok(handle_id as isize)))
@@ -109,7 +109,8 @@ pub fn handle_resize(
                     let copy_size = old_size.min(new_size);
                     let vaddr = x86_64::VirtAddr::new(buffer.mapped_addr() as u64);
                     let num_pages = (old_size + 4095) / 4096;
-                    (buffer.as_slice()[..copy_size].to_vec(), vaddr, num_pages)
+                    let old_data = buffer.with_slice(|s| s[..copy_size].to_vec());
+                    (old_data, vaddr, num_pages)
                 };
 
                 // Allocate new buffer
@@ -127,7 +128,7 @@ pub fn handle_resize(
                     let Some(buffer) = handle.as_buffer() else {
                         return Err(());
                     };
-                    buffer.as_mut_slice()[..old_data.len()].copy_from_slice(&old_data);
+                    buffer.with_mut_slice(|s| s[..old_data.len()].copy_from_slice(&old_data));
                     buffer.size()
                 };
 
@@ -148,7 +149,7 @@ pub fn handle_resize(
 
     match result {
         Ok(Some(info)) => {
-            if ua.write_struct(info_ptr, &info).is_err() {
+            if ua.write_user(UserPtr::new(info_ptr), &info).is_err() {
                 return Box::pin(core::future::ready(SyscallResult::err(-1)));
             }
             Box::pin(core::future::ready(SyscallResult::ok(0)))
@@ -225,11 +226,17 @@ pub fn handle_read_buffer(file_handle_id: u64, buffer_handle_id: u64) -> Syscall
             return SyscallResult::err(-1);
         }
 
-        // Read into buffer (SharedBuffer is kernel memory, no userspace access needed)
-        let buf = buffer_arc.as_mut_slice();
-        let to_read = buf.len().min(buffer_size);
-        match file.read(&mut buf[..to_read]).await {
+        // Read into a kernel bounce buffer, then copy into the user-mapped buffer.
+        // We cannot hold a reference to user-mapped memory across an .await point
+        // because SMAP must be re-enabled between polls.
+        let to_read = buffer_arc.size().min(buffer_size);
+        let mut kernel_buf = alloc::vec![0u8; to_read];
+        match file.read(&mut kernel_buf[..to_read]).await {
             Ok(n) => {
+                // Copy from kernel bounce buffer into user-mapped SharedBuffer
+                buffer_arc.with_mut_slice(|buf| {
+                    buf[..n].copy_from_slice(&kernel_buf[..n]);
+                });
                 // Update file offset
                 scheduler::with_current_process(|proc| {
                     if let Some(handle) = proc.handles_mut().get_mut(file_handle_id) {
@@ -250,15 +257,17 @@ pub fn handle_write_buffer(
     buffer_handle_id: u64,
     len: usize,
 ) -> SyscallFuture {
-    // Get buffer data (copy to owned Vec since we need it in async block)
+    // Get buffer data (copy to owned Vec since we need it in async block).
+    // SMAP: use with_slice to access user-mapped buffer pages.
     let (buffer_data, write_len) = match scheduler::with_current_process(|proc| {
         let buffer_handle = proc.handles().get(buffer_handle_id)?;
         let buffer = buffer_handle.as_buffer()?;
-        let buf_slice = buffer.as_slice();
-        let write_len = len.min(buf_slice.len());
-        let mut data = alloc::vec![0u8; write_len];
-        data.copy_from_slice(&buf_slice[..write_len]);
-        Some((data, write_len))
+        buffer.with_slice(|buf_slice| {
+            let write_len = len.min(buf_slice.len());
+            let mut data = alloc::vec![0u8; write_len];
+            data.copy_from_slice(&buf_slice[..write_len]);
+            Some((data, write_len))
+        })
     }) {
         Some(info) => info,
         None => return Box::pin(core::future::ready(SyscallResult::err(-1))),

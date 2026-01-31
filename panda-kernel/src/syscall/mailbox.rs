@@ -11,7 +11,7 @@ use crate::resource::Mailbox;
 use crate::scheduler;
 
 use super::poll_fn;
-use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess};
+use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr};
 
 /// Handle mailbox create operation.
 /// Returns a new mailbox handle.
@@ -102,7 +102,7 @@ pub fn handle_poll(ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> Sysc
                 events,
                 _pad: 0,
             };
-            match ua.write_struct(out_ptr, &event_result) {
+            match ua.write_user(UserPtr::new(out_ptr), &event_result) {
                 Ok(_) => Box::pin(core::future::ready(SyscallResult::ok(1))),
                 Err(_) => Box::pin(core::future::ready(SyscallResult::err(-1))),
             }

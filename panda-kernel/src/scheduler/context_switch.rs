@@ -21,6 +21,8 @@ macro_rules! preemptable_interrupt_entry {
         #[unsafe(naked)]
         extern "C" fn entry() {
             core::arch::naked_asm!(
+                // Clear AC flag in case we interrupted a stac window (SMAP defence-in-depth)
+                "clac",
                 // Save all GPRs (in reverse order so SavedRegsOnStack matches)
                 "push rax",
                 "push rbx",

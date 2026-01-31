@@ -14,7 +14,7 @@ use crate::{
     resource, scheduler,
 };
 
-use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess};
+use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr};
 
 /// Handle environment open operation.
 ///
@@ -144,7 +144,7 @@ pub fn handle_mount(
 /// Parent receives a SpawnHandle that combines channel + process info.
 pub fn handle_spawn(ua: &UserAccess, params_ptr: usize) -> SyscallFuture {
     // Read spawn parameters from userspace
-    let params: panda_abi::SpawnParams = match ua.read_struct(params_ptr) {
+    let params: panda_abi::SpawnParams = match ua.read_user(UserPtr::new(params_ptr)) {
         Ok(p) => p,
         Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };

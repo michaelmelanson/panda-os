@@ -20,7 +20,7 @@ mod surface;
 mod window;
 
 pub use block::{BlockDevice, BlockError};
-pub use buffer::{Buffer, BufferError, SharedBuffer};
+pub use buffer::{Buffer, BufferError, BufferExt, SharedBuffer};
 pub use channel::{ChannelEndpoint, ChannelError};
 pub use char_output::{CharOutError, CharacterOutput};
 pub use directory::{DirEntry, Directory};

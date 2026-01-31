@@ -107,6 +107,8 @@ extern "C" fn syscall_entry() {
         "pop r14",
         "pop r15",
 
+        // SMAP defence-in-depth: ensure AC is clear before returning to userspace
+        "clac",
         "mov rsp, gs:[0x0]",
         "swapgs",
         "sysretq",

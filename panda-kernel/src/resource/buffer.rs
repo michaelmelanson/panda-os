@@ -4,6 +4,13 @@
 //! - Mapped into userspace for direct access
 //! - Accessed by the kernel for zero-copy I/O
 //! - Transferred between processes (ownership moves)
+//!
+//! # SMAP Safety
+//!
+//! Buffer memory is mapped into userspace. With SMAP enabled, kernel access
+//! to these pages requires `stac`/`clac` bracketing. Use the safe
+//! `with_slice` / `with_mut_slice` convenience methods instead of the raw
+//! `as_slice` / `as_mut_slice` methods which are unsafe.
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -12,6 +19,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use x86_64::VirtAddr;
 
 use crate::memory::{self, Frame, Mapping, MappingBacking, MemoryMappingOptions, map_external};
+use crate::memory::smap;
 use crate::process::Process;
 
 use super::Resource;
@@ -28,16 +36,31 @@ pub enum BufferError {
 }
 
 /// Interface for buffer resources.
+///
+/// # Safety
+///
+/// `as_slice` and `as_mut_slice` access user-mapped pages. With SMAP enabled,
+/// callers must bracket access with `smap::with_userspace_access` or use
+/// the safe `with_slice` / `with_mut_slice` extension methods.
 pub trait Buffer: Send + Sync {
     /// Get the logical size in bytes.
     fn size(&self) -> usize;
 
     /// Get a slice of the buffer contents for reading.
-    fn as_slice(&self) -> &[u8];
+    ///
+    /// # Safety
+    /// The returned slice references user-mapped pages. With SMAP enabled,
+    /// the caller must ensure access is within a `stac`/`clac` window.
+    /// Prefer `with_slice` for safe access.
+    unsafe fn as_slice(&self) -> &[u8];
 
     /// Get a mutable slice of the buffer contents for writing.
-    /// Uses interior mutability.
-    fn as_mut_slice(&self) -> &mut [u8];
+    ///
+    /// # Safety
+    /// The returned slice references user-mapped pages. With SMAP enabled,
+    /// the caller must ensure access is within a `stac`/`clac` window.
+    /// Prefer `with_mut_slice` for safe access.
+    unsafe fn as_mut_slice(&self) -> &mut [u8];
 
     /// Resize the buffer. Returns the new mapped address.
     /// Uses interior mutability.
@@ -46,6 +69,30 @@ pub trait Buffer: Send + Sync {
     /// Get the current mapped address in userspace.
     fn mapped_addr(&self) -> usize;
 }
+
+/// Extension methods for safe SMAP-bracketed access to buffer contents.
+pub trait BufferExt: Buffer {
+    /// Access the buffer contents for reading via a closure.
+    /// SMAP is temporarily disabled for the duration of the closure.
+    fn with_slice<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
+        smap::with_userspace_access(|| {
+            let slice = unsafe { self.as_slice() };
+            f(slice)
+        })
+    }
+
+    /// Access the buffer contents for writing via a closure.
+    /// SMAP is temporarily disabled for the duration of the closure.
+    fn with_mut_slice<R>(&self, f: impl FnOnce(&mut [u8]) -> R) -> R {
+        smap::with_userspace_access(|| {
+            let slice = unsafe { self.as_mut_slice() };
+            f(slice)
+        })
+    }
+}
+
+// Blanket implementation for all Buffer types
+impl<T: Buffer + ?Sized> BufferExt for T {}
 
 /// A shared buffer backed by physical pages.
 pub struct SharedBuffer {
@@ -135,13 +182,13 @@ impl Buffer for SharedBuffer {
         self.logical_size.load(Ordering::Relaxed)
     }
 
-    fn as_slice(&self) -> &[u8] {
+    unsafe fn as_slice(&self) -> &[u8] {
         let ptr = self.user_vaddr.as_u64() as *const u8;
         let size = self.logical_size.load(Ordering::Relaxed);
         unsafe { core::slice::from_raw_parts(ptr, size) }
     }
 
-    fn as_mut_slice(&self) -> &mut [u8] {
+    unsafe fn as_mut_slice(&self) -> &mut [u8] {
         let ptr = self.user_vaddr.as_u64() as *mut u8;
         let size = self.logical_size.load(Ordering::Relaxed);
         unsafe { core::slice::from_raw_parts_mut(ptr, size) }

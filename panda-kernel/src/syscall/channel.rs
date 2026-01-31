@@ -14,7 +14,7 @@ use crate::resource::{ChannelError, Resource};
 use crate::scheduler;
 
 use super::poll_fn;
-use super::user_ptr::{SyscallError, SyscallFuture, SyscallResult, UserAccess, UserSlice};
+use super::user_ptr::{SyscallError, SyscallFuture, SyscallResult, UserAccess, UserPtr, UserSlice};
 
 /// Handle channel create operation.
 /// Creates a pair of connected channel endpoints and returns handles to both.
@@ -43,7 +43,7 @@ pub fn handle_create(ua: &UserAccess, out_handles_ptr: usize) -> SyscallFuture {
     });
 
     // Write the handle IDs to userspace
-    let result = ua.write_struct::<[u64; 2]>(out_handles_ptr, &[handle_a, handle_b]);
+    let result = ua.write_user(UserPtr::<[u64; 2]>::new(out_handles_ptr), &[handle_a, handle_b]);
 
     let code = match result {
         Ok(_) => {
