@@ -197,7 +197,7 @@ where
 #[inline]
 pub fn eoi() {
     let base = APIC_BASE_VIRT.load(Ordering::Acquire);
-    debug_assert!(base != 0, "Local APIC not initialized");
+    assert!(base != 0, "Local APIC not initialized");
     unsafe {
         let eoi_ptr = (base + reg::EOI as u64) as *mut u32;
         core::ptr::write_volatile(eoi_ptr, 0);
