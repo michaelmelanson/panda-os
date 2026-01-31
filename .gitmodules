@@ -1,0 +1,3 @@
+[submodule "vendor/fontdue"]
+	path = vendor/fontdue
+	url = https://github.com/michaelmelanson/fontdue.git
