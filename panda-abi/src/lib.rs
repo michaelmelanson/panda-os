@@ -546,6 +546,16 @@ pub const FILE_NONBLOCK: u32 = FileFlags::NONBLOCK.0;
 /// Larger data should use shared memory / buffer handles.
 pub const MAX_MESSAGE_SIZE: usize = 4096;
 
+/// Maximum size for a single file read/write bounce buffer (1 MB).
+/// Larger I/O should use buffer handles (FileReadBuffer/FileWriteBuffer)
+/// which read directly into SharedBuffers without kernel bounce buffers.
+pub const MAX_FILE_IO_SIZE: usize = 1024 * 1024;
+
+/// Maximum size for a shared buffer allocation (16 MB).
+/// This limits physical frame allocation per buffer to prevent
+/// a single syscall from exhausting kernel memory.
+pub const MAX_BUFFER_SIZE: usize = 16 * 1024 * 1024;
+
 /// Default queue depth (number of messages per direction).
 pub const DEFAULT_QUEUE_CAPACITY: usize = 16;
 
