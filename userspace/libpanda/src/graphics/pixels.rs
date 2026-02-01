@@ -1,6 +1,6 @@
 //! Pixel buffer for graphics rendering.
 
-use crate::error::{Error, Result};
+use crate::error::{self, Result};
 use crate::graphics::{Colour, Rect};
 use crate::handle::Handle;
 use crate::sys;
@@ -37,7 +37,7 @@ impl PixelBuffer {
 
         let result = sys::buffer::alloc(size, Some(&mut info));
         if result < 0 {
-            return Err(Error::from_code(result));
+            return Err(error::from_code(result));
         }
 
         Ok(Self {

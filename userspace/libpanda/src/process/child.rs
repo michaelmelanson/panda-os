@@ -2,10 +2,11 @@
 
 use alloc::vec::Vec;
 
-use crate::error::{Error, Result};
+use crate::error::{self, Result};
 use crate::handle::Handle;
 use crate::ipc::Channel;
 use crate::sys;
+use panda_abi::ErrorCode;
 use panda_abi::MAX_MESSAGE_SIZE;
 
 /// A handle to a spawned child process.
@@ -76,7 +77,7 @@ impl Child {
     /// Returns the exit status of the child.
     pub fn wait(&mut self) -> Result<ExitStatus> {
         if self.waited {
-            return Err(Error::InvalidArgument);
+            return Err(ErrorCode::InvalidArgument);
         }
 
         let code = sys::process::wait(self.handle);
@@ -88,7 +89,7 @@ impl Child {
     pub fn signal(&mut self, sig: Signal) -> Result<()> {
         let result = sys::process::signal(self.handle, sig as u32);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(())
         }
@@ -245,7 +246,7 @@ impl<'a> ChildBuilder<'a> {
             stdout_raw,
         );
         if result < 0 {
-            return Err(Error::from_code(result));
+            return Err(error::from_code(result));
         }
 
         let handle = Handle::from(result as u64);

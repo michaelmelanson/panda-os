@@ -34,7 +34,7 @@
 //! }
 //! ```
 
-use crate::error::{Error, Result};
+use crate::error::{self, Result};
 use crate::handle::Handle;
 use crate::sys;
 
@@ -75,7 +75,7 @@ pub fn parent() -> Handle {
 pub fn read(buf: &mut [u8]) -> Result<usize> {
     let result = sys::channel::recv_msg(Handle::STDIN, buf);
     if result < 0 {
-        Err(Error::from_code(result))
+        Err(error::from_code(result))
     } else {
         Ok(result as usize)
     }
@@ -87,7 +87,7 @@ pub fn read(buf: &mut [u8]) -> Result<usize> {
 pub fn try_read(buf: &mut [u8]) -> Result<usize> {
     let result = sys::channel::try_recv_msg(Handle::STDIN, buf);
     if result < 0 {
-        Err(Error::from_code(result))
+        Err(error::from_code(result))
     } else {
         Ok(result as usize)
     }
@@ -100,7 +100,7 @@ pub fn try_read(buf: &mut [u8]) -> Result<usize> {
 pub fn write(data: &[u8]) -> Result<()> {
     let result = sys::channel::send_msg(Handle::STDOUT, data);
     if result < 0 {
-        Err(Error::from_code(result))
+        Err(error::from_code(result))
     } else {
         Ok(())
     }
@@ -112,7 +112,7 @@ pub fn write(data: &[u8]) -> Result<()> {
 pub fn try_write(data: &[u8]) -> Result<()> {
     let result = sys::channel::try_send_msg(Handle::STDOUT, data);
     if result < 0 {
-        Err(Error::from_code(result))
+        Err(error::from_code(result))
     } else {
         Ok(())
     }
@@ -148,7 +148,7 @@ pub fn write_value(value: &Value) -> Result<()> {
     let bytes = encoder.finish();
 
     if bytes.len() > MAX_MESSAGE_SIZE {
-        return Err(Error::from_code(-2)); // Message too large
+        return Err(panda_abi::ErrorCode::MessageTooLarge);
     }
 
     write(&bytes)
@@ -169,7 +169,7 @@ pub fn read_value() -> Result<Option<Value>> {
     let mut decoder = Decoder::new(&buf[..n]);
     match Value::decode(&mut decoder) {
         Ok(value) => Ok(Some(value)),
-        Err(_) => Err(Error::from_code(-4)), // Decode error
+        Err(_) => Err(panda_abi::ErrorCode::InvalidArgument),
     }
 }
 
@@ -184,7 +184,7 @@ pub fn try_read_value() -> Result<Option<Value>> {
             let mut decoder = Decoder::new(&buf[..n]);
             match Value::decode(&mut decoder) {
                 Ok(value) => Ok(Some(value)),
-                Err(_) => Err(Error::from_code(-4)), // Decode error
+                Err(_) => Err(panda_abi::ErrorCode::InvalidArgument),
             }
         }
         Ok(_) => Ok(None), // No data available
@@ -236,7 +236,7 @@ pub fn output_value(value: &Value) -> Result<()> {
             let bytes = msg.to_bytes();
             let result = sys::channel::send_msg(Handle::PARENT, &bytes);
             if result < 0 {
-                Err(Error::from_code(result))
+                Err(error::from_code(result))
             } else {
                 Ok(())
             }

@@ -65,6 +65,7 @@ pub use handle::Handle;
 
 // Re-export ABI types
 pub use panda_abi::DirEntry;
+pub use panda_abi::ErrorCode;
 
 /// Special exit codes used by the runtime.
 pub mod exit_code {

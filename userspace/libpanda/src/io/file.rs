@@ -3,10 +3,11 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::error::{Error, Result};
+use crate::error::{self, Result};
 use crate::handle::{FileHandle, Handle};
 use crate::io::{Read, Seek, SeekFrom, Write};
 use crate::sys;
+use panda_abi::ErrorCode;
 use panda_abi::FileStat;
 
 /// A file handle with RAII semantics.
@@ -39,9 +40,9 @@ impl File {
     pub fn open(path: &str) -> Result<Self> {
         let result = sys::env::open(path, 0, 0);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
-            let handle = FileHandle::from_raw(result as u64).ok_or(Error::InvalidArgument)?;
+            let handle = FileHandle::from_raw(result as u64).ok_or(ErrorCode::InvalidArgument)?;
             Ok(Self { handle })
         }
     }
@@ -63,9 +64,9 @@ impl File {
     pub fn open_with_mailbox(path: &str, mailbox: u64, event_mask: u32) -> Result<Self> {
         let result = sys::env::open(path, mailbox, event_mask);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
-            let handle = FileHandle::from_raw(result as u64).ok_or(Error::InvalidArgument)?;
+            let handle = FileHandle::from_raw(result as u64).ok_or(ErrorCode::InvalidArgument)?;
             Ok(Self { handle })
         }
     }
@@ -104,7 +105,7 @@ impl File {
         };
         let result = sys::file::stat(self.handle.into(), &mut stat);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(Metadata {
                 size: stat.size,
@@ -155,7 +156,7 @@ impl Read for File {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         let result = sys::file::read(self.handle.into(), buf);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(result as usize)
         }
@@ -166,7 +167,7 @@ impl Write for File {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
         let result = sys::file::write(self.handle.into(), buf);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(result as usize)
         }
@@ -187,7 +188,7 @@ impl Seek for File {
         };
         let result = sys::file::seek(self.handle.into(), offset, whence);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(result as u64)
         }

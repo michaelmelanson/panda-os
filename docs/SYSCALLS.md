@@ -263,13 +263,23 @@ handles can be created again.
 
 ## Error codes
 
-Negative return values indicate errors. Most syscalls return `-1` as a generic error. Channel operations use more specific codes:
+Negative return values indicate errors. All syscalls return negated `panda_abi::ErrorCode` discriminants. The same `ErrorCode` type is used by both the kernel (`SyscallResult::err`) and userspace (`libpanda::ErrorCode`).
 
-| Code | Meaning |
-|------|---------|
-| -1 | Generic error (bad handle, not found, I/O failure, etc.) |
-| -2 | Message too large (channel send) or buffer too small (channel recv) |
-| -3 | Peer closed (channel send/recv) |
-| -4 | Other channel error |
-
-The `panda_abi::ErrorCode` enum (with values `NotFound = 1`, `InvalidOffset = 2`, ..., `Protocol = 11`) is used in the message-passing protocol for block device and character device responses, not in direct syscall return values.
+| Code | ErrorCode variant | Meaning |
+|------|-------------------|---------|
+| -1 | `NotFound` | Resource not found |
+| -2 | `InvalidOffset` | Invalid offset or position |
+| -3 | `NotReadable` | Resource is not readable |
+| -4 | `NotWritable` | Resource is not writable |
+| -5 | `NotSeekable` | Resource is not seekable |
+| -6 | `NotSupported` | Operation not supported |
+| -7 | `PermissionDenied` | Permission denied |
+| -8 | `IoError` | I/O error |
+| -9 | `WouldBlock` | Would block (non-blocking operations) |
+| -10 | `InvalidArgument` | Invalid argument |
+| -11 | `Protocol` | Protocol error (unexpected message type) |
+| -12 | `InvalidHandle` | Handle not found or wrong type |
+| -13 | `TooManyHandles` | Per-process handle limit reached |
+| -14 | `ChannelClosed` | Channel peer closed |
+| -15 | `MessageTooLarge` | Channel message exceeds limit |
+| -16 | `BufferTooSmall` | Buffer too small for operation |

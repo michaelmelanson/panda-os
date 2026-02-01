@@ -1,6 +1,6 @@
 //! Surface and window abstractions.
 
-use crate::error::{Error, Result};
+use crate::error::{self, Result};
 use crate::graphics::{Colour, PixelBuffer, Rect};
 use crate::handle::Handle;
 use crate::sys;
@@ -37,7 +37,7 @@ impl Surface {
     pub fn open(path: &str) -> Result<Self> {
         let result = sys::env::open(path, 0, 0);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(Self {
                 handle: Handle::from(result as u64),
@@ -65,7 +65,7 @@ impl Surface {
         };
         let result = sys::surface::info(self.handle, &mut info);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(SurfaceInfo {
                 width: info.width,
@@ -94,7 +94,7 @@ impl Surface {
         };
         let result = sys::surface::fill(self.handle, &params);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(())
         }
@@ -130,7 +130,7 @@ impl Surface {
         };
         let result = sys::surface::blit(self.handle, &params);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(())
         }
@@ -142,7 +142,7 @@ impl Surface {
     pub fn flush(&mut self) -> Result<()> {
         let result = sys::surface::flush(self.handle, None);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(())
         }
@@ -158,7 +158,7 @@ impl Surface {
         };
         let result = sys::surface::flush(self.handle, Some(&surface_rect));
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(())
         }
@@ -274,7 +274,7 @@ impl Window {
         };
         let result = sys::surface::update_params(self.surface.handle, &params);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(())
         }

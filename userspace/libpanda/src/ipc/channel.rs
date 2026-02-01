@@ -1,8 +1,9 @@
 //! Channel abstraction for message-passing.
 
-use crate::error::{Error, Result};
+use crate::error::{self, Result};
 use crate::handle::{ChannelHandle, Handle};
 use crate::sys;
+use panda_abi::ErrorCode;
 
 /// A message channel for inter-process communication.
 ///
@@ -99,7 +100,7 @@ impl Channel {
     pub fn send(&self, msg: &[u8]) -> Result<()> {
         let result = sys::channel::send_msg(self.handle.into(), msg);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(())
         }
@@ -107,11 +108,11 @@ impl Channel {
 
     /// Try to send a message (non-blocking).
     ///
-    /// Returns `Err(Error::WouldBlock)` if the queue is full.
+    /// Returns `Err(ErrorCode::WouldBlock)` if the queue is full.
     pub fn try_send(&self, msg: &[u8]) -> Result<()> {
         let result = sys::channel::try_send_msg(self.handle.into(), msg);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(())
         }
@@ -123,7 +124,7 @@ impl Channel {
     pub fn recv(&self, buf: &mut [u8]) -> Result<usize> {
         let result = sys::channel::recv_msg(self.handle.into(), buf);
         if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(result as usize)
         }
@@ -139,7 +140,7 @@ impl Channel {
             // Would block - no message available
             Ok(None)
         } else if result < 0 {
-            Err(Error::from_code(result))
+            Err(error::from_code(result))
         } else {
             Ok(Some(result as usize))
         }
@@ -183,7 +184,7 @@ impl Drop for Channel {
 pub fn send(handle: Handle, msg: &[u8]) -> Result<()> {
     let result = sys::channel::send_msg(handle, msg);
     if result < 0 {
-        Err(Error::from_code(result))
+        Err(error::from_code(result))
     } else {
         Ok(())
     }
@@ -191,12 +192,12 @@ pub fn send(handle: Handle, msg: &[u8]) -> Result<()> {
 
 /// Send a message on a channel (non-blocking).
 ///
-/// Returns `Err(Error::WouldBlock)` if the queue is full.
+/// Returns `Err(ErrorCode::WouldBlock)` if the queue is full.
 #[inline(always)]
 pub fn try_send(handle: Handle, msg: &[u8]) -> Result<()> {
     let result = sys::channel::try_send_msg(handle, msg);
     if result < 0 {
-        Err(Error::from_code(result))
+        Err(error::from_code(result))
     } else {
         Ok(())
     }
@@ -209,7 +210,7 @@ pub fn try_send(handle: Handle, msg: &[u8]) -> Result<()> {
 pub fn recv(handle: Handle, buf: &mut [u8]) -> Result<usize> {
     let result = sys::channel::recv_msg(handle, buf);
     if result < 0 {
-        Err(Error::from_code(result))
+        Err(error::from_code(result))
     } else {
         Ok(result as usize)
     }
@@ -217,12 +218,12 @@ pub fn recv(handle: Handle, buf: &mut [u8]) -> Result<usize> {
 
 /// Receive a message from a channel (non-blocking).
 ///
-/// Returns `Ok(len)` on success, `Err(Error::WouldBlock)` if queue is empty.
+/// Returns `Ok(len)` on success, `Err(ErrorCode::WouldBlock)` if queue is empty.
 #[inline(always)]
 pub fn try_recv(handle: Handle, buf: &mut [u8]) -> Result<usize> {
     let result = sys::channel::try_recv_msg(handle, buf);
     if result < 0 {
-        Err(Error::from_code(result))
+        Err(error::from_code(result))
     } else {
         Ok(result as usize)
     }
@@ -236,9 +237,9 @@ pub fn create_pair() -> Result<(ChannelHandle, ChannelHandle)> {
     let mut handles: [u64; 2] = [0, 0];
     let result = sys::channel::create_raw(&mut handles);
     if result < 0 {
-        return Err(Error::from_code(result));
+        return Err(error::from_code(result));
     }
-    let handle_a = ChannelHandle::from_raw(handles[0]).ok_or(Error::InvalidArgument)?;
-    let handle_b = ChannelHandle::from_raw(handles[1]).ok_or(Error::InvalidArgument)?;
+    let handle_a = ChannelHandle::from_raw(handles[0]).ok_or(ErrorCode::InvalidArgument)?;
+    let handle_b = ChannelHandle::from_raw(handles[1]).ok_or(ErrorCode::InvalidArgument)?;
     Ok((handle_a, handle_b))
 }

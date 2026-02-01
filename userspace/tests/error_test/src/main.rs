@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use libpanda::{Handle, environment, error::Error, file, ipc, process::ChildBuilder};
+use libpanda::{ErrorCode, Handle, environment, file, ipc, process::ChildBuilder};
 
 libpanda::main! {
     environment::log("Error test: starting");
@@ -15,7 +15,7 @@ libpanda::main! {
             return 1;
         }
         Err(e) => {
-            if e != Error::NotFound {
+            if e != ErrorCode::NotFound {
                 environment::log("FAIL: expected NotFound error");
                 return 1;
             }

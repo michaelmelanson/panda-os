@@ -22,7 +22,7 @@ pub trait Read {
     fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<()> {
         while !buf.is_empty() {
             match self.read(buf) {
-                Ok(0) => return Err(crate::error::Error::IoError),
+                Ok(0) => return Err(panda_abi::ErrorCode::IoError),
                 Ok(n) => buf = &mut buf[n..],
                 Err(e) => return Err(e),
             }
@@ -59,7 +59,7 @@ pub trait Read {
                 buf.push_str(&s);
                 Ok(len)
             }
-            Err(_) => Err(crate::error::Error::InvalidArgument),
+            Err(_) => Err(panda_abi::ErrorCode::InvalidArgument),
         }
     }
 }
@@ -78,7 +78,7 @@ pub trait Write {
     fn write_all(&mut self, mut buf: &[u8]) -> Result<()> {
         while !buf.is_empty() {
             match self.write(buf) {
-                Ok(0) => return Err(crate::error::Error::IoError),
+                Ok(0) => return Err(panda_abi::ErrorCode::IoError),
                 Ok(n) => buf = &buf[n..],
                 Err(e) => return Err(e),
             }
