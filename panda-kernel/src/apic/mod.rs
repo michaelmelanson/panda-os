@@ -172,11 +172,8 @@ pub fn init() {
 
     *LOCAL_APIC.lock() = Some(apic);
 
-    // Calibrate the timer
+    // Calibrate the APIC timer and TSC
     calibrate_timer();
-
-    // Calibrate the TSC for nanosecond-resolution timing
-    crate::time::calibrate_tsc();
 
     // Initialize the I/O APIC
     ioapic::init();

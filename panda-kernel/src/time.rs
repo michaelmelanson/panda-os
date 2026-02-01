@@ -21,30 +21,13 @@ pub fn tick(interval_ms: u64) {
     TICK_TSC.store(unsafe { _rdtsc() }, Ordering::Relaxed);
 }
 
-/// Calibrate the TSC frequency using the PIT as a reference clock.
+/// Set the calibrated TSC frequency.
 ///
-/// Should be called once during early boot. Reuses the existing PIT wait
-/// from the APIC timer calibration module.
-pub fn calibrate_tsc() {
-    use crate::apic::timer::pit_wait_ms;
-
-    const CALIBRATION_MS: u32 = 10;
-
-    let tsc_start = unsafe { _rdtsc() };
-    pit_wait_ms(CALIBRATION_MS);
-    let tsc_end = unsafe { _rdtsc() };
-
-    let tsc_elapsed = tsc_end - tsc_start;
-    let ticks_per_ms = tsc_elapsed / CALIBRATION_MS as u64;
-
+/// Called by `calibrate_timer()` which calibrates both the APIC timer
+/// and the TSC from a single PIT wait.
+pub fn set_tsc_frequency(ticks_per_ms: u64, current_tsc: u64) {
     TSC_TICKS_PER_MS.store(ticks_per_ms, Ordering::SeqCst);
-    TICK_TSC.store(tsc_end, Ordering::Relaxed);
-
-    log::debug!(
-        "TSC calibrated: {} ticks/ms (~{} MHz)",
-        ticks_per_ms,
-        ticks_per_ms / 1000
-    );
+    TICK_TSC.store(current_tsc, Ordering::Relaxed);
 }
 
 /// Get current system uptime in milliseconds.
