@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use libpanda::{environment, file, ipc::channel};
+use libpanda::{environment, file};
 
 libpanda::main! {
     environment::log("Handle limit test: starting");
