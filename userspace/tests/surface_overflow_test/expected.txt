@@ -1,0 +1,11 @@
+# Surface overflow test - verifies that crafted BlitParams with
+# overflowing u32 arithmetic are rejected gracefully.
+Surface overflow test starting
+PASS: Created window
+PASS: Allocated buffer
+PASS: Overflow src_y rejected
+PASS: Overflow dst x rejected
+PASS: Overflow dst y rejected
+PASS: Large width/height rejected
+PASS: Normal blit works after overflow tests
+All overflow tests passed

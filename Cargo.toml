@@ -25,6 +25,7 @@ members = [
   "userspace/tests/state_test",
   "userspace/tests/readdir_test",
   "userspace/tests/buffer_test",
+  "userspace/tests/surface_overflow_test",
   "userspace/tests/surface_test",
   "userspace/tests/window_test",
   "userspace/tests/multi_window_test",
