@@ -359,6 +359,15 @@ impl Terminal {
         self.draw_char_coloured(ch, self.current_fg, None)
     }
 
+    /// Record a character to the scrollback buffer and draw it on screen.
+    ///
+    /// This is the preferred way to output a single character, keeping the
+    /// buffer and display in sync.
+    pub fn emit_char(&mut self, ch: char, colour: u32) {
+        self.record_char(ch, colour);
+        let _ = self.draw_char_coloured(ch, colour, None);
+    }
+
     /// Handle a newline.
     ///
     /// Appends a new line to the scrollback buffer. When the cursor would
@@ -389,15 +398,47 @@ impl Terminal {
         ((self.height - 2 * MARGIN) / LINE_HEIGHT) as usize
     }
 
+    /// Calculate how many physical screen rows a logical line occupies,
+    /// accounting for soft-wrapping at the screen width.
+    fn physical_rows_for_line(&self, line: &Line) -> usize {
+        let max_x = self.width - MARGIN;
+        let mut cx = MARGIN;
+        let mut rows = 1usize;
+
+        for segment in &line.segments {
+            for ch in segment.text.chars() {
+                let char_width = self.measure_char(ch);
+                if cx + char_width > max_x {
+                    cx = MARGIN;
+                    rows += 1;
+                }
+                cx += char_width;
+            }
+        }
+        rows
+    }
+
     /// Re-render the last N visible lines from the scrollback buffer into the
     /// framebuffer. This is the "full re-render from buffer" approach
     /// recommended in the issue for correctness.
     fn render_visible_lines(&mut self) {
-        let max_visible = self.visible_line_count();
+        let max_physical_rows = self.visible_line_count();
 
-        // Determine which lines to show — the tail of display_lines
+        // Walk backwards through display_lines, accumulating physical rows
+        // until we fill the screen budget.
         let total = self.display_lines.len();
-        let start = total.saturating_sub(max_visible);
+        let mut start = total;
+        let mut budget = max_physical_rows;
+
+        for i in (0..total).rev() {
+            let rows = self.physical_rows_for_line(&self.display_lines[i]);
+            if rows > budget {
+                break;
+            }
+            budget -= rows;
+            start = i;
+        }
+
         let lines_to_render: Vec<Line> = self.display_lines[start..].to_vec();
 
         // Clear the entire framebuffer
@@ -512,33 +553,14 @@ impl Terminal {
             self.newline();
         }
 
-        if let Ok(()) = self.draw_char(ch) {
-            self.record_char(ch, self.current_fg);
-            self.line_buffer.push(ch);
-        }
+        self.emit_char(ch, self.current_fg);
+        self.line_buffer.push(ch);
         self.flush();
     }
 
     /// Write a string to the terminal with default colour
     pub fn write_str(&mut self, s: &str) {
         self.write_str_coloured(s, COLOUR_DEFAULT_FG);
-    }
-
-    /// Append text to the current (last) display line in the scrollback buffer.
-    pub(crate) fn record_segment(&mut self, text: &str, colour: u32) {
-        if let Some(line) = self.display_lines.last_mut() {
-            // Merge with previous segment if same colour
-            if let Some(last_seg) = line.segments.last_mut() {
-                if last_seg.colour == colour {
-                    last_seg.text.push_str(text);
-                    return;
-                }
-            }
-            line.segments.push(Segment {
-                text: String::from(text),
-                colour,
-            });
-        }
     }
 
     /// Append a single character to the current display line in the scrollback buffer.
@@ -565,13 +587,12 @@ impl Terminal {
             match word {
                 Word::Newline => self.newline(),
                 Word::Whitespace(ws) => {
-                    self.record_segment(ws, colour);
                     for ch in ws.chars() {
                         let char_width = self.measure_char(ch);
                         if self.cursor_x + char_width > max_x {
                             self.newline();
                         }
-                        let _ = self.draw_char_coloured(ch, colour, None);
+                        self.emit_char(ch, colour);
                     }
                 }
                 Word::Text(text) => {
@@ -581,14 +602,14 @@ impl Terminal {
                     if self.cursor_x > MARGIN && self.cursor_x + word_width > max_x {
                         self.newline();
                     }
-                    self.record_segment(text, colour);
-                    // Now write the word, character by character (handles very long words)
+                    // Write character by character, recording each after any
+                    // soft-wrap newline so the scrollback stays in sync.
                     for ch in text.chars() {
                         let char_width = self.measure_char(ch);
                         if self.cursor_x + char_width > max_x {
                             self.newline();
                         }
-                        let _ = self.draw_char_coloured(ch, colour, None);
+                        self.emit_char(ch, colour);
                     }
                 }
             }
@@ -709,8 +730,7 @@ impl Terminal {
                         .unwrap_or(&0)
                         .saturating_sub(content_width);
                     for _ in 0..padding {
-                        self.record_char(' ', COLOUR_DEFAULT_FG);
-                        let _ = self.draw_char(' ');
+                        self.emit_char(' ', COLOUR_DEFAULT_FG);
                     }
                 }
             }
@@ -720,8 +740,7 @@ impl Terminal {
             let total_width: usize =
                 col_widths.iter().sum::<usize>() + (num_cols.saturating_sub(1)) * 2;
             for _ in 0..total_width {
-                self.record_char('-', COLOUR_DEFAULT_FG);
-                let _ = self.draw_char('-');
+                self.emit_char('-', COLOUR_DEFAULT_FG);
             }
             self.newline();
         }
@@ -742,8 +761,7 @@ impl Terminal {
                         .unwrap_or(&0)
                         .saturating_sub(content_width);
                     for _ in 0..padding {
-                        self.record_char(' ', COLOUR_DEFAULT_FG);
-                        let _ = self.draw_char(' ');
+                        self.emit_char(' ', COLOUR_DEFAULT_FG);
                     }
                 }
             }
