@@ -23,17 +23,25 @@ libpanda::main! {
     // CHANNEL_READABLE event on the parent's mailbox. The mailbox
     // should coalesce these into a single pending entry.
     let msg = b"ping";
+    let mut sent = 0usize;
     for _ in 0..FLOOD_COUNT {
         // Use try_send to avoid blocking if the channel queue is full.
         // Channel queue is only 16 deep, so most sends will fail —
         // that's fine, we just need enough to trigger many events.
         if parent.try_send(msg).is_ok() {
-            // sent successfully
+            sent += 1;
         } else {
             // Channel full — yield and retry.
             libpanda::process::yield_now();
-            let _ = parent.try_send(msg);
+            if parent.try_send(msg).is_ok() {
+                sent += 1;
+            }
         }
+    }
+
+    if sent == 0 {
+        environment::log("Overflow child: FAIL - no messages were sent");
+        return 1;
     }
 
     environment::log("Overflow child: done sending");
