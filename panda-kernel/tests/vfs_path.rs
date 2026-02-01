@@ -235,7 +235,7 @@ fn write_methods_return_read_only_fs() {
 
     // create
     let result = block_on(Box::pin(vfs::create("/test/newfile.txt", 0o644)));
-    assert_eq!(result.unwrap_err(), vfs::FsError::ReadOnlyFs);
+    assert!(matches!(result, Err(vfs::FsError::ReadOnlyFs)), "expected ReadOnlyFs error");
 
     // unlink
     let result = block_on(Box::pin(vfs::unlink("/test/hello.txt")));
