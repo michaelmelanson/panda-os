@@ -12,26 +12,6 @@
 
 use libpanda::environment;
 use libpanda::file;
-use libpanda::handle::Handle;
-
-/// Seek to absolute position (SEEK_SET = 0).
-fn seek_to(handle: Handle, pos: i64) {
-    file::seek(handle, pos, 0);
-}
-
-/// Read the entire file from position 0, returning the number of bytes read.
-fn read_all(handle: Handle, buf: &mut [u8]) -> usize {
-    seek_to(handle, 0);
-    let mut total = 0usize;
-    loop {
-        let n = file::read(handle, &mut buf[total..]);
-        if n <= 0 {
-            break;
-        }
-        total += n as usize;
-    }
-    total
-}
 
 libpanda::main! {
     environment::log("ext2_create_test: Starting");

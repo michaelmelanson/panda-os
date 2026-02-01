@@ -11,27 +11,7 @@ use crate::{resource, scheduler};
 
 use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess};
 
-/// Map a VFS `FsError` to a syscall error code (negative value).
-///
-/// These codes match the `ErrorCode` enum in `panda_abi` so that userspace
-/// can decode them correctly.
-pub(crate) fn fs_error_code(e: crate::vfs::FsError) -> isize {
-    use crate::vfs::FsError;
-    match e {
-        FsError::NotFound => -1,
-        FsError::InvalidOffset => -2,
-        FsError::NotReadable => -3,
-        FsError::NotWritable => -4,
-        FsError::NotSeekable => -5,
-        FsError::AlreadyExists => -12,
-        FsError::NoSpace => -13,
-        FsError::ReadOnlyFs => -14,
-        FsError::NotEmpty => -10,
-        FsError::IsDirectory => -10,
-        FsError::NotDirectory => -10,
-        FsError::IoError => -8,
-    }
-}
+use super::environment::fs_error_code;
 
 /// Handle directory create operation.
 ///
@@ -57,7 +37,11 @@ pub fn handle_create(
 
     let name = match ua.read_str(name_ptr, name_len) {
         Ok(n) => n,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
     // Get the VFS path from the directory handle
@@ -69,7 +53,9 @@ pub fn handle_create(
 
     let Some(dir_path) = dir_path else {
         error!("handle_create: handle {} is not a VFS directory", handle_id);
-        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidHandle,
+        )));
     };
 
     info!(
@@ -88,8 +74,11 @@ pub fn handle_create(
         match crate::vfs::create(&full_path, mode).await {
             Ok(file) => {
                 let vfs_resource = resource::scheme::VfsFileResource::new(file);
-                let handle_id = scheduler::with_current_process(|proc| {
-                    let handle_id = proc.handles_mut().insert(Arc::new(vfs_resource));
+                let result = scheduler::with_current_process(|proc| {
+                    let handle_id = proc
+                        .handles_mut()
+                        .insert(Arc::new(vfs_resource))
+                        .map_err(|_| panda_abi::ErrorCode::TooManyHandles)?;
 
                     // Attach to mailbox if requested
                     if mailbox_handle != 0 {
@@ -100,10 +89,15 @@ pub fn handle_create(
                         }
                     }
 
-                    handle_id as isize
+                    Ok(handle_id as isize)
                 });
-                info!("handle_create: created file, handle_id={}", handle_id);
-                SyscallResult::ok(handle_id)
+                match result {
+                    Ok(handle_id) => {
+                        info!("handle_create: created file, handle_id={}", handle_id);
+                        SyscallResult::ok(handle_id)
+                    }
+                    Err(e) => SyscallResult::err(e),
+                }
             }
             Err(e) => {
                 info!("handle_create: failed: {:?}", e);
@@ -130,7 +124,11 @@ pub fn handle_unlink(
 ) -> SyscallFuture {
     let name = match ua.read_str(name_ptr, name_len) {
         Ok(n) => n,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
     // Get the VFS path from the directory handle
@@ -141,11 +139,10 @@ pub fn handle_unlink(
     });
 
     let Some(dir_path) = dir_path else {
-        error!(
-            "handle_unlink: handle {} is not a VFS directory",
-            handle_id
-        );
-        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+        error!("handle_unlink: handle {} is not a VFS directory", handle_id);
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidHandle,
+        )));
     };
 
     info!("handle_unlink: dir={}, name={}", dir_path, name);

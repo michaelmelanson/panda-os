@@ -14,9 +14,9 @@ In subdir
 
 # Test 4: hello.txt was unlinked — should not appear in root listing
 >ls /
-newfile.txt
 subdir
 large.bin
+newfile.txt
 
 # Verify subdir contains both original and created files
 >ls subdir
