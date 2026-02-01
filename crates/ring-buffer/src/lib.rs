@@ -21,9 +21,11 @@ use alloc::vec::Vec;
 pub struct RingBuffer<T> {
     /// Backing storage, allocated once to `capacity` during construction.
     buf: Vec<T>,
+    /// The requested capacity (Vec::capacity() may be larger).
+    cap: usize,
     /// Index into `buf` where the next write will go.
     head: usize,
-    /// Number of live entries (capped at `buf.capacity()`).
+    /// Number of live entries (capped at `cap`).
     len: usize,
 }
 
@@ -35,6 +37,7 @@ impl<T> RingBuffer<T> {
         assert!(capacity > 0, "RingBuffer capacity must be > 0");
         Self {
             buf: Vec::with_capacity(capacity),
+            cap: capacity,
             head: 0,
             len: 0,
         }
@@ -42,7 +45,7 @@ impl<T> RingBuffer<T> {
 
     /// The maximum number of entries this buffer can hold.
     pub fn capacity(&self) -> usize {
-        self.buf.capacity()
+        self.cap
     }
 
     /// The number of live entries currently in the buffer.
@@ -57,7 +60,7 @@ impl<T> RingBuffer<T> {
 
     /// Whether the buffer is at capacity.
     pub fn is_full(&self) -> bool {
-        self.len == self.buf.capacity()
+        self.len == self.cap
     }
 
     /// Push an item, overwriting the oldest entry if full.
@@ -65,7 +68,7 @@ impl<T> RingBuffer<T> {
     /// Returns `None` if the buffer was not full (no eviction), or
     /// `Some(old)` with the evicted value if it was full.
     pub fn push(&mut self, item: T) -> Option<T> {
-        let cap = self.buf.capacity();
+        let cap = self.cap;
         if self.buf.len() < cap {
             // Still filling the initial allocation.
             self.buf.push(item);
@@ -108,7 +111,7 @@ impl<T> RingBuffer<T> {
     /// Panics if the buffer is not full.
     pub fn advance_head(&mut self) {
         assert!(self.is_full(), "advance_head called on a non-full buffer");
-        self.head = (self.head + 1) % self.buf.capacity();
+        self.head = (self.head + 1) % self.cap;
     }
 
     /// Push a new item by recycling: if the buffer is full, the closure
@@ -131,12 +134,12 @@ impl<T> RingBuffer<T> {
                 // Caller chose not to recycle — replace entirely.
                 self.buf[self.head] = new_item;
             }
-            self.head = (self.head + 1) % self.buf.capacity();
+            self.head = (self.head + 1) % self.cap;
         } else {
             // Not full — need a brand new item.
             if let Some(item) = recycle(None) {
                 self.buf.push(item);
-                let cap = self.buf.capacity();
+                let cap = self.cap;
                 self.head = self.buf.len() % cap;
                 self.len = self.buf.len();
             }
@@ -151,7 +154,7 @@ impl<T> RingBuffer<T> {
         if index >= self.len {
             return None;
         }
-        let cap = self.buf.capacity();
+        let cap = self.cap;
         let actual = if self.is_full() {
             (self.head + index) % cap
         } else {
@@ -165,7 +168,7 @@ impl<T> RingBuffer<T> {
         if index >= self.len {
             return None;
         }
-        let cap = self.buf.capacity();
+        let cap = self.cap;
         let actual = if self.is_full() {
             (self.head + index) % cap
         } else {
@@ -236,6 +239,7 @@ impl<'a, T> ExactSizeIterator for RingBufferIter<'a, T> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn test_new_buffer_is_empty() {
