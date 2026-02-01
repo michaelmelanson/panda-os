@@ -52,6 +52,23 @@ const MARGIN: u32 = 10;
 const FONT_SIZE: f32 = 16.0;
 const LINE_HEIGHT: u32 = 20; // Font size + spacing
 
+/// Maximum number of lines kept in the scrollback buffer.
+/// At ~100 bytes per line this is roughly 100 KB.
+const MAX_SCROLLBACK_LINES: usize = 1000;
+
+/// A styled text segment within a line.
+#[derive(Clone)]
+struct Segment {
+    text: String,
+    colour: u32,
+}
+
+/// A single logical display line, composed of one or more styled segments.
+#[derive(Clone)]
+struct Line {
+    segments: Vec<Segment>,
+}
+
 // Embed the Hack font at compile time
 const FONT_DATA: &[u8] = include_bytes!("../fonts/Hack-Regular.ttf");
 
@@ -100,6 +117,9 @@ pub struct Terminal {
     dirty: Option<DirtyRect>,
     /// Glyph cache: avoids re-rasterizing the same character repeatedly
     glyph_cache: BTreeMap<char, (fontdue::Metrics, Vec<u8>)>,
+    /// Scrollback buffer of display lines.
+    /// New lines are pushed to the end; old lines beyond `MAX_SCROLLBACK_LINES` are dropped.
+    display_lines: Vec<Line>,
 }
 
 impl Terminal {
@@ -117,6 +137,9 @@ impl Terminal {
         // Allocate persistent framebuffer for the entire window surface
         let fb_size = (width * height * 4) as usize;
         let framebuffer = Buffer::alloc(fb_size).expect("Failed to allocate terminal framebuffer");
+
+        let mut display_lines = Vec::new();
+        display_lines.push(Line { segments: Vec::new() });
 
         Self {
             surface,
@@ -136,6 +159,7 @@ impl Terminal {
             framebuffer,
             dirty: None,
             glyph_cache: BTreeMap::new(),
+            display_lines,
         }
     }
 
@@ -154,8 +178,10 @@ impl Terminal {
         self.font.metrics(ch, FONT_SIZE).advance_width as u32
     }
 
-    /// Clear the screen
+    /// Clear the screen and scrollback buffer.
     pub fn clear(&mut self) {
+        self.display_lines.clear();
+        self.display_lines.push(Line { segments: Vec::new() });
         self.fb_fill(0, 0, self.width, self.height, COLOUR_BACKGROUND);
         self.flush();
         self.cursor_x = MARGIN;
@@ -333,14 +359,106 @@ impl Terminal {
         self.draw_char_coloured(ch, self.current_fg, None)
     }
 
-    /// Handle a newline
+    /// Handle a newline.
+    ///
+    /// Appends a new line to the scrollback buffer. When the cursor would
+    /// move past the bottom of the visible area the display is re-rendered
+    /// from the buffer so that existing content scrolls up instead of being
+    /// cleared.
     pub fn newline(&mut self) {
+        // Start a new logical line in the buffer
+        self.display_lines.push(Line { segments: Vec::new() });
+
+        // Trim scrollback to the configured maximum
+        if self.display_lines.len() > MAX_SCROLLBACK_LINES {
+            let excess = self.display_lines.len() - MAX_SCROLLBACK_LINES;
+            self.display_lines.drain(..excess);
+        }
+
         self.cursor_x = MARGIN;
         self.cursor_y += LINE_HEIGHT;
 
-        // Simple scrolling: if we go off-screen, clear and start over
+        // If we've gone past the visible area, re-render from the buffer
         if self.cursor_y + LINE_HEIGHT > self.height - MARGIN {
-            self.clear();
+            self.render_visible_lines();
+        }
+    }
+
+    /// Calculate the number of visible lines that fit on screen.
+    fn visible_line_count(&self) -> usize {
+        ((self.height - 2 * MARGIN) / LINE_HEIGHT) as usize
+    }
+
+    /// Re-render the last N visible lines from the scrollback buffer into the
+    /// framebuffer. This is the "full re-render from buffer" approach
+    /// recommended in the issue for correctness.
+    fn render_visible_lines(&mut self) {
+        let max_visible = self.visible_line_count();
+
+        // Determine which lines to show — the tail of display_lines
+        let total = self.display_lines.len();
+        let start = total.saturating_sub(max_visible);
+        let lines_to_render: Vec<Line> = self.display_lines[start..].to_vec();
+
+        // Clear the entire framebuffer
+        self.fb_fill(0, 0, self.width, self.height, COLOUR_BACKGROUND);
+
+        // Re-draw each line from the buffer
+        let max_x = self.width - MARGIN;
+        let mut y = MARGIN;
+
+        for line in &lines_to_render {
+            self.cursor_x = MARGIN;
+            self.cursor_y = y;
+
+            for segment in &line.segments {
+                for ch in segment.text.chars() {
+                    let char_width = self.measure_char(ch);
+                    if self.cursor_x + char_width > max_x {
+                        // Soft-wrap: advance to next pixel row
+                        self.cursor_x = MARGIN;
+                        self.cursor_y += LINE_HEIGHT;
+                    }
+                    let _ = self.draw_char_coloured(ch, segment.colour, None);
+                }
+            }
+
+            // Advance y for the next line
+            // Use the cursor_y that draw_char_coloured left us at (accounts for soft wraps)
+            y = self.cursor_y + LINE_HEIGHT;
+        }
+
+        // Position cursor on the last rendered line. After the loop, `y` points
+        // to the row *after* the last line, so subtract LINE_HEIGHT.
+        self.cursor_y = y.saturating_sub(LINE_HEIGHT);
+        self.cursor_x = MARGIN;
+
+        // Account for the content already on the last line
+        if let Some(last_line) = lines_to_render.last() {
+            // Re-measure the last line's content to position cursor_x correctly
+            let mut cx = MARGIN;
+            for segment in &last_line.segments {
+                for ch in segment.text.chars() {
+                    let char_width = self.measure_char(ch);
+                    if cx + char_width > max_x {
+                        cx = MARGIN;
+                    }
+                    cx += char_width;
+                }
+            }
+            self.cursor_x = cx;
+        }
+    }
+
+    /// Remove the last character from the current line in the scrollback buffer.
+    pub(crate) fn unrecord_char(&mut self) {
+        if let Some(line) = self.display_lines.last_mut() {
+            if let Some(seg) = line.segments.last_mut() {
+                seg.text.pop();
+                if seg.text.is_empty() {
+                    line.segments.pop();
+                }
+            }
         }
     }
 
@@ -395,6 +513,7 @@ impl Terminal {
         }
 
         if let Ok(()) = self.draw_char(ch) {
+            self.record_char(ch, self.current_fg);
             self.line_buffer.push(ch);
         }
         self.flush();
@@ -405,7 +524,40 @@ impl Terminal {
         self.write_str_coloured(s, COLOUR_DEFAULT_FG);
     }
 
-    /// Write a string with specific colour, wrapping at word boundaries
+    /// Append text to the current (last) display line in the scrollback buffer.
+    pub(crate) fn record_segment(&mut self, text: &str, colour: u32) {
+        if let Some(line) = self.display_lines.last_mut() {
+            // Merge with previous segment if same colour
+            if let Some(last_seg) = line.segments.last_mut() {
+                if last_seg.colour == colour {
+                    last_seg.text.push_str(text);
+                    return;
+                }
+            }
+            line.segments.push(Segment {
+                text: String::from(text),
+                colour,
+            });
+        }
+    }
+
+    /// Append a single character to the current display line in the scrollback buffer.
+    pub(crate) fn record_char(&mut self, ch: char, colour: u32) {
+        if let Some(line) = self.display_lines.last_mut() {
+            if let Some(last_seg) = line.segments.last_mut() {
+                if last_seg.colour == colour {
+                    last_seg.text.push(ch);
+                    return;
+                }
+            }
+            let mut s = String::new();
+            s.push(ch);
+            line.segments.push(Segment { text: s, colour });
+        }
+    }
+
+    /// Write a string with specific colour, wrapping at word boundaries.
+    /// Also records the text into the scrollback buffer.
     pub fn write_str_coloured(&mut self, s: &str, colour: u32) {
         let max_x = self.width - MARGIN;
 
@@ -413,6 +565,7 @@ impl Terminal {
             match word {
                 Word::Newline => self.newline(),
                 Word::Whitespace(ws) => {
+                    self.record_segment(ws, colour);
                     for ch in ws.chars() {
                         let char_width = self.measure_char(ch);
                         if self.cursor_x + char_width > max_x {
@@ -428,6 +581,7 @@ impl Terminal {
                     if self.cursor_x > MARGIN && self.cursor_x + word_width > max_x {
                         self.newline();
                     }
+                    self.record_segment(text, colour);
                     // Now write the word, character by character (handles very long words)
                     for ch in text.chars() {
                         let char_width = self.measure_char(ch);
@@ -555,6 +709,7 @@ impl Terminal {
                         .unwrap_or(&0)
                         .saturating_sub(content_width);
                     for _ in 0..padding {
+                        self.record_char(' ', COLOUR_DEFAULT_FG);
                         let _ = self.draw_char(' ');
                     }
                 }
@@ -565,6 +720,7 @@ impl Terminal {
             let total_width: usize =
                 col_widths.iter().sum::<usize>() + (num_cols.saturating_sub(1)) * 2;
             for _ in 0..total_width {
+                self.record_char('-', COLOUR_DEFAULT_FG);
                 let _ = self.draw_char('-');
             }
             self.newline();
@@ -586,6 +742,7 @@ impl Terminal {
                         .unwrap_or(&0)
                         .saturating_sub(content_width);
                     for _ in 0..padding {
+                        self.record_char(' ', COLOUR_DEFAULT_FG);
                         let _ = self.draw_char(' ');
                     }
                 }
@@ -803,6 +960,7 @@ impl Terminal {
         if !self.line_buffer.is_empty() {
             if let Some(ch) = self.line_buffer.pop() {
                 let char_width = self.measure_char(ch);
+                self.unrecord_char();
                 self.backspace_width(char_width);
                 self.flush();
             }
