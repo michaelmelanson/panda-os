@@ -99,7 +99,7 @@ pub async fn truncate(path: &str, size: u64) -> Result<(), FsError>;
 pub async fn sync(path: &str) -> Result<(), FsError>;
 ```
 
-All paths are canonicalized before mount-point resolution to prevent directory traversal attacks.
+All paths are canonicalised before mount-point resolution to prevent directory traversal attacks.
 
 ## Error types
 

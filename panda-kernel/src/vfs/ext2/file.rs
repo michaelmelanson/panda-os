@@ -15,7 +15,7 @@ pub struct Ext2File {
     device: Arc<dyn BlockDevice>,
     /// The file's inode data.
     inode: Inode,
-    /// The inode number.
+    /// The inode number (not stored in the on-disk inode; derived from table position).
     ino: u32,
     /// Block size.
     block_size: u32,

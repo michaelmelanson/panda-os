@@ -274,98 +274,71 @@ fn resolve_path(path: &str) -> Option<(usize, String)> {
     })
 }
 
-/// Open a file at the given absolute path (async).
+/// Canonicalise an absolute path and resolve it to a mounted filesystem.
 ///
-/// The path is canonicalized before mount-point resolution to prevent
-/// directory traversal attacks via `..` components.
-pub async fn open(path: &str) -> Result<Box<dyn File>, FsError> {
+/// Returns the filesystem and the path relative to its mount point.
+/// This prevents directory traversal attacks via `..` components.
+fn resolve_mount(path: &str) -> Result<(Arc<dyn Filesystem>, String), FsError> {
     let canonical = canonicalize(path);
     let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
     let mounts = MOUNTS.read();
-    mounts[index].fs.open(&relative).await
+    Ok((mounts[index].fs.clone(), relative))
+}
+
+/// Open a file at the given absolute path (async).
+pub async fn open(path: &str) -> Result<Box<dyn File>, FsError> {
+    let (fs, relative) = resolve_mount(path)?;
+    fs.open(&relative).await
 }
 
 /// Get metadata for an absolute path (async).
-///
-/// The path is canonicalized before mount-point resolution to prevent
-/// directory traversal attacks via `..` components.
 pub async fn stat(path: &str) -> Result<FileStat, FsError> {
-    let canonical = canonicalize(path);
-    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
-    let mounts = MOUNTS.read();
-    mounts[index].fs.stat(&relative).await
+    let (fs, relative) = resolve_mount(path)?;
+    fs.stat(&relative).await
 }
 
 /// List directory contents at an absolute path (async).
-///
-/// The path is canonicalized before mount-point resolution to prevent
-/// directory traversal attacks via `..` components.
 pub async fn readdir(path: &str) -> Result<Vec<DirEntry>, FsError> {
-    let canonical = canonicalize(path);
-    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
-    let mounts = MOUNTS.read();
-    mounts[index].fs.readdir(&relative).await
+    let (fs, relative) = resolve_mount(path)?;
+    fs.readdir(&relative).await
 }
 
 /// Create a new file at the given absolute path (async).
-///
-/// The path is canonicalized before mount-point resolution.
 pub async fn create(path: &str, mode: u16) -> Result<Box<dyn File>, FsError> {
-    let canonical = canonicalize(path);
-    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
-    let mounts = MOUNTS.read();
-    mounts[index].fs.create(&relative, mode).await
+    let (fs, relative) = resolve_mount(path)?;
+    fs.create(&relative, mode).await
 }
 
 /// Remove (unlink) a file at the given absolute path (async).
-///
-/// The path is canonicalized before mount-point resolution.
 pub async fn unlink(path: &str) -> Result<(), FsError> {
-    let canonical = canonicalize(path);
-    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
-    let mounts = MOUNTS.read();
-    mounts[index].fs.unlink(&relative).await
+    let (fs, relative) = resolve_mount(path)?;
+    fs.unlink(&relative).await
 }
 
 /// Create a directory at the given absolute path (async).
-///
-/// The path is canonicalized before mount-point resolution.
 pub async fn mkdir(path: &str, mode: u16) -> Result<(), FsError> {
-    let canonical = canonicalize(path);
-    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
-    let mounts = MOUNTS.read();
-    mounts[index].fs.mkdir(&relative, mode).await
+    let (fs, relative) = resolve_mount(path)?;
+    fs.mkdir(&relative, mode).await
 }
 
 /// Remove an empty directory at the given absolute path (async).
-///
-/// The path is canonicalized before mount-point resolution.
 pub async fn rmdir(path: &str) -> Result<(), FsError> {
-    let canonical = canonicalize(path);
-    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
-    let mounts = MOUNTS.read();
-    mounts[index].fs.rmdir(&relative).await
+    let (fs, relative) = resolve_mount(path)?;
+    fs.rmdir(&relative).await
 }
 
 /// Truncate (or extend) a file at the given absolute path (async).
-///
-/// The path is canonicalized before mount-point resolution.
 pub async fn truncate(path: &str, size: u64) -> Result<(), FsError> {
-    let canonical = canonicalize(path);
-    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
-    let mounts = MOUNTS.read();
-    mounts[index].fs.truncate(&relative, size).await
+    let (fs, relative) = resolve_mount(path)?;
+    fs.truncate(&relative, size).await
 }
 
 /// Flush all pending metadata and data for the filesystem at the given path (async).
 ///
 /// The path is used to identify which mounted filesystem to sync.
-/// The path is canonicalized before mount-point resolution.
 pub async fn sync(path: &str) -> Result<(), FsError> {
-    let canonical = canonicalize(path);
-    let (index, _relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
-    let mounts = MOUNTS.read();
-    mounts[index].fs.sync().await
+    let (fs, _relative) = resolve_mount(path)?;
+    fs.sync().await
 }
 
 // =============================================================================

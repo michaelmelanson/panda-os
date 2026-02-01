@@ -204,7 +204,7 @@ impl Ext2Fs {
     /// Resolve path to inode number.
     ///
     /// Defence-in-depth: `.` and `..` components are rejected here even though
-    /// the VFS layer should have already canonicalized the path. This prevents
+    /// the VFS layer should have already canonicalised the path. This prevents
     /// mount-point escape if canonicalization is ever bypassed.
     pub async fn lookup(&self, path: &str) -> Result<u32, FsError> {
         let path = path.trim_matches('/');
