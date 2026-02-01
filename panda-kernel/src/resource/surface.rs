@@ -231,6 +231,25 @@ impl FramebufferSurface {
         }
     }
 
+    /// Copy a row of pixels directly into the framebuffer.
+    ///
+    /// `dst_x` and `dst_y` are the destination coordinates in the framebuffer.
+    /// `src_row` must contain exactly `width * 4` bytes in BGRA format.
+    ///
+    /// # Safety
+    /// Uses raw pointer arithmetic to write to framebuffer memory.
+    pub fn write_row(&mut self, dst_x: u32, dst_y: u32, width: u32, src_row: &[u8]) {
+        debug_assert_eq!(src_row.len(), width as usize * 4);
+        if dst_x + width > self.info.width || dst_y >= self.info.height {
+            return;
+        }
+        unsafe {
+            let offset = (dst_y * self.info.stride + dst_x * 4) as isize;
+            let dst_ptr = self.framebuffer.offset(offset);
+            core::ptr::copy_nonoverlapping(src_row.as_ptr(), dst_ptr, src_row.len());
+        }
+    }
+
     /// Get framebuffer width
     pub fn width(&self) -> u32 {
         self.info.width

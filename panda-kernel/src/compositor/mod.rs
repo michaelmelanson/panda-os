@@ -66,6 +66,9 @@ impl WindowManager {
             return;
         }
 
+        let start_ms = crate::time::uptime_ms();
+        let mut total_pixels: u64 = 0;
+
         let fb_width = self.framebuffer.width();
         let fb_height = self.framebuffer.height();
         let fb_bounds = Rect {
@@ -110,6 +113,8 @@ impl WindowManager {
                     continue;
                 };
 
+                total_pixels += clip_rect.width as u64 * clip_rect.height as u64;
+
                 // Composite clipped region with alpha blending
                 Self::composite_window(
                     &mut self.framebuffer,
@@ -124,7 +129,19 @@ impl WindowManager {
             self.framebuffer.flush(Some(dirty_rect)).ok();
         }
 
+        let elapsed_ms = crate::time::uptime_ms().saturating_sub(start_ms);
+        let num_regions = self.dirty_regions.len();
         self.dirty_regions.clear();
+
+        // Log composite time for performance measurement (only when non-trivial)
+        if total_pixels > 0 {
+            log::debug!(
+                "composite: {}px across {} region(s) in {}ms",
+                total_pixels,
+                num_regions,
+                elapsed_ms,
+            );
+        }
     }
 
     fn clear_region(&mut self, rect: &Rect, color: u32) {
@@ -144,35 +161,78 @@ impl WindowManager {
         let src_x = clip_rect.x.saturating_sub(window_pos.0);
         let src_y = clip_rect.y.saturating_sub(window_pos.1);
 
-        // Composite pixel by pixel with alpha blending
-        for y in 0..clip_rect.height {
-            for x in 0..clip_rect.width {
-                let src_offset = (((src_y + y) * window_size.0 + (src_x + x)) * 4) as usize;
+        // Check if the clipped region is fully opaque — if so, use row memcpy
+        let opaque = Self::is_region_opaque(buffer, src_x, src_y, clip_rect.width, clip_rect.height, window_size.0);
 
-                if src_offset + 4 > buffer.len() {
+        if opaque {
+            // Fast path: copy entire rows directly into the framebuffer
+            let row_bytes = clip_rect.width as usize * 4;
+            for y in 0..clip_rect.height {
+                let src_row_start = ((src_y + y) * window_size.0 + src_x) as usize * 4;
+                let src_row_end = src_row_start + row_bytes;
+                if src_row_end > buffer.len() {
                     continue;
                 }
+                framebuffer.write_row(
+                    clip_rect.x,
+                    clip_rect.y + y,
+                    clip_rect.width,
+                    &buffer[src_row_start..src_row_end],
+                );
+            }
+        } else {
+            // Slow path: per-pixel alpha blending
+            for y in 0..clip_rect.height {
+                for x in 0..clip_rect.width {
+                    let src_offset = (((src_y + y) * window_size.0 + (src_x + x)) * 4) as usize;
 
-                let src_pixel = [
-                    buffer[src_offset],
-                    buffer[src_offset + 1],
-                    buffer[src_offset + 2],
-                    buffer[src_offset + 3],
-                ];
+                    if src_offset + 4 > buffer.len() {
+                        continue;
+                    }
 
-                // Skip fully transparent pixels
-                if src_pixel[3] == 0 {
-                    continue;
+                    let src_pixel = [
+                        buffer[src_offset],
+                        buffer[src_offset + 1],
+                        buffer[src_offset + 2],
+                        buffer[src_offset + 3],
+                    ];
+
+                    // Skip fully transparent pixels
+                    if src_pixel[3] == 0 {
+                        continue;
+                    }
+
+                    let dst_x = clip_rect.x + x;
+                    let dst_y = clip_rect.y + y;
+
+                    let dst_pixel = framebuffer.get_pixel(dst_x, dst_y);
+                    let blended = alpha_blend(src_pixel, dst_pixel);
+                    framebuffer.set_pixel(dst_x, dst_y, blended);
                 }
-
-                let dst_x = clip_rect.x + x;
-                let dst_y = clip_rect.y + y;
-
-                let dst_pixel = framebuffer.get_pixel(dst_x, dst_y);
-                let blended = alpha_blend(src_pixel, dst_pixel);
-                framebuffer.set_pixel(dst_x, dst_y, blended);
             }
         }
+    }
+
+    /// Check if all pixels in a rectangular region have alpha == 255.
+    /// Bails early on the first non-opaque pixel.
+    fn is_region_opaque(
+        data: &[u8],
+        src_x: u32,
+        src_y: u32,
+        width: u32,
+        height: u32,
+        stride: u32,
+    ) -> bool {
+        for row in 0..height {
+            let row_start = ((src_y + row) * stride + src_x) as usize * 4;
+            for col in 0..width as usize {
+                match data.get(row_start + col * 4 + 3) {
+                    Some(&255) => {}
+                    _ => return false,
+                }
+            }
+        }
+        true
     }
 }
 
