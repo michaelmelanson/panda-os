@@ -3,7 +3,6 @@
 #![deny(unsafe_code)]
 
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -45,12 +44,11 @@ pub fn handle_open(
         uri, mailbox_handle, event_mask
     );
 
-    let uri_owned = String::from(uri);
     Box::pin(async move {
-        debug!("handle_open future: opening {}", uri_owned);
-        match resource::open(&uri_owned).await {
+        debug!("handle_open future: opening {}", uri);
+        match resource::open(&uri).await {
             Some(resource) => {
-                debug!("handle_open future: opened {} successfully", uri_owned);
+                debug!("handle_open future: opened {} successfully", uri);
                 let handle_id = scheduler::with_current_process(|proc| {
                     let handle_id = proc.handles_mut().insert(Arc::from(resource));
 
@@ -77,7 +75,7 @@ pub fn handle_open(
                 SyscallResult::ok(handle_id)
             }
             None => {
-                info!("handle_open future: failed to open {}", uri_owned);
+                info!("handle_open future: failed to open {}", uri);
                 SyscallResult::err(-1)
             }
         }
@@ -110,23 +108,20 @@ pub fn handle_mount(
 
     info!("handle_mount: fstype={}, mountpoint={}", fstype, mountpoint);
 
-    let fstype_owned = String::from(fstype);
-    let mountpoint_owned = String::from(mountpoint);
-
     Box::pin(async move {
-        match fstype_owned.as_str() {
-            "ext2" => match crate::vfs::mount_ext2(&mountpoint_owned).await {
+        match fstype.as_str() {
+            "ext2" => match crate::vfs::mount_ext2(&mountpoint).await {
                 Ok(()) => {
-                    info!("Mounted ext2 filesystem at {}", mountpoint_owned);
+                    info!("Mounted ext2 filesystem at {}", mountpoint);
                     SyscallResult::ok(0)
                 }
                 Err(e) => {
-                    error!("Failed to mount ext2 at {}: {}", mountpoint_owned, e);
+                    error!("Failed to mount ext2 at {}: {}", mountpoint, e);
                     SyscallResult::err(-1)
                 }
             },
             _ => {
-                error!("Unknown filesystem type: {}", fstype_owned);
+                error!("Unknown filesystem type: {}", fstype);
                 SyscallResult::err(-1)
             }
         }
@@ -182,16 +177,15 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: usize) -> SyscallFuture {
         None
     };
 
-    let uri_owned = String::from(uri);
     Box::pin(async move {
-        let Some(resource) = resource::open(&uri_owned).await else {
-            error!("SPAWN: failed to open {}", uri_owned);
+        let Some(resource) = resource::open(&uri).await else {
+            error!("SPAWN: failed to open {}", uri);
             return SyscallResult::err(-1);
         };
 
         // Read the file via async VFS interface
         let Some(vfs_file) = resource.as_vfs_file() else {
-            error!("SPAWN: {} is not a readable file", uri_owned);
+            error!("SPAWN: {} is not a readable file", uri);
             return SyscallResult::err(-1);
         };
 
@@ -202,7 +196,7 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: usize) -> SyscallFuture {
         let stat = match file.stat().await {
             Ok(s) => s,
             Err(e) => {
-                error!("SPAWN: failed to stat {}: {:?}", uri_owned, e);
+                error!("SPAWN: failed to stat {}: {:?}", uri, e);
                 return SyscallResult::err(-1);
             }
         };
@@ -218,7 +212,7 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: usize) -> SyscallFuture {
                 Ok(0) => break, // EOF
                 Ok(n) => total_read += n,
                 Err(e) => {
-                    error!("SPAWN: failed to read {}: {:?}", uri_owned, e);
+                    error!("SPAWN: failed to read {}: {:?}", uri, e);
                     return SyscallResult::err(-1);
                 }
             }
@@ -237,7 +231,7 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: usize) -> SyscallFuture {
             Err(e) => {
                 error!(
                     "SPAWN: failed to create process from {}: {:?}",
-                    uri_owned, e
+                    uri, e
                 );
                 return SyscallResult::err(-1);
             }
@@ -319,9 +313,8 @@ pub fn handle_opendir(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> Syscal
         Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };
 
-    let uri_owned = String::from(uri);
     Box::pin(async move {
-        let Some(entries) = resource::readdir(&uri_owned).await else {
+        let Some(entries) = resource::readdir(&uri).await else {
             return SyscallResult::err(-1);
         };
 

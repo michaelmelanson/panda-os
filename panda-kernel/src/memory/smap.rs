@@ -31,12 +31,16 @@ static SMAP_ENABLED: AtomicBool = AtomicBool::new(false);
 fn cpu_supports_smap() -> bool {
     let result: u32;
     unsafe {
+        // LLVM reserves rbx, so we must save/restore it manually around cpuid.
         core::arch::asm!(
+            "push rbx",
             "mov eax, 7",
             "xor ecx, ecx",
             "cpuid",
+            "mov {out}, ebx",
+            "pop rbx",
+            out = out(reg) result,
             out("eax") _,
-            out("ebx") result,
             out("ecx") _,
             out("edx") _,
         );
@@ -120,7 +124,7 @@ impl Drop for UserspaceAccessGuard {
 /// This is the preferred way to bracket intentional userspace memory access.
 /// The AC flag is set before the closure runs and cleared after it returns
 /// (even on panic).
-#[inline]
+#[inline(always)]
 pub fn with_userspace_access<R>(f: impl FnOnce() -> R) -> R {
     let _guard = UserspaceAccessGuard::new();
     f()

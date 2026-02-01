@@ -10,6 +10,7 @@
 //! - `SyscallError`: Early-return error type for syscall setup (bad pointer, invalid handle, etc.).
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::marker::PhantomData;
@@ -164,13 +165,13 @@ impl UserAccess {
     }
 
     /// Read a UTF-8 string from userspace.
-    pub fn read_str(&self, addr: usize, len: usize) -> Result<&str, SyscallError> {
+    ///
+    /// Copies the bytes into a kernel-owned buffer inside the SMAP window,
+    /// then validates UTF-8 on the kernel copy.
+    pub fn read_str(&self, addr: usize, len: usize) -> Result<String, SyscallError> {
         let slice = UserSlice::new(addr, len);
-        self.validate(slice)?;
-        let bytes = smap::with_userspace_access(|| {
-            unsafe { core::slice::from_raw_parts(addr as *const u8, len) }
-        });
-        core::str::from_utf8(bytes).map_err(|_| SyscallError::BadUserPointer)
+        let bytes = self.read(slice)?;
+        String::from_utf8(bytes).map_err(|_| SyscallError::BadUserPointer)
     }
 }
 

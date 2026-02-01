@@ -107,6 +107,24 @@ pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFu
                 buffer
             };
 
+            let Some(expected_src_size) = checked_pixel_buffer_size(params.width, params.height) else {
+                return -1;
+            };
+
+            // Copy pixel data from user-mapped buffer into a kernel-owned Vec.
+            // This keeps the SMAP window short — only the memcpy runs with AC set.
+            let src_data = source_buffer.as_ref().with_slice(|s| {
+                if s.len() < expected_src_size {
+                    None
+                } else {
+                    Some(s[..expected_src_size].to_vec())
+                }
+            });
+
+            let Some(src_data) = src_data else {
+                return -1;
+            };
+
             let Some(resource) = proc.handles().get(handle) else {
                 return -1;
             };
@@ -117,68 +135,51 @@ pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFu
             let window_id = {
                 let mut window = window_arc.lock();
 
-                // Copy pixels from source buffer into window's pixel_data at (x, y) offset.
-                // SMAP: use with_slice to temporarily allow kernel access to user-mapped buffer.
-                let blit_result = source_buffer.as_ref().with_slice(|src_data| {
-                    let Some(expected_src_size) = checked_pixel_buffer_size(params.width, params.height) else {
-                        return -1;
-                    };
+                let window_width = window.size.0;
+                let window_height = window.size.1;
 
-                    if src_data.len() < expected_src_size {
-                        return -1;
-                    }
+                // Bounds check
+                if params.x + params.width > window_width
+                    || params.y + params.height > window_height
+                {
+                    return -1;
+                }
 
-                    let window_width = window.size.0;
-                    let window_height = window.size.1;
+                // Blit with alpha blending (operates on kernel-owned src_data)
+                for row in 0..params.height {
+                    for col in 0..params.width {
+                        let src_offset = ((row * params.width + col) * 4) as usize;
+                        let dst_offset =
+                            (((params.y + row) * window_width + params.x + col) * 4) as usize;
 
-                    // Bounds check
-                    if params.x + params.width > window_width
-                        || params.y + params.height > window_height
-                    {
-                        return -1;
-                    }
+                        if dst_offset + 4 > window.pixel_data.len() {
+                            return -1;
+                        }
 
-                    // Blit with alpha blending
-                    for row in 0..params.height {
-                        for col in 0..params.width {
-                            let src_offset = ((row * params.width + col) * 4) as usize;
-                            let dst_offset =
-                                (((params.y + row) * window_width + params.x + col) * 4) as usize;
+                        let src_a = src_data[src_offset + 3] as u16;
 
-                            if dst_offset + 4 > window.pixel_data.len() {
-                                return -1;
+                        if src_a == 0 {
+                            // Fully transparent - skip
+                            continue;
+                        } else if src_a == 255 {
+                            // Fully opaque - direct copy
+                            window.pixel_data[dst_offset..dst_offset + 4]
+                                .copy_from_slice(&src_data[src_offset..src_offset + 4]);
+                        } else {
+                            // Alpha blend: out = src * alpha + dst * (1 - alpha)
+                            let inv_a = 255 - src_a;
+                            for i in 0..3 {
+                                let src_c = src_data[src_offset + i] as u16;
+                                let dst_c = window.pixel_data[dst_offset + i] as u16;
+                                window.pixel_data[dst_offset + i] =
+                                    ((src_c * src_a + dst_c * inv_a) / 255) as u8;
                             }
-
-                            let src_a = src_data[src_offset + 3] as u16;
-
-                            if src_a == 0 {
-                                // Fully transparent - skip
-                                continue;
-                            } else if src_a == 255 {
-                                // Fully opaque - direct copy
-                                window.pixel_data[dst_offset..dst_offset + 4]
-                                    .copy_from_slice(&src_data[src_offset..src_offset + 4]);
-                            } else {
-                                // Alpha blend: out = src * alpha + dst * (1 - alpha)
-                                let inv_a = 255 - src_a;
-                                for i in 0..3 {
-                                    let src_c = src_data[src_offset + i] as u16;
-                                    let dst_c = window.pixel_data[dst_offset + i] as u16;
-                                    window.pixel_data[dst_offset + i] =
-                                        ((src_c * src_a + dst_c * inv_a) / 255) as u8;
-                                }
-                                // Output alpha: src_a + dst_a * (1 - src_a)
-                                let dst_a = window.pixel_data[dst_offset + 3] as u16;
-                                window.pixel_data[dst_offset + 3] =
-                                    (src_a + (dst_a * inv_a) / 255) as u8;
-                            }
+                            // Output alpha: src_a + dst_a * (1 - src_a)
+                            let dst_a = window.pixel_data[dst_offset + 3] as u16;
+                            window.pixel_data[dst_offset + 3] =
+                                (src_a + (dst_a * inv_a) / 255) as u8;
                         }
                     }
-                    0
-                });
-
-                if blit_result != 0 {
-                    return blit_result;
                 }
 
                 // Keep buffer reference for backwards compatibility
@@ -204,31 +205,37 @@ pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFu
                 return -1;
             };
 
-            // SMAP: access user-mapped buffer within with_slice closure
-            let blit_result = buffer.with_slice(|buffer_slice| {
+            // Copy pixel data from user-mapped buffer into kernel-owned Vec
+            // to keep the SMAP window short.
+            let pixel_data = buffer.with_slice(|buffer_slice| {
                 if buffer_slice.len() < expected_size {
-                    return -1;
-                }
-
-                let Some(resource) = proc.handles().get(handle) else {
-                    return -1;
-                };
-                let Some(surface) = resource.as_surface() else {
-                    return -1;
-                };
-
-                match surface.blit(
-                    params.x,
-                    params.y,
-                    params.width,
-                    params.height,
-                    &buffer_slice[..expected_size],
-                ) {
-                    Ok(()) => 0,
-                    Err(_) => -1,
+                    None
+                } else {
+                    Some(buffer_slice[..expected_size].to_vec())
                 }
             });
-            blit_result
+
+            let Some(pixel_data) = pixel_data else {
+                return -1;
+            };
+
+            let Some(resource) = proc.handles().get(handle) else {
+                return -1;
+            };
+            let Some(surface) = resource.as_surface() else {
+                return -1;
+            };
+
+            match surface.blit(
+                params.x,
+                params.y,
+                params.width,
+                params.height,
+                &pixel_data,
+            ) {
+                Ok(()) => 0,
+                Err(_) => -1,
+            }
         }
     });
 

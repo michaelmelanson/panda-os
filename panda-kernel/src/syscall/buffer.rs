@@ -18,6 +18,12 @@ use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr};
 /// Returns handle_id on success, negative on error.
 /// If info_ptr is non-zero, writes BufferAllocInfo to that address.
 pub fn handle_alloc(ua: &UserAccess, size: usize, info_ptr: usize) -> SyscallFuture {
+    let info_out: Option<UserPtr<panda_abi::BufferAllocInfo>> = if info_ptr != 0 {
+        Some(UserPtr::new(info_ptr))
+    } else {
+        None
+    };
+
     let result = scheduler::with_current_process(|proc| {
         match SharedBuffer::alloc(proc, size) {
             Ok((buffer, mapped_addr)) => {
@@ -25,12 +31,11 @@ pub fn handle_alloc(ua: &UserAccess, size: usize, info_ptr: usize) -> SyscallFut
                 let handle_id = proc.handles_mut().insert_typed(HandleType::Buffer, buffer);
 
                 // Write full info to userspace if pointer provided
-                if info_ptr != 0 {
+                if info_out.is_some() {
                     let info = panda_abi::BufferAllocInfo {
                         addr: mapped_addr,
                         size: buffer_size,
                     };
-                    // We have ua available, use it to write
                     Some((handle_id, Some(info)))
                 } else {
                     Some((handle_id, None))
@@ -42,7 +47,7 @@ pub fn handle_alloc(ua: &UserAccess, size: usize, info_ptr: usize) -> SyscallFut
 
     match result {
         Some((handle_id, Some(info))) => {
-            if ua.write_user(UserPtr::new(info_ptr), &info).is_err() {
+            if ua.write_user(info_out.unwrap(), &info).is_err() {
                 return Box::pin(core::future::ready(SyscallResult::err(-1)));
             }
             Box::pin(core::future::ready(SyscallResult::ok(handle_id as isize)))
@@ -63,6 +68,11 @@ pub fn handle_resize(
     new_size: usize,
     info_ptr: usize,
 ) -> SyscallFuture {
+    let info_out: Option<UserPtr<panda_abi::BufferAllocInfo>> = if info_ptr != 0 {
+        Some(UserPtr::new(info_ptr))
+    } else {
+        None
+    };
     let result = scheduler::with_current_process(|proc| {
         // Try in-place resize first
         let resize_result = {
@@ -78,7 +88,7 @@ pub fn handle_resize(
         match resize_result {
             Ok(new_addr) => {
                 // Write info to userspace if pointer provided
-                if info_ptr != 0 {
+                if info_out.is_some() {
                     let buffer_size = {
                         let Some(handle) = proc.handles().get(handle_id) else {
                             return Err(());
@@ -135,7 +145,7 @@ pub fn handle_resize(
                 // Free the old buffer's virtual address space
                 proc.free_buffer_vaddr(old_vaddr, old_num_pages);
 
-                if info_ptr != 0 {
+                if info_out.is_some() {
                     Ok(Some(panda_abi::BufferAllocInfo {
                         addr: new_addr,
                         size: buffer_size,
@@ -149,7 +159,7 @@ pub fn handle_resize(
 
     match result {
         Ok(Some(info)) => {
-            if ua.write_user(UserPtr::new(info_ptr), &info).is_err() {
+            if ua.write_user(info_out.unwrap(), &info).is_err() {
                 return Box::pin(core::future::ready(SyscallResult::err(-1)));
             }
             Box::pin(core::future::ready(SyscallResult::ok(0)))
