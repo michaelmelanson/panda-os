@@ -32,7 +32,7 @@ mod pit {
 const PIT_ONESHOT_CMD: u8 = 0b00_11_000_0; // Channel 0, lobyte/hibyte, mode 0 (interrupt on terminal count)
 
 /// Wait for approximately `ms` milliseconds using the PIT.
-fn pit_wait_ms(ms: u32) {
+pub fn pit_wait_ms(ms: u32) {
     let count = (PIT_FREQUENCY * ms) / 1000;
     let count = count.min(0xFFFF) as u16;
 

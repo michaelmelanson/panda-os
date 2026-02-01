@@ -23,42 +23,17 @@ pub fn tick(interval_ms: u64) {
 
 /// Calibrate the TSC frequency using the PIT as a reference clock.
 ///
-/// Should be called once during early boot. Uses a 10 ms PIT delay to
-/// measure how many TSC ticks elapse.
+/// Should be called once during early boot. Reuses the existing PIT wait
+/// from the APIC timer calibration module.
 pub fn calibrate_tsc() {
-    use x86_64::instructions::port::Port;
+    use crate::apic::timer::pit_wait_ms;
 
-    const PIT_FREQUENCY: u32 = 1_193_182;
     const CALIBRATION_MS: u32 = 10;
-    const PIT_CHANNEL0_DATA: u16 = 0x40;
-    const PIT_COMMAND: u16 = 0x43;
-    const PIT_ONESHOT_CMD: u8 = 0b00_11_000_0;
-
-    let count = (PIT_FREQUENCY * CALIBRATION_MS) / 1000;
-    let count = count.min(0xFFFF) as u16;
 
     let tsc_start = unsafe { _rdtsc() };
-
-    unsafe {
-        let mut cmd_port: Port<u8> = Port::new(PIT_COMMAND);
-        let mut data_port: Port<u8> = Port::new(PIT_CHANNEL0_DATA);
-
-        cmd_port.write(PIT_ONESHOT_CMD);
-        data_port.write((count & 0xFF) as u8);
-        data_port.write((count >> 8) as u8);
-
-        loop {
-            cmd_port.write(0b11_10_00_00);
-            let low = data_port.read();
-            let high = data_port.read();
-            let current = (high as u16) << 8 | (low as u16);
-            if current == 0 || current > count {
-                break;
-            }
-        }
-    }
-
+    pit_wait_ms(CALIBRATION_MS);
     let tsc_end = unsafe { _rdtsc() };
+
     let tsc_elapsed = tsc_end - tsc_start;
     let ticks_per_ms = tsc_elapsed / CALIBRATION_MS as u64;
 
