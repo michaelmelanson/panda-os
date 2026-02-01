@@ -416,6 +416,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mailbox_overflow_child"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
+name = "mailbox_overflow_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "mailbox_test"
 version = "0.1.0"
 dependencies = [

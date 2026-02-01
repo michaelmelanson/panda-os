@@ -1,0 +1,4 @@
+Mailbox overflow test: starting
+Mailbox overflow test: child spawned, draining events...
+Mailbox overflow test: all events drained successfully
+PASS

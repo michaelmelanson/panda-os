@@ -574,6 +574,13 @@ pub const MAX_BUFFER_SIZE: usize = 16 * 1024 * 1024;
 /// Default queue depth (number of messages per direction).
 pub const DEFAULT_QUEUE_CAPACITY: usize = 16;
 
+/// Maximum number of pending events in a mailbox queue.
+/// When the queue is full, new events are coalesced with existing entries
+/// for the same handle (by ORing event flags) or the oldest event is dropped.
+/// 256 entries × 16 bytes = 4 KB, which bounds per-mailbox kernel memory usage
+/// while providing ample headroom for typical event-driven workloads.
+pub const MAX_MAILBOX_EVENTS: usize = 256;
+
 /// Channel operation flags.
 ///
 /// These flags can be combined with bitwise OR.
