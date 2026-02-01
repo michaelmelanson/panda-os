@@ -15,7 +15,7 @@ use crate::vfs::SeekFrom;
 
 use super::VfsFileWrapper;
 use super::poll_fn;
-use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserSlice};
+use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr, UserSlice};
 
 /// Handle file read operation.
 ///
@@ -522,7 +522,7 @@ pub fn handle_readdir(ua: &UserAccess, handle_id: u64, entry_ptr: usize) -> Sysc
     match result {
         Ok(Some(dir_entry)) => {
             // Write entry to userspace via validated pointer
-            match ua.write_struct(entry_ptr, &dir_entry) {
+            match ua.write_user(UserPtr::new(entry_ptr), &dir_entry) {
                 Ok(_) => Box::pin(core::future::ready(SyscallResult::ok(1))),
                 Err(_) => Box::pin(core::future::ready(SyscallResult::err(-1))),
             }

@@ -27,6 +27,7 @@ KERNEL_TESTS := \
 	raii \
 	resource \
 	scheduler \
+	smap \
 	vfs_path
 
 USERSPACE_TESTS := \
@@ -233,6 +234,7 @@ endif
 # QEMU command for interactive use
 QEMU_COMMON = qemu-system-x86_64 -nodefaults \
 	-machine q35 -m 1G \
+	-cpu qemu64,+smap \
 	-serial stdio \
 	-boot menu=off \
 	-display gtk,zoom-to-fit=off \

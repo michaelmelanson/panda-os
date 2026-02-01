@@ -66,6 +66,7 @@ pub fn init() -> x86_64::PhysAddr {
 /// This initializes ACPI, syscall, interrupts, APIC, PCI, and devices.
 pub fn init_after_higher_half_jump(acpi2_rsdp: x86_64::PhysAddr) {
     acpi::init(acpi2_rsdp);
+    memory::smap::enable();
     syscall::init();
     interrupts::init();
     apic::init();

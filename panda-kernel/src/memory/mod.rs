@@ -20,6 +20,7 @@ mod mapping;
 mod mmio;
 mod paging;
 pub mod recursive;
+pub mod smap;
 mod write_protection;
 
 pub use address::{inspect_virtual_address, virtual_address_to_physical};

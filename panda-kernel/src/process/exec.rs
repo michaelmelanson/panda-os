@@ -16,6 +16,9 @@ use super::SavedState;
 /// # Safety
 /// Must be called with no locks held, as this function never returns.
 pub unsafe fn return_from_syscall(ip: VirtAddr, sp: VirtAddr, result: u64) -> ! {
+    // SMAP: panic if AC flag is set — indicates unbalanced stac/clac (kernel bug)
+    crate::memory::smap::assert_ac_clear();
+
     let rflags = RFlags::INTERRUPT_FLAG.bits();
 
     // Before jumping to userspace, ensure KernelGsBase is set.
@@ -63,6 +66,9 @@ pub unsafe fn return_from_deferred_syscall(
     result: u64,
     saved: &crate::syscall::CalleeSavedRegs,
 ) -> ! {
+    // SMAP: panic if AC flag is set — indicates unbalanced stac/clac (kernel bug)
+    crate::memory::smap::assert_ac_clear();
+
     let rflags = RFlags::INTERRUPT_FLAG.bits();
 
     use x86_64::registers::model_specific::KernelGsBase;
@@ -107,6 +113,9 @@ pub unsafe fn return_from_deferred_syscall(
 /// # Safety
 /// Must be called with no locks held, as this function never returns.
 pub unsafe fn return_from_interrupt(state: &SavedState) -> ! {
+    // SMAP: panic if AC flag is set — indicates unbalanced stac/clac (kernel bug)
+    crate::memory::smap::assert_ac_clear();
+
     // Before jumping to userspace, ensure KernelGsBase is set.
     use x86_64::registers::model_specific::KernelGsBase;
     let kernel_gs = &crate::syscall::gdt::USER_STACK_PTR as *const usize as u64;

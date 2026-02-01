@@ -218,7 +218,7 @@ fn build_future(
 
         // Environment operations
         OP_ENVIRONMENT_OPEN => Ok(environment::handle_open(ua, arg0, arg1, arg2, arg3)),
-        OP_ENVIRONMENT_SPAWN => Ok(environment::handle_spawn(ua, arg0)),
+        OP_ENVIRONMENT_SPAWN => Ok(environment::handle_spawn(ua, user_ptr::UserPtr::new(arg0))),
         OP_ENVIRONMENT_LOG => Ok(environment::handle_log(ua, arg0, arg1)),
         OP_ENVIRONMENT_TIME => Ok(environment::handle_time()),
         OP_ENVIRONMENT_OPENDIR => Ok(environment::handle_opendir(ua, arg0, arg1)),
@@ -234,11 +234,11 @@ fn build_future(
         OP_FILE_WRITE_BUFFER => Ok(buffer::handle_write_buffer(handle, arg0 as u64, arg1)),
 
         // Surface operations
-        OP_SURFACE_INFO => Ok(surface::handle_info(ua, handle, arg0)),
-        OP_SURFACE_BLIT => Ok(surface::handle_blit(ua, handle, arg0)),
-        OP_SURFACE_FILL => Ok(surface::handle_fill(ua, handle, arg0)),
-        OP_SURFACE_FLUSH => Ok(surface::handle_flush(ua, handle, arg0)),
-        OP_SURFACE_UPDATE_PARAMS => Ok(surface::handle_update_params(ua, handle, arg0)),
+        OP_SURFACE_INFO => Ok(surface::handle_info(ua, handle, user_ptr::UserPtr::new(arg0))),
+        OP_SURFACE_BLIT => Ok(surface::handle_blit(ua, handle, user_ptr::UserPtr::new(arg0))),
+        OP_SURFACE_FILL => Ok(surface::handle_fill(ua, handle, user_ptr::UserPtr::new(arg0))),
+        OP_SURFACE_FLUSH => Ok(surface::handle_flush(ua, handle, if arg0 != 0 { Some(user_ptr::UserPtr::new(arg0)) } else { None })),
+        OP_SURFACE_UPDATE_PARAMS => Ok(surface::handle_update_params(ua, handle, user_ptr::UserPtr::new(arg0))),
 
         // Mailbox operations
         OP_MAILBOX_CREATE => Ok(mailbox::handle_create()),

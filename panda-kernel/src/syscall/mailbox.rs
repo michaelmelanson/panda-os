@@ -11,7 +11,7 @@ use crate::resource::Mailbox;
 use crate::scheduler;
 
 use super::poll_fn;
-use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess};
+use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr};
 
 /// Handle mailbox create operation.
 /// Returns a new mailbox handle.
@@ -61,7 +61,16 @@ pub fn handle_wait(_ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> Sys
             return Poll::Ready(SyscallResult::err(-1));
         };
 
-        if let Some((handle_id, events)) = mailbox.wait() {
+        // Try to dequeue an event. If none available, register for
+        // wake-up and re-check to close the race window between the
+        // first check and registration (an event arriving in between
+        // would otherwise be missed, blocking the process forever).
+        let event = mailbox.wait().or_else(|| {
+            mailbox.waker().set_waiting(scheduler::current_process_id());
+            mailbox.wait()
+        });
+
+        if let Some((handle_id, events)) = event {
             let event_result = panda_abi::MailboxEventResult {
                 handle_id,
                 events,
@@ -69,8 +78,6 @@ pub fn handle_wait(_ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> Sys
             };
             Poll::Ready(SyscallResult::write_back_struct(0, &event_result, dst))
         } else {
-            // No events, block until one arrives
-            mailbox.waker().set_waiting(scheduler::current_process_id());
             Poll::Pending
         }
     }))
@@ -102,7 +109,7 @@ pub fn handle_poll(ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> Sysc
                 events,
                 _pad: 0,
             };
-            match ua.write_struct(out_ptr, &event_result) {
+            match ua.write_user(UserPtr::new(out_ptr), &event_result) {
                 Ok(_) => Box::pin(core::future::ready(SyscallResult::ok(1))),
                 Err(_) => Box::pin(core::future::ready(SyscallResult::err(-1))),
             }

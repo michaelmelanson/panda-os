@@ -94,3 +94,7 @@ harness = false
 [[test]]
 name = "fmask"
 harness = false
+
+[[test]]
+name = "smap"
+harness = false

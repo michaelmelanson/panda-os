@@ -125,6 +125,7 @@ impl Scheduler {
 
     /// Get execution parameters for a process entity.
     /// Panics if the entity is not a process.
+    #[allow(dead_code)]
     pub fn get_process_exec_params(
         &self,
         pid: ProcessId,
