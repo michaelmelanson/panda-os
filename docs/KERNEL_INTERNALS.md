@@ -22,7 +22,7 @@ If the future resolves immediately (`Poll::Ready`), the result code is placed in
 
 ### Deferred return
 
-If the future returns `Poll::Pending`, it is stored as a `PendingSyscall` on the process, and the process yields to the scheduler. When the process is next scheduled, the scheduler polls the future again. On completion, it switches to the process's page table, performs any writeback, and returns the result to userspace via `return_from_syscall`.
+If the future returns `Poll::Pending`, it is stored as a `PendingSyscall` on the process along with the callee-saved registers (`rbx`, `rbp`, `r12`-`r15`), and the process yields to the scheduler. When the process is next scheduled, the scheduler polls the future again. On completion, it switches to the process's page table, performs any writeback, restores the callee-saved registers, and returns the result to userspace via `return_from_deferred_syscall`. Saving the callee-saved registers is necessary because the compiler (in optimised builds) may keep values in these registers across syscalls, so they must be faithfully restored even though the syscall return happens from a different stack frame than the original entry.
 
 ### Handler patterns
 
@@ -113,9 +113,9 @@ When the timer interrupt fires, the CPU pushes an interrupt frame. The handler s
 
 ## Handle table
 
-Each process has a handle table in `panda-kernel/src/handle.rs` mapping 32-bit handle IDs to kernel resources.
+Each process has a handle table in `panda-kernel/src/handle.rs` mapping 64-bit handle IDs to kernel resources.
 
-Handle IDs encode a type tag in the upper 8 bits and an ID in the lower 24 bits. This lets userspace verify handle types at runtime without a syscall. Handle IDs 0-6 are reserved for well-known handles (stdin, stdout, stderr, process, environment, mailbox, parent).
+Handle IDs encode a type tag in the upper 8 bits and an ID in the lower 56 bits. This lets userspace verify handle types at runtime without a syscall. Handle IDs 0-6 are reserved for well-known handles (stdin, stdout, stderr, process, environment, mailbox, parent).
 
 Each handle wraps an `Arc<dyn Resource>` plus a per-handle read offset for file-like resources. The table uses a `BTreeMap` internally and tracks the next available ID.
 

@@ -28,26 +28,23 @@ The `syscall` instruction clobbers `rcx` (saves RIP) and `r11` (saves RFLAGS).
 The kernel preserves callee-saved registers (rbx, rbp, r12-r15) across syscalls:
 
 - **Normal syscalls**: Registers are saved on the kernel stack in `syscall_entry` and restored before `sysretq`
-- **Blocking syscalls**: When a syscall blocks, the kernel saves all registers in `SavedState` so they can be restored when the process resumes
+- **Blocking syscalls**: When a syscall blocks, the kernel saves callee-saved registers (`rbx`, `rbp`, `r12`-`r15`) alongside the `PendingSyscall` future. These are restored via `return_from_deferred_syscall` when the future completes.
 - **Yield**: Returns immediately with rax=0
 
-## Blocking and wakers
+## Blocking and futures
 
 When a syscall cannot complete immediately (e.g., `OP_FILE_READ` on a keyboard with no input):
 
-1. The syscall handler returns `WouldBlock` with a waker
-2. The kernel saves the process state including:
-   - Return IP (pointing to instruction after syscall for re-poll)
-   - User stack pointer
-   - All syscall argument registers
-   - All callee-saved registers
-3. The process is marked as `Blocked` and the waker is registered
-4. When data becomes available, the device calls `waker.wake()`
-5. The process resumes and the syscall is re-polled
+1. The syscall handler returns a `SyscallFuture` that resolves to `Poll::Pending`
+2. The kernel saves the future as a `PendingSyscall` on the process along with callee-saved registers (`rbx`, `rbp`, `r12`-`r15`)
+3. The process is marked as `Blocked`
+4. A device waker is registered so the process is woken when data is available
+5. When the waker fires, the process moves to `Runnable` and the scheduler polls the future again
+6. On completion, the result is returned to userspace via `return_from_deferred_syscall`
 
 ## Well-known handles
 
-Every process has these pre-allocated handles. Handle values encode a type tag in the high 8 bits and an ID in the low 24 bits.
+Every process has these pre-allocated handles. Handle values encode a type tag in the high 8 bits and an ID in the low 56 bits (64-bit handles).
 
 | Handle | Type | ID | Description |
 |--------|------|-----|-------------|
@@ -90,7 +87,7 @@ See `HandleType` in panda-abi for all type tags.
 | Operation | Code | Arguments | Returns |
 |-----------|------|-----------|---------|
 | `OP_ENVIRONMENT_OPEN` | 0x3_0000 | (path_ptr, path_len, mailbox, event_mask) | handle |
-| `OP_ENVIRONMENT_SPAWN` | 0x3_0001 | (path_ptr, path_len, mailbox, event_mask, stdin, stdout) | process_handle |
+| `OP_ENVIRONMENT_SPAWN` | 0x3_0001 | (params_ptr) | process_handle |
 | `OP_ENVIRONMENT_LOG` | 0x3_0002 | (msg_ptr, msg_len) | 0 |
 | `OP_ENVIRONMENT_TIME` | 0x3_0003 | () | timestamp |
 | `OP_ENVIRONMENT_OPENDIR` | 0x3_0004 | (path_ptr, path_len) | dir_handle |
@@ -243,6 +240,17 @@ pub const SEEK_END: u32 = 2;
 
 /// Maximum channel message size
 pub const MAX_MESSAGE_SIZE: usize = 4096;
+
+/// Parameters for OP_ENVIRONMENT_SPAWN (passed via pointer)
+pub struct SpawnParams {
+    pub path_ptr: usize,
+    pub path_len: usize,
+    pub mailbox: u64,
+    pub event_mask: u32,
+    pub _pad: u32,
+    pub stdin: u64,
+    pub stdout: u64,
+}
 ```
 
 ## Per-process handle limit
@@ -255,18 +263,13 @@ handles can be created again.
 
 ## Error codes
 
-Negative return values indicate errors. See `panda_abi::ErrorCode`:
+Negative return values indicate errors. Most syscalls return `-1` as a generic error. Channel operations use more specific codes:
 
-| Code | Name | Description |
-|------|------|-------------|
-| -1 | NotFound | Resource not found |
-| -2 | InvalidOffset | Invalid seek position |
-| -3 | NotReadable | Resource is not readable |
-| -4 | NotWritable | Resource is not writable |
-| -5 | NotSeekable | Resource is not seekable |
-| -6 | NotSupported | Operation not supported |
-| -7 | PermissionDenied | Permission denied |
-| -8 | IoError | I/O error |
-| -10 | InvalidArgument | Invalid argument |
-| -11 | WouldBlock | Operation would block (with NONBLOCK flag) |
-| -12 | ChannelClosed | Channel peer has closed |
+| Code | Meaning |
+|------|---------|
+| -1 | Generic error (bad handle, not found, I/O failure, etc.) |
+| -2 | Message too large (channel send) or buffer too small (channel recv) |
+| -3 | Peer closed (channel send/recv) |
+| -4 | Other channel error |
+
+The `panda_abi::ErrorCode` enum (with values `NotFound = 1`, `InvalidOffset = 2`, ..., `Protocol = 11`) is used in the message-passing protocol for block device and character device responses, not in direct syscall return values.
