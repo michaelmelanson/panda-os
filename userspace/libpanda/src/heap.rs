@@ -74,22 +74,21 @@ impl OomHandler for BrkGrower {
         let min_size = layout.size().max(PAGE_SIZE);
 
         let (start, end) = {
-            let grower = talc.oom_handler_mut();
-            brk_grow(&mut grower.current_brk, min_size).ok_or(())?
+            brk_grow(&mut talc.oom_handler.current_brk, min_size).ok_or(())?
         };
 
         let new_memory = unsafe { Span::from_base_size(start as *mut u8, end - start) };
 
-        let old_arena = talc.oom_handler_mut().arena;
+        let old_arena = talc.oom_handler.arena;
         if old_arena.is_empty() {
             // First allocation — claim the initial region.
             let arena = unsafe { talc.claim(new_memory).map_err(|_| ())? };
-            talc.oom_handler_mut().arena = arena;
+            talc.oom_handler.arena = arena;
         } else {
             // Extend the existing heap region. Since we always grow
             // contiguously from current_brk, this extends the arena.
             let arena = unsafe { talc.extend(old_arena, new_memory) };
-            talc.oom_handler_mut().arena = arena;
+            talc.oom_handler.arena = arena;
         }
 
         Ok(())
