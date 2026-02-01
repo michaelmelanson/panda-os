@@ -44,8 +44,9 @@ QEMU_CMD=(
     -accel kvm -accel tcg
 )
 
-# Add virtio-blk drive for block tests and ext2 tests
-if [ "$TEST_NAME" = "block" ] || [ "$TEST_NAME" = "block_test" ] || [ "$TEST_NAME" = "ext2_test" ] || [ "$TEST_NAME" = "ext2_write_test" ]; then
+# Add virtio-blk drive if a test-disk.img was created by setup (triggered by
+# needs-block or needs-ext2 marker files in the test source directory).
+if [ -f "$BUILD_DIR/test-disk.img" ]; then
     # Use explicit virtio-blk-pci device with MSI-X enabled (default vectors=3)
     QEMU_CMD+=(-drive "file=$BUILD_DIR/test-disk.img,if=none,format=raw,id=blk0")
     QEMU_CMD+=(-device "virtio-blk-pci,drive=blk0")
