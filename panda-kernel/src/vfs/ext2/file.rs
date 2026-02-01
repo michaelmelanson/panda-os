@@ -202,11 +202,11 @@ impl File for Ext2File {
                 let zeroes = vec![0u8; block_size as usize];
                 self.fs.write_block(block_num, &zeroes).await?;
                 // Record the new block in the inode's block map
-                self.fs
+                let meta_blocks = self.fs
                     .set_block_number(&mut self.inode, file_block, block_num)
                     .await?;
-                // Update the inode's 512-byte block count
-                self.inode.blocks += block_size / 512;
+                // Update the inode's 512-byte block count (data block + any metadata blocks)
+                self.inode.blocks += (1 + meta_blocks) * (block_size / 512);
                 inode_dirty = true;
                 // Invalidate indirect cache since block map changed
                 if file_block >= 12 {

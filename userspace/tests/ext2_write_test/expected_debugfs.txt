@@ -6,8 +6,7 @@
 
 # Test 1+2: hello.txt was overwritten and then appended to
 >cat hello.txt
-Written by Panda OS!
-Extra data appended.
+Written by Panda OS! Extra data appended.
 
 # Test 4: nested.txt had bytes 7-13 overwritten with "PATCHED"
 >cat subdir/nested.txt

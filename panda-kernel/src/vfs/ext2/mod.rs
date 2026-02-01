@@ -425,18 +425,24 @@ impl Ext2Fs {
     /// The caller must update the inode on disk after this returns (the inode's
     /// `block` array may have been mutated for direct or first-level indirect
     /// pointers).
+    /// Set the physical block number for a logical file block index.
+    ///
+    /// Returns the number of *metadata* blocks (indirect index blocks) that
+    /// were newly allocated. The caller must include these in `inode.blocks`
+    /// alongside the data block itself.
     pub async fn set_block_number(
         &self,
         inode: &mut Inode,
         file_block: u32,
         value: u32,
-    ) -> Result<(), FsError> {
+    ) -> Result<u32, FsError> {
         let ptrs_per_block = self.block_size / 4;
+        let mut meta_blocks: u32 = 0;
 
         // Direct blocks (0-11)
         if file_block < 12 {
             inode.block[file_block as usize] = value;
-            return Ok(());
+            return Ok(0);
         }
 
         // Single indirect block (12)
@@ -448,9 +454,11 @@ impl Ext2Fs {
                 let zeroes = alloc::vec![0u8; self.block_size as usize];
                 self.write_block(ind, &zeroes).await?;
                 inode.block[12] = ind;
+                meta_blocks += 1;
             }
-            return write_block_ptr(&*self.device, inode.block[12], fb, self.block_size, value)
-                .await;
+            write_block_ptr(&*self.device, inode.block[12], fb, self.block_size, value)
+                .await?;
+            return Ok(meta_blocks);
         }
 
         // Double indirect block (13)
@@ -461,6 +469,7 @@ impl Ext2Fs {
                 let zeroes = alloc::vec![0u8; self.block_size as usize];
                 self.write_block(dbl, &zeroes).await?;
                 inode.block[13] = dbl;
+                meta_blocks += 1;
             }
             let idx1 = fb / ptrs_per_block;
             let idx2 = fb % ptrs_per_block;
@@ -477,11 +486,13 @@ impl Ext2Fs {
                     new_ind,
                 )
                 .await?;
+                meta_blocks += 1;
                 new_ind
             } else {
                 ind
             };
-            return write_block_ptr(&*self.device, ind, idx2, self.block_size, value).await;
+            write_block_ptr(&*self.device, ind, idx2, self.block_size, value).await?;
+            return Ok(meta_blocks);
         }
 
         // Triple indirect block (14)
@@ -492,6 +503,7 @@ impl Ext2Fs {
             let zeroes = alloc::vec![0u8; self.block_size as usize];
             self.write_block(tri, &zeroes).await?;
             inode.block[14] = tri;
+            meta_blocks += 1;
         }
 
         let idx1 = fb / pp;
@@ -511,6 +523,7 @@ impl Ext2Fs {
                 new_dbl,
             )
             .await?;
+            meta_blocks += 1;
             new_dbl
         } else {
             dbl
@@ -522,12 +535,14 @@ impl Ext2Fs {
             let zeroes = alloc::vec![0u8; self.block_size as usize];
             self.write_block(new_ind, &zeroes).await?;
             write_block_ptr(&*self.device, dbl, idx2, self.block_size, new_ind).await?;
+            meta_blocks += 1;
             new_ind
         } else {
             ind
         };
 
-        write_block_ptr(&*self.device, ind, idx3, self.block_size, value).await
+        write_block_ptr(&*self.device, ind, idx3, self.block_size, value).await?;
+        Ok(meta_blocks)
     }
 
     /// Read a full block from disk.
