@@ -50,16 +50,16 @@ impl Terminal {
         match kind {
             InputKind::Char => {
                 // Single character - send immediately
-                let _ = self.draw_char(ch);
+                self.emit_char(ch, self.current_fg);
                 self.flush();
                 self.send_input_response(Some(InputValue::Char(ch)));
             }
             InputKind::Line | InputKind::Password => {
                 if kind == InputKind::Password {
                     // Don't echo password characters, just show *
-                    let _ = self.draw_char('*');
+                    self.emit_char('*', self.current_fg);
                 } else {
-                    let _ = self.draw_char(ch);
+                    self.emit_char(ch, self.current_fg);
                 }
                 // Now we can mutate pending_input
                 if let Some(ref mut pending) = self.pending_input {
@@ -75,7 +75,7 @@ impl Terminal {
                     _ => None,
                 };
                 if let Some(b) = result {
-                    let _ = self.draw_char(ch);
+                    self.emit_char(ch, self.current_fg);
                     self.newline();
                     self.flush();
                     self.send_input_response(Some(InputValue::Bool(b)));
@@ -131,6 +131,7 @@ impl Terminal {
                         removed_char.unwrap_or(' ')
                     };
                     let char_width = self.measure_char(display_char);
+                    self.unrecord_char();
                     self.backspace_width(char_width);
                     self.flush();
                 }
