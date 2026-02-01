@@ -99,3 +99,7 @@ harness = false
 [[test]]
 name = "smap"
 harness = false
+
+[[test]]
+name = "ext2_write"
+harness = false
