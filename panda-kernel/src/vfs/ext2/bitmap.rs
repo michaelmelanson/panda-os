@@ -23,6 +23,7 @@
 use alloc::vec;
 
 use super::Ext2Fs;
+use crate::executor::join::try_join;
 use crate::vfs::FsError;
 
 impl Ext2Fs {
@@ -84,9 +85,11 @@ impl Ext2Fs {
                     m.superblock.free_blocks_count -= 1;
                 }
 
-                // Write updated metadata to disk
-                self.write_block_group_descriptor(group as u32).await?;
-                self.write_superblock().await?;
+                // Write updated metadata to disk (concurrent I/O)
+                try_join(
+                    self.write_block_group_descriptor(group as u32),
+                    self.write_superblock(),
+                ).await?;
 
                 // Calculate the absolute block number
                 let blocks_per_group = {
@@ -147,8 +150,10 @@ impl Ext2Fs {
             m.superblock.free_blocks_count += 1;
         }
 
-        self.write_block_group_descriptor(group as u32).await?;
-        self.write_superblock().await?;
+        try_join(
+            self.write_block_group_descriptor(group as u32),
+            self.write_superblock(),
+        ).await?;
 
         Ok(())
     }
@@ -203,8 +208,10 @@ impl Ext2Fs {
                     m.superblock.free_inodes_count -= 1;
                 }
 
-                self.write_block_group_descriptor(group as u32).await?;
-                self.write_superblock().await?;
+                try_join(
+                    self.write_block_group_descriptor(group as u32),
+                    self.write_superblock(),
+                ).await?;
 
                 // Inode numbers are 1-indexed
                 let ino = group as u32 * inodes_per_group + bit_index as u32 + 1;
@@ -256,8 +263,10 @@ impl Ext2Fs {
             m.superblock.free_inodes_count += 1;
         }
 
-        self.write_block_group_descriptor(group as u32).await?;
-        self.write_superblock().await?;
+        try_join(
+            self.write_block_group_descriptor(group as u32),
+            self.write_superblock(),
+        ).await?;
 
         Ok(())
     }
