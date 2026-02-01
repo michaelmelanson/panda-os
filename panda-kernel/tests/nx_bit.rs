@@ -4,7 +4,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use panda_kernel::interrupts;
-use panda_kernel::memory::{self, MemoryMappingOptions, map_external};
+use panda_kernel::memory::{self, MemoryMappingOptions, map_external, smap};
 use x86_64::VirtAddr;
 use x86_64::registers::control::{Cr2, Efer, EferFlags};
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
@@ -101,11 +101,13 @@ fn map_user_executable_page() {
         },
     );
 
-    // Verify the page is accessible for read from kernel mode
+    // Verify the page is accessible for read from kernel mode.
+    // Since the page is mapped with user=true, SMAP requires an explicit
+    // stac/clac bracket for kernel-mode access.
     let ptr = virt_addr.as_ptr::<u64>();
-    unsafe {
+    smap::with_userspace_access(|| unsafe {
         let _ = core::ptr::read_volatile(ptr);
-    }
+    });
 }
 
 /// Custom page fault handler for the NX test.
