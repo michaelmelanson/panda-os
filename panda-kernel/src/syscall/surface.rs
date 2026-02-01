@@ -11,6 +11,10 @@ use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr};
 
 /// Calculate the byte size for a pixel buffer of given dimensions (4 bytes per pixel).
 /// Returns `None` if the calculation would overflow.
+///
+/// This is the canonical pattern for safe pixel arithmetic in this module.
+/// All buffer size and pixel offset calculations for userspace-controlled `u32`
+/// values must use checked arithmetic to prevent silent wrapping.
 fn checked_pixel_buffer_size(width: u32, height: u32) -> Option<usize> {
     width
         .checked_mul(height)
@@ -18,9 +22,36 @@ fn checked_pixel_buffer_size(width: u32, height: u32) -> Option<usize> {
         .map(|v| v as usize)
 }
 
+/// Calculate the expected source buffer byte size for a blit with sub-region parameters.
+/// Returns `None` if any intermediate calculation would overflow.
+///
+/// Uses checked arithmetic because all parameters are userspace-controlled `u32` values
+/// that could be crafted to cause silent wrapping.
+fn checked_src_buffer_size(
+    src_x: u32,
+    src_y: u32,
+    width: u32,
+    height: u32,
+    src_stride: u32,
+) -> Option<usize> {
+    if height == 0 || width == 0 {
+        return Some(0);
+    }
+    // (src_y + height - 1) * src_stride + src_x + width, then * 4
+    let last_row = src_y.checked_add(height)?.checked_sub(1)?;
+    let row_offset = last_row.checked_mul(src_stride)?;
+    let end_pixel = row_offset.checked_add(src_x)?.checked_add(width)?;
+    let byte_size = end_pixel.checked_mul(4)?;
+    Some(byte_size as usize)
+}
+
 /// Check if all pixels in a rectangular region have alpha == 255.
 /// Bails early on the first non-opaque pixel, so the cost for mixed-alpha
 /// surfaces is negligible.
+///
+/// Callers must ensure that all pixel offsets within the region are valid
+/// indices into `data`. If any offset overflows or falls outside `data`,
+/// this function conservatively returns `false`.
 fn is_region_opaque(
     data: &[u8],
     src_x: u32,
@@ -30,9 +61,28 @@ fn is_region_opaque(
     stride: u32,
 ) -> bool {
     for row in 0..height {
-        let row_start = ((src_y + row) * stride + src_x) as usize * 4;
+        // Use checked arithmetic — parameters are userspace-controlled u32 values.
+        let Some(y_off) = src_y.checked_add(row) else {
+            return false;
+        };
+        let Some(row_pixel) = y_off.checked_mul(stride).and_then(|v| v.checked_add(src_x))
+        else {
+            return false;
+        };
+        let Some(row_start) = (row_pixel as usize).checked_mul(4) else {
+            return false;
+        };
         for col in 0..width as usize {
-            if data.get(row_start + col * 4 + 3).copied() != Some(255) {
+            let Some(offset) = col
+                .checked_mul(4)
+                .and_then(|v| row_start.checked_add(v))
+            else {
+                return false;
+            };
+            let Some(alpha_idx) = offset.checked_add(3) else {
+                return false;
+            };
+            if data.get(alpha_idx).copied() != Some(255) {
                 return false;
             }
         }
@@ -144,11 +194,15 @@ pub fn handle_blit(
                 params.width
             };
 
-            let expected_src_size = if params.height > 0 && params.width > 0 {
-                (((params.src_y + params.height - 1) * src_stride + params.src_x + params.width)
-                    * 4) as usize
-            } else {
-                0
+            // Checked arithmetic — all BlitParams fields are userspace-controlled u32 values.
+            let Some(expected_src_size) = checked_src_buffer_size(
+                params.src_x,
+                params.src_y,
+                params.width,
+                params.height,
+                src_stride,
+            ) else {
+                return -1;
             };
 
             // Copy pixel data from user-mapped buffer into a kernel-owned Vec.
@@ -178,10 +232,14 @@ pub fn handle_blit(
                 let window_width = window.size.0;
                 let window_height = window.size.1;
 
-                // Bounds check
-                if params.x + params.width > window_width
-                    || params.y + params.height > window_height
-                {
+                // Bounds check — use checked arithmetic to prevent wrapping.
+                let Some(dst_right) = params.x.checked_add(params.width) else {
+                    return -1;
+                };
+                let Some(dst_bottom) = params.y.checked_add(params.height) else {
+                    return -1;
+                };
+                if dst_right > window_width || dst_bottom > window_height {
                     return -1;
                 }
 
@@ -189,15 +247,35 @@ pub fn handle_blit(
                 // The opaque scan bails early on the first non-255 alpha byte,
                 // so mixed-alpha surfaces pay almost nothing for the check.
                 if is_region_opaque(&src_data, params.src_x, params.src_y, params.width, params.height, src_stride) {
-                    // Fast path: copy entire rows at once (one memcpy per scanline)
-                    let row_bytes = params.width as usize * 4;
+                    // Fast path: copy entire rows at once (one memcpy per scanline).
+                    // Pixel offsets use checked arithmetic — userspace-controlled u32 values.
+                    let Some(row_bytes) = (params.width as usize).checked_mul(4) else {
+                        return -1;
+                    };
                     for row in 0..params.height {
-                        let src_row_start =
-                            ((params.src_y + row) * src_stride + params.src_x) as usize * 4;
-                        let dst_row_start =
-                            ((params.y + row) * window_width + params.x) as usize * 4;
+                        let Some(src_row_start) = params
+                            .src_y
+                            .checked_add(row)
+                            .and_then(|v| v.checked_mul(src_stride))
+                            .and_then(|v| v.checked_add(params.src_x))
+                            .and_then(|v| (v as usize).checked_mul(4))
+                        else {
+                            return -1;
+                        };
+                        let Some(dst_row_start) = params
+                            .y
+                            .checked_add(row)
+                            .and_then(|v| v.checked_mul(window_width))
+                            .and_then(|v| v.checked_add(params.x))
+                            .and_then(|v| (v as usize).checked_mul(4))
+                        else {
+                            return -1;
+                        };
 
                         if dst_row_start + row_bytes > window.pixel_data.len() {
+                            return -1;
+                        }
+                        if src_row_start + row_bytes > src_data.len() {
                             return -1;
                         }
 
@@ -205,13 +283,32 @@ pub fn handle_blit(
                             .copy_from_slice(&src_data[src_row_start..src_row_start + row_bytes]);
                     }
                 } else {
-                    // Slow path: per-pixel alpha blending
+                    // Slow path: per-pixel alpha blending.
+                    // Pixel offsets use checked arithmetic — userspace-controlled u32 values.
                     for row in 0..params.height {
                         for col in 0..params.width {
-                            let src_offset =
-                                (((params.src_y + row) * src_stride + params.src_x + col) * 4) as usize;
-                            let dst_offset =
-                                (((params.y + row) * window_width + params.x + col) * 4) as usize;
+                            let Some(src_offset) = params
+                                .src_y
+                                .checked_add(row)
+                                .and_then(|v| v.checked_mul(src_stride))
+                                .and_then(|v| v.checked_add(params.src_x))
+                                .and_then(|v| v.checked_add(col))
+                                .and_then(|v| v.checked_mul(4))
+                                .map(|v| v as usize)
+                            else {
+                                return -1;
+                            };
+                            let Some(dst_offset) = params
+                                .y
+                                .checked_add(row)
+                                .and_then(|v| v.checked_mul(window_width))
+                                .and_then(|v| v.checked_add(params.x))
+                                .and_then(|v| v.checked_add(col))
+                                .and_then(|v| v.checked_mul(4))
+                                .map(|v| v as usize)
+                            else {
+                                return -1;
+                            };
 
                             if dst_offset + 4 > window.pixel_data.len() {
                                 return -1;

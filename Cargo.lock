@@ -709,6 +709,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "surface_overflow_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "surface_test"
 version = "0.1.0"
 dependencies = [

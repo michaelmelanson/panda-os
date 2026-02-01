@@ -62,6 +62,7 @@ USERSPACE_TESTS := \
 	size_cap_test \
 	spawn_test \
 	state_test \
+	surface_overflow_test \
 	surface_test \
 	vfs_test \
 	window_move_test \
