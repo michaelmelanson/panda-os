@@ -21,6 +21,7 @@ KERNEL_TESTS := \
 	ext2_write \
 	fmask \
 	heap \
+	mailbox \
 	memory \
 	nx_bit \
 	pci \
@@ -49,6 +50,7 @@ USERSPACE_TESTS := \
 	heap_test \
 	keyboard_test \
 	mailbox_keyboard_test \
+	mailbox_overflow_test \
 	mailbox_test \
 	multi_window_test \
 	partial_refresh_test \
@@ -78,12 +80,13 @@ yield_test_EXTRAS := yield_child
 preempt_test_EXTRAS := preempt_child
 channel_test_EXTRAS := channel_child
 mailbox_test_EXTRAS := mailbox_child
+mailbox_overflow_test_EXTRAS := mailbox_overflow_child
 args_test_EXTRAS := args_child
 pipeline_test_EXTRAS := pipeline_producer pipeline_consumer
 control_plane_test_EXTRAS := control_plane_child
 env_test_EXTRAS := env_child
 fault_recovery_test_EXTRAS := fault_child
-export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS fault_recovery_test_EXTRAS
+export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS mailbox_overflow_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS fault_recovery_test_EXTRAS
 export PROFILE_DIR CARGO_PROFILE
 
 # Cargo commands for custom targets (require build-std for no_std targets)

@@ -57,6 +57,12 @@ impl Mailbox {
     /// Post an event to this mailbox.
     /// Called by resources when events occur.
     /// The event is filtered by the handle's event mask.
+    ///
+    /// The pending queue is bounded to [`panda_abi::MAX_MAILBOX_EVENTS`] entries.
+    /// When the queue is full, the event is coalesced with an existing entry for
+    /// the same handle (by ORing the event flags). If no existing entry is found,
+    /// the oldest event is dropped to make room. This is safe because mailbox
+    /// events are level-triggered flags, not individual messages.
     pub fn post_event(&self, handle_id: HandleId, events: u32) {
         let mut inner = self.inner.lock();
 
@@ -64,7 +70,7 @@ impl Mailbox {
         if let Some(&mask) = inner.attached.get(&handle_id) {
             let masked = events & mask;
             if masked != 0 {
-                inner.pending.push_back((handle_id, masked));
+                push_event_bounded(&mut inner.pending, handle_id, masked);
                 // Wake the waiting process
                 inner.waker.wake();
             }
@@ -139,6 +145,32 @@ pub struct MailboxRef {
     handle_id: HandleId,
 }
 
+/// Push an event into the pending queue with bounded size.
+///
+/// First attempts to coalesce with an existing entry for the same `handle_id`
+/// by ORing the event flags together. If no match is found and the queue is at
+/// capacity ([`panda_abi::MAX_MAILBOX_EVENTS`]), the oldest entry is dropped.
+fn push_event_bounded(
+    pending: &mut VecDeque<(HandleId, u32)>,
+    handle_id: HandleId,
+    events: u32,
+) {
+    // Try to coalesce: find an existing entry for the same handle and merge flags.
+    for entry in pending.iter_mut() {
+        if entry.0 == handle_id {
+            entry.1 |= events;
+            return;
+        }
+    }
+
+    // No existing entry to coalesce with — ensure we have room.
+    if pending.len() >= panda_abi::MAX_MAILBOX_EVENTS {
+        pending.pop_front();
+    }
+
+    pending.push_back((handle_id, events));
+}
+
 impl MailboxRef {
     /// Create a new mailbox reference.
     pub fn new(mailbox: &Mailbox, handle_id: HandleId) -> Self {
@@ -150,6 +182,11 @@ impl MailboxRef {
 
     /// Post an event to the mailbox.
     /// Does nothing if the mailbox has been dropped.
+    ///
+    /// The pending queue is bounded to [`panda_abi::MAX_MAILBOX_EVENTS`] entries.
+    /// When the queue is full, the event is coalesced with an existing entry for
+    /// the same handle (by ORing the event flags). If no existing entry is found,
+    /// the oldest event is dropped to make room.
     pub fn post_event(&self, events: u32) {
         if let Some(inner) = self.inner.upgrade() {
             let mut inner = inner.lock();
@@ -161,7 +198,7 @@ impl MailboxRef {
                 // Check if any requested event type is present
                 if events & mask != 0 {
                     // Deliver the full event, not the masked version
-                    inner.pending.push_back((self.handle_id, events));
+                    push_event_bounded(&mut inner.pending, self.handle_id, events);
                     inner.waker.wake();
                 }
             }

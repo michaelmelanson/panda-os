@@ -59,6 +59,9 @@ Mailboxes aggregate events from multiple handles, enabling event-driven programm
 - Every process has a default mailbox at `HANDLE_MAILBOX`
 - Handles are attached with an event mask specifying which events to receive
 - `wait()` blocks until any attached handle has events
+- **Queue depth**: bounded to `MAX_MAILBOX_EVENTS` (256) pending entries
+- **Coalescing**: when a new event arrives for a handle that already has a pending entry, the event flags are merged (ORed) into the existing entry rather than appending a duplicate — this is safe because mailbox events are level-triggered flags
+- **Overflow**: if the queue is full and the event cannot be coalesced, the oldest entry is dropped to make room
 
 ### API
 

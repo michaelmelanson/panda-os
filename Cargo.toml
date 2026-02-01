@@ -40,6 +40,8 @@ members = [
   "userspace/tests/channel_child",
   "userspace/tests/mailbox_test",
   "userspace/tests/mailbox_child",
+  "userspace/tests/mailbox_overflow_test",
+  "userspace/tests/mailbox_overflow_child",
   "userspace/tests/args_test",
   "userspace/tests/args_child",
   "userspace/tests/pipeline_test",
