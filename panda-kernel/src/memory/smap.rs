@@ -81,7 +81,15 @@ pub fn is_enabled() -> bool {
 /// [`UserspaceAccessGuard`] or [`with_userspace_access`] instead.
 #[inline(always)]
 pub unsafe fn stac() {
-    unsafe { core::arch::asm!("stac", options(nomem, nostack)); }
+    // `nostack` is fine (stac doesn't touch the stack), but we must NOT use
+    // `nomem`: although stac itself doesn't read/write memory, it gates
+    // subsequent userspace memory accesses.  Without the implicit memory
+    // clobber LLVM is free to reorder loads/stores across this instruction,
+    // moving them outside the stac/clac window.  In release builds this
+    // causes SMAP violations because the actual access lands after clac.
+    unsafe {
+        core::arch::asm!("stac", options(nostack));
+    }
 }
 
 /// Re-enable SMAP (disallow kernel access to userspace pages).
@@ -90,7 +98,11 @@ pub unsafe fn stac() {
 /// Must be called after a preceding [`stac`] call.
 #[inline(always)]
 pub unsafe fn clac() {
-    unsafe { core::arch::asm!("clac", options(nomem, nostack)); }
+    // See `stac` — omitting `nomem` so LLVM treats this as a memory barrier
+    // and does not hoist or sink userspace accesses past the clac.
+    unsafe {
+        core::arch::asm!("clac", options(nostack));
+    }
 }
 
 /// RAII guard that enables kernel access to user pages.
