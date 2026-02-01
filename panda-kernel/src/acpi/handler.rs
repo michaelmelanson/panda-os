@@ -51,13 +51,13 @@ fn phys_write<T: Copy>(address: usize, value: T) {
 fn pci_config_addr(address: &acpi::PciAddress, offset: u16) -> Option<*mut u8> {
     let groups = crate::pci::PCI_SEGMENT_GROUPS.read();
     for group in groups.iter() {
-        if group.group_id == address.segment
-            && address.bus >= group.bus_number_start
-            && address.bus <= group.bus_number_end
+        if group.group_id == address.segment()
+            && address.bus() >= group.bus_number_start
+            && address.bus() <= group.bus_number_end
         {
-            let device_offset = ((address.bus as u64 * 256)
-                + (address.device as u64 * 8)
-                + address.function as u64)
+            let device_offset = ((address.bus() as u64 * 256)
+                + (address.device() as u64 * 8)
+                + address.function() as u64)
                 * 4096;
             let addr =
                 group.base_address.as_u64() + device_offset + offset as u64;
@@ -278,16 +278,16 @@ impl ::acpi::Handler for AcpiHandler {
         let handle = NEXT_MUTEX_HANDLE.fetch_add(1, Ordering::Relaxed);
         let lock = Box::leak(Box::new(AtomicBool::new(false)));
         ACPI_MUTEXES.lock().insert(handle, lock);
-        acpi::Handle::new(handle)
+        acpi::Handle(handle as u32)
     }
 
     fn acquire(&self, mutex: acpi::Handle, timeout: u16) -> Result<(), acpi::aml::AmlError> {
-        let handle = mutex.value();
+        let handle = mutex.0 as u64;
         let lock = {
             let mutexes = ACPI_MUTEXES.lock();
             match mutexes.get(&handle) {
                 Some(lock) => *lock,
-                None => return Err(acpi::aml::AmlError::InvalidHandle),
+                None => return Err(acpi::aml::AmlError::InvalidName(None)),
             }
         };
 
@@ -308,14 +308,14 @@ impl ::acpi::Handler for AcpiHandler {
             }
 
             if crate::time::uptime_ns().wrapping_sub(start_ns) >= timeout_ns {
-                return Err(acpi::aml::AmlError::MutexTimeout);
+                return Err(acpi::aml::AmlError::MutexAcquireTimeout);
             }
             core::hint::spin_loop();
         }
     }
 
     fn release(&self, mutex: acpi::Handle) {
-        let handle = mutex.value();
+        let handle = mutex.0 as u64;
         let mutexes = ACPI_MUTEXES.lock();
         if let Some(lock) = mutexes.get(&handle) {
             lock.store(false, Ordering::Release);
