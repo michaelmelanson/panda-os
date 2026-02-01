@@ -29,7 +29,11 @@ fn checked_pixel_buffer_size(width: u32, height: u32) -> Option<usize> {
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_info(ua: &UserAccess, handle: u64, info_ptr: UserPtr<panda_abi::SurfaceInfoOut>) -> SyscallFuture {
+pub fn handle_info(
+    ua: &UserAccess,
+    handle: u64,
+    info_ptr: UserPtr<panda_abi::SurfaceInfoOut>,
+) -> SyscallFuture {
     if info_ptr.addr() == 0 {
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
@@ -76,7 +80,11 @@ pub fn handle_info(ua: &UserAccess, handle: u64, info_ptr: UserPtr<panda_abi::Su
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: UserPtr<panda_abi::BlitParams>) -> SyscallFuture {
+pub fn handle_blit(
+    ua: &UserAccess,
+    handle: u64,
+    params_ptr: UserPtr<panda_abi::BlitParams>,
+) -> SyscallFuture {
     if params_ptr.addr() == 0 {
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
@@ -107,8 +115,18 @@ pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: UserPtr<panda_abi::
                 buffer
             };
 
-            let Some(expected_src_size) = checked_pixel_buffer_size(params.width, params.height) else {
-                return -1;
+            // When src_stride is 0, fall back to width (backwards compatibility)
+            let src_stride = if params.src_stride > 0 {
+                params.src_stride
+            } else {
+                params.width
+            };
+
+            let expected_src_size = if params.height > 0 && params.width > 0 {
+                (((params.src_y + params.height - 1) * src_stride + params.src_x + params.width)
+                    * 4) as usize
+            } else {
+                0
             };
 
             // Copy pixel data from user-mapped buffer into a kernel-owned Vec.
@@ -148,7 +166,8 @@ pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: UserPtr<panda_abi::
                 // Blit with alpha blending (operates on kernel-owned src_data)
                 for row in 0..params.height {
                     for col in 0..params.width {
-                        let src_offset = ((row * params.width + col) * 4) as usize;
+                        let src_offset =
+                            (((params.src_y + row) * src_stride + params.src_x + col) * 4) as usize;
                         let dst_offset =
                             (((params.y + row) * window_width + params.x + col) * 4) as usize;
 
@@ -226,13 +245,7 @@ pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: UserPtr<panda_abi::
                 return -1;
             };
 
-            match surface.blit(
-                params.x,
-                params.y,
-                params.width,
-                params.height,
-                &pixel_data,
-            ) {
+            match surface.blit(params.x, params.y, params.width, params.height, &pixel_data) {
                 Ok(()) => 0,
                 Err(_) => -1,
             }
@@ -253,7 +266,11 @@ pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: UserPtr<panda_abi::
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_fill(ua: &UserAccess, handle: u64, params_ptr: UserPtr<panda_abi::FillParams>) -> SyscallFuture {
+pub fn handle_fill(
+    ua: &UserAccess,
+    handle: u64,
+    params_ptr: UserPtr<panda_abi::FillParams>,
+) -> SyscallFuture {
     if params_ptr.addr() == 0 {
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
@@ -299,7 +316,11 @@ pub fn handle_fill(ua: &UserAccess, handle: u64, params_ptr: UserPtr<panda_abi::
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_flush(ua: &UserAccess, handle: u64, rect_ptr: Option<UserPtr<panda_abi::SurfaceRect>>) -> SyscallFuture {
+pub fn handle_flush(
+    ua: &UserAccess,
+    handle: u64,
+    rect_ptr: Option<UserPtr<panda_abi::SurfaceRect>>,
+) -> SyscallFuture {
     let is_window = scheduler::with_current_process(|proc| {
         let Some(resource) = proc.handles().get(handle) else {
             return None;
@@ -397,7 +418,11 @@ pub fn handle_flush(ua: &UserAccess, handle: u64, rect_ptr: Option<UserPtr<panda
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_update_params(ua: &UserAccess, handle: u64, params_ptr: UserPtr<panda_abi::UpdateParamsIn>) -> SyscallFuture {
+pub fn handle_update_params(
+    ua: &UserAccess,
+    handle: u64,
+    params_ptr: UserPtr<panda_abi::UpdateParamsIn>,
+) -> SyscallFuture {
     if params_ptr.addr() == 0 {
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
@@ -427,7 +452,8 @@ pub fn handle_update_params(ua: &UserAccess, handle: u64, params_ptr: UserPtr<pa
             if window.size != new_size {
                 window.size = new_size;
 
-                let Some(buffer_size) = checked_pixel_buffer_size(params.width, params.height) else {
+                let Some(buffer_size) = checked_pixel_buffer_size(params.width, params.height)
+                else {
                     return -1;
                 };
 
