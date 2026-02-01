@@ -1,6 +1,7 @@
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use log::trace;
 use spinning_top::Spinlock;
@@ -16,8 +17,9 @@ static ACPI_MAPPINGS: Spinlock<BTreeMap<usize, PhysicalMapping>> = Spinlock::new
 /// Next mutex handle to allocate.
 static NEXT_MUTEX_HANDLE: AtomicU64 = AtomicU64::new(1);
 
-/// Tracks ACPI mutexes. Each handle maps to a locked/unlocked state.
-static ACPI_MUTEXES: Spinlock<BTreeMap<u64, bool>> = Spinlock::new(BTreeMap::new());
+/// Tracks ACPI mutexes. Each handle maps to an atomic lock flag.
+static ACPI_MUTEXES: Spinlock<BTreeMap<u64, &'static AtomicBool>> =
+    Spinlock::new(BTreeMap::new());
 
 #[derive(Clone, Copy)]
 pub struct AcpiHandler;
@@ -245,24 +247,24 @@ impl ::acpi::Handler for AcpiHandler {
     // --- Timing operations ---
 
     fn nanos_since_boot(&self) -> u64 {
-        crate::time::uptime_ms() * 1_000_000
+        crate::time::uptime_ns()
     }
 
     fn stall(&self, microseconds: u64) {
-        // Busy-wait using the system uptime timer.
-        // Convert microseconds to milliseconds (rounding up to ensure minimum wait).
-        let start_ms = crate::time::uptime_ms();
-        let wait_ms = (microseconds + 999) / 1000;
-        while crate::time::uptime_ms() < start_ms + wait_ms {
+        // Busy-wait using the nanosecond-resolution TSC-based timer.
+        let start_ns = crate::time::uptime_ns();
+        let wait_ns = microseconds * 1_000;
+        while crate::time::uptime_ns() < start_ns + wait_ns {
             core::hint::spin_loop();
         }
     }
 
     fn sleep(&self, milliseconds: u64) {
         // In a kernel context without a scheduler-aware sleep primitive,
-        // fall back to busy-waiting.
-        let start_ms = crate::time::uptime_ms();
-        while crate::time::uptime_ms() < start_ms + milliseconds {
+        // fall back to busy-waiting with nanosecond resolution.
+        let start_ns = crate::time::uptime_ns();
+        let wait_ns = milliseconds * 1_000_000;
+        while crate::time::uptime_ns() < start_ns + wait_ns {
             core::hint::spin_loop();
         }
     }
@@ -274,46 +276,49 @@ impl ::acpi::Handler for AcpiHandler {
 
     fn create_mutex(&self) -> acpi::Handle {
         let handle = NEXT_MUTEX_HANDLE.fetch_add(1, Ordering::Relaxed);
-        ACPI_MUTEXES.lock().insert(handle, false);
+        let lock = Box::leak(Box::new(AtomicBool::new(false)));
+        ACPI_MUTEXES.lock().insert(handle, lock);
         acpi::Handle::new(handle)
     }
 
     fn acquire(&self, mutex: acpi::Handle, timeout: u16) -> Result<(), acpi::aml::AmlError> {
         let handle = mutex.value();
-        let start_ms = crate::time::uptime_ms();
-        let timeout_ms = if timeout == 0xFFFF {
-            u64::MAX // Infinite timeout
+        let lock = {
+            let mutexes = ACPI_MUTEXES.lock();
+            match mutexes.get(&handle) {
+                Some(lock) => *lock,
+                None => return Err(acpi::aml::AmlError::InvalidHandle),
+            }
+        };
+
+        let start_ns = crate::time::uptime_ns();
+        let timeout_ns = if timeout == 0xFFFF {
+            u64::MAX
         } else {
-            timeout as u64
+            timeout as u64 * 1_000_000
         };
 
         loop {
-            let mut mutexes = ACPI_MUTEXES.lock();
-            match mutexes.get_mut(&handle) {
-                Some(locked) if !*locked => {
-                    *locked = true;
-                    return Ok(());
-                }
-                Some(_) => {
-                    // Already locked — drop the spinlock and retry
-                    drop(mutexes);
-                    if crate::time::uptime_ms() - start_ms >= timeout_ms {
-                        return Err(acpi::aml::AmlError::MutexTimeout);
-                    }
-                    core::hint::spin_loop();
-                }
-                None => {
-                    return Err(acpi::aml::AmlError::InvalidHandle);
-                }
+            // Atomic compare-and-swap: try to transition false -> true
+            if lock
+                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Ok(());
             }
+
+            if crate::time::uptime_ns().wrapping_sub(start_ns) >= timeout_ns {
+                return Err(acpi::aml::AmlError::MutexTimeout);
+            }
+            core::hint::spin_loop();
         }
     }
 
     fn release(&self, mutex: acpi::Handle) {
         let handle = mutex.value();
-        let mut mutexes = ACPI_MUTEXES.lock();
-        if let Some(locked) = mutexes.get_mut(&handle) {
-            *locked = false;
+        let mutexes = ACPI_MUTEXES.lock();
+        if let Some(lock) = mutexes.get(&handle) {
+            lock.store(false, Ordering::Release);
         }
     }
 }

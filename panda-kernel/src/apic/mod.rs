@@ -175,6 +175,9 @@ pub fn init() {
     // Calibrate the timer
     calibrate_timer();
 
+    // Calibrate the TSC for nanosecond-resolution timing
+    crate::time::calibrate_tsc();
+
     // Initialize the I/O APIC
     ioapic::init();
 }
