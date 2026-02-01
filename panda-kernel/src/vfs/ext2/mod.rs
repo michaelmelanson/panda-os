@@ -1,7 +1,11 @@
-//! Ext2 filesystem driver (read-only).
+//! Ext2 filesystem driver.
 //!
-//! This module implements a read-only ext2 filesystem driver with async I/O.
+//! This module implements an ext2 filesystem driver with async I/O, supporting
+//! both read and write operations. Mutable filesystem state (superblock and
+//! block group descriptors) is protected by a single `RwSpinlock` to allow
+//! concurrent reads while serialising allocation and metadata updates.
 
+pub mod bitmap;
 mod file;
 mod structs;
 
@@ -13,6 +17,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use async_trait::async_trait;
+use spinning_top::RwSpinlock;
 
 use crate::resource::BlockDevice;
 use crate::vfs::{DirEntry, File, FileStat, Filesystem, FsError};
@@ -82,20 +87,38 @@ async fn read_block_ptr(
     Ok(u32::from_le_bytes(buf))
 }
 
+// =============================================================================
+// Mutable filesystem state
+// =============================================================================
+
+/// Mutable ext2 state that requires locking for concurrent access.
+///
+/// This holds the superblock (for free block/inode counts) and block group
+/// descriptors (for per-group free counts and bitmap locations). A single
+/// `RwSpinlock` protects all mutable state — this is the simplest correct
+/// approach and can be made more granular later if SMP contention becomes
+/// an issue.
+pub struct Ext2FsMutable {
+    /// The superblock, kept in memory for free-count tracking.
+    pub superblock: Superblock,
+    /// Block group descriptors, updated during allocation/deallocation.
+    pub block_groups: Vec<BlockGroupDescriptor>,
+}
+
 /// An ext2 filesystem instance.
 pub struct Ext2Fs {
     /// The underlying block device.
     device: Arc<dyn BlockDevice>,
-    /// Block size in bytes.
+    /// Block size in bytes (immutable after mount).
     block_size: u32,
-    /// Inode size in bytes.
+    /// Inode size in bytes (immutable after mount).
     inode_size: u32,
-    /// Total number of blocks in the filesystem.
+    /// Total number of blocks in the filesystem (immutable after mount).
     blocks_count: u32,
-    /// Inodes per block group.
+    /// Inodes per block group (immutable after mount).
     inodes_per_group: u32,
-    /// Block group descriptors.
-    block_groups: Vec<BlockGroupDescriptor>,
+    /// Mutable filesystem state protected by a read-write spinlock.
+    mutable: RwSpinlock<Ext2FsMutable>,
 }
 
 impl Ext2Fs {
@@ -166,9 +189,16 @@ impl Ext2Fs {
             inode_size,
             blocks_count: sb.blocks_count,
             inodes_per_group: sb.inodes_per_group,
-            block_groups,
+            mutable: RwSpinlock::new(Ext2FsMutable {
+                superblock: sb,
+                block_groups,
+            }),
         }))
     }
+
+    // =========================================================================
+    // Read operations
+    // =========================================================================
 
     /// Read an inode by number (1-indexed).
     pub async fn read_inode(&self, ino: u32) -> Result<Inode, FsError> {
@@ -179,15 +209,18 @@ impl Ext2Fs {
         let group = (ino - 1) / self.inodes_per_group;
         let index = (ino - 1) % self.inodes_per_group;
 
-        // Validate group index is within our block_groups array
-        if group as usize >= self.block_groups.len() {
-            log::warn!("ext2: inode {} references out-of-bounds group {}", ino, group);
-            return Err(FsError::NotFound);
-        }
-        let bgd = &self.block_groups[group as usize];
+        // Read inode table block number from the block group descriptor
+        let inode_table = {
+            let m = self.mutable.read();
+            if group as usize >= m.block_groups.len() {
+                log::warn!("ext2: inode {} references out-of-bounds group {}", ino, group);
+                return Err(FsError::NotFound);
+            }
+            m.block_groups[group as usize].inode_table
+        };
 
         let offset =
-            bgd.inode_table as u64 * self.block_size as u64 + index as u64 * self.inode_size as u64;
+            inode_table as u64 * self.block_size as u64 + index as u64 * self.inode_size as u64;
 
         // Safety: buf is 128 bytes and Inode is repr(C) with size <= 128 bytes.
         // The compile-time assert below ensures the buffer is large enough.
@@ -346,8 +379,8 @@ impl Ext2Fs {
         get_block_number(&*self.device, &inode.block, self.block_size, file_block).await
     }
 
-    /// Read a full block.
-    async fn read_block(&self, block: u32, buf: &mut [u8]) -> Result<(), FsError> {
+    /// Read a full block from disk.
+    pub async fn read_block(&self, block: u32, buf: &mut [u8]) -> Result<(), FsError> {
         if block >= self.blocks_count {
             log::warn!("ext2: block {} out of range (total {})", block, self.blocks_count);
             return Err(FsError::NotReadable);
@@ -360,14 +393,143 @@ impl Ext2Fs {
         Ok(())
     }
 
+    // =========================================================================
+    // Write operations
+    // =========================================================================
+
+    /// Write a full block to disk.
+    ///
+    /// The buffer must be exactly `block_size` bytes. The block number must be
+    /// within the valid range for the filesystem.
+    pub async fn write_block(&self, block: u32, data: &[u8]) -> Result<(), FsError> {
+        if block >= self.blocks_count {
+            log::warn!("ext2: write_block {} out of range (total {})", block, self.blocks_count);
+            return Err(FsError::IoError);
+        }
+        if data.len() != self.block_size as usize {
+            log::warn!(
+                "ext2: write_block buffer size {} != block_size {}",
+                data.len(),
+                self.block_size
+            );
+            return Err(FsError::IoError);
+        }
+        let offset = block as u64 * self.block_size as u64;
+        self.device
+            .write_at(offset, data)
+            .await
+            .map_err(|_| FsError::IoError)?;
+        Ok(())
+    }
+
+    /// Write an inode to disk.
+    ///
+    /// Serialises the `Inode` struct and writes it to the correct position
+    /// in the inode table for the block group containing `ino`.
+    pub async fn write_inode(&self, ino: u32, inode: &Inode) -> Result<(), FsError> {
+        if ino == 0 {
+            return Err(FsError::NotFound);
+        }
+
+        let group = (ino - 1) / self.inodes_per_group;
+        let index = (ino - 1) % self.inodes_per_group;
+
+        let inode_table = {
+            let m = self.mutable.read();
+            if group as usize >= m.block_groups.len() {
+                log::warn!("ext2: write_inode {} references out-of-bounds group {}", ino, group);
+                return Err(FsError::NotFound);
+            }
+            m.block_groups[group as usize].inode_table
+        };
+
+        let offset =
+            inode_table as u64 * self.block_size as u64 + index as u64 * self.inode_size as u64;
+
+        let bytes = inode.to_bytes();
+        self.device
+            .write_at(offset, &bytes)
+            .await
+            .map_err(|_| FsError::IoError)?;
+        Ok(())
+    }
+
+    /// Write the in-memory superblock back to disk.
+    ///
+    /// Call this after modifying free block/inode counts in the superblock
+    /// to persist the changes.
+    pub async fn write_superblock(&self) -> Result<(), FsError> {
+        let bytes = {
+            let m = self.mutable.read();
+            m.superblock.to_bytes()
+        };
+        self.device
+            .write_at(SUPERBLOCK_OFFSET, &bytes)
+            .await
+            .map_err(|_| FsError::IoError)?;
+        Ok(())
+    }
+
+    /// Write a block group descriptor back to disk.
+    ///
+    /// The descriptor is written to the block group descriptor table at
+    /// the position for `group_num`.
+    pub async fn write_block_group_descriptor(&self, group_num: u32) -> Result<(), FsError> {
+        let bytes = {
+            let m = self.mutable.read();
+            if group_num as usize >= m.block_groups.len() {
+                log::warn!(
+                    "ext2: write_block_group_descriptor {} out of range",
+                    group_num
+                );
+                return Err(FsError::IoError);
+            }
+            m.block_groups[group_num as usize].to_bytes()
+        };
+
+        let desc_size = core::mem::size_of::<BlockGroupDescriptor>() as u64;
+        // Block group descriptor table location: block 2 for 1KB, block 1 for larger
+        let bgdt_offset = if self.block_size == 1024 {
+            2048u64
+        } else {
+            self.block_size as u64
+        };
+        let offset = bgdt_offset + group_num as u64 * desc_size;
+
+        self.device
+            .write_at(offset, &bytes)
+            .await
+            .map_err(|_| FsError::IoError)?;
+        Ok(())
+    }
+
+    // =========================================================================
+    // Accessors
+    // =========================================================================
+
     /// Get block size.
     pub fn block_size(&self) -> u32 {
         self.block_size
     }
 
+    /// Get the total number of blocks in the filesystem.
+    pub fn blocks_count(&self) -> u32 {
+        self.blocks_count
+    }
+
+    /// Get the number of inodes per block group.
+    pub fn inodes_per_group(&self) -> u32 {
+        self.inodes_per_group
+    }
+
     /// Get a reference to the device.
     pub fn device(&self) -> &Arc<dyn BlockDevice> {
         &self.device
+    }
+
+    /// Get a reference to the mutable state lock.
+    pub fn mutable(&self) -> &RwSpinlock<Ext2FsMutable> {
+        &self.mutable
     }
 }
 

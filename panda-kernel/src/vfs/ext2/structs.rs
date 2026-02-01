@@ -266,6 +266,13 @@ impl Superblock {
     pub fn unsupported_incompat_features(&self) -> u32 {
         self.feature_incompat & !SUPPORTED_INCOMPAT
     }
+
+    /// Serialize this superblock to its on-disk byte representation (1024 bytes).
+    pub fn to_bytes(&self) -> [u8; 1024] {
+        const _: () = assert!(core::mem::size_of::<Superblock>() == 1024);
+        // Safety: Superblock is repr(C) with a size of exactly 1024 bytes.
+        unsafe { core::mem::transmute(*self) }
+    }
 }
 
 /// Block group descriptor.
@@ -290,6 +297,15 @@ pub struct BlockGroupDescriptor {
     pub pad: u16,
     /// Reserved
     pub reserved: [u32; 3],
+}
+
+impl BlockGroupDescriptor {
+    /// Serialize this block group descriptor to its on-disk byte representation (32 bytes).
+    pub fn to_bytes(&self) -> [u8; 32] {
+        const _: () = assert!(core::mem::size_of::<BlockGroupDescriptor>() == 32);
+        // Safety: BlockGroupDescriptor is repr(C) with a size of exactly 32 bytes.
+        unsafe { core::mem::transmute(*self) }
+    }
 }
 
 /// Inode structure.
@@ -355,6 +371,14 @@ impl Inode {
     /// Check if this inode is a symbolic link.
     pub fn is_symlink(&self) -> bool {
         (self.mode & S_IFMT) == S_IFLNK
+    }
+
+    /// Serialize this inode to its on-disk byte representation (128 bytes).
+    pub fn to_bytes(&self) -> [u8; 128] {
+        const _: () = assert!(core::mem::size_of::<Inode>() == 128);
+        // Safety: Inode is repr(C) with a size of exactly 128 bytes and
+        // all bit patterns are valid for the constituent integer types.
+        unsafe { core::mem::transmute(*self) }
     }
 }
 

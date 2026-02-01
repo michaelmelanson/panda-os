@@ -18,6 +18,7 @@ KERNEL_TESTS := \
 	device_path \
 	elf_security \
 	ext2_validation \
+	ext2_write \
 	fmask \
 	heap \
 	memory \
