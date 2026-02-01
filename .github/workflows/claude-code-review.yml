@@ -40,4 +40,12 @@ jobs:
           allowed_bots: "claude"
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
           plugins: "code-review@claude-code-plugins"
+          review_instructions: |
+            In addition to checking for bugs and code quality, check for missing tests:
+
+            - If the PR adds a new kernel test, verify it is listed in KERNEL_TESTS in the Makefile.
+            - If the PR adds a new userspace test, verify it is listed in USERSPACE_TESTS in the Makefile.
+            - If the PR adds a new crate or package, verify Cargo.lock has been updated.
+            - If the PR adds new functionality (syscalls, drivers, VFS operations, IPC mechanisms), verify that corresponding tests exist. Flag if there are no tests for non-trivial new code paths.
+            - If the PR modifies existing behaviour, verify that existing tests have been updated to reflect the changes.
           prompt: "/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
