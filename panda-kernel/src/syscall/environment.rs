@@ -137,9 +137,9 @@ pub fn handle_mount(
 ///
 /// Creates a channel between parent and child. Child receives its endpoint at HANDLE_PARENT.
 /// Parent receives a SpawnHandle that combines channel + process info.
-pub fn handle_spawn(ua: &UserAccess, params_ptr: usize) -> SyscallFuture {
+pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>) -> SyscallFuture {
     // Read spawn parameters from userspace
-    let params: panda_abi::SpawnParams = match ua.read_user(UserPtr::new(params_ptr)) {
+    let params: panda_abi::SpawnParams = match ua.read_user(params_ptr) {
         Ok(p) => p,
         Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };

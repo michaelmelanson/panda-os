@@ -47,7 +47,10 @@ pub fn handle_alloc(ua: &UserAccess, size: usize, info_ptr: usize) -> SyscallFut
 
     match result {
         Some((handle_id, Some(info))) => {
-            if ua.write_user(info_out.unwrap(), &info).is_err() {
+            let Some(out) = info_out else {
+                return Box::pin(core::future::ready(SyscallResult::err(-1)));
+            };
+            if ua.write_user(out, &info).is_err() {
                 return Box::pin(core::future::ready(SyscallResult::err(-1)));
             }
             Box::pin(core::future::ready(SyscallResult::ok(handle_id as isize)))
@@ -159,7 +162,10 @@ pub fn handle_resize(
 
     match result {
         Ok(Some(info)) => {
-            if ua.write_user(info_out.unwrap(), &info).is_err() {
+            let Some(out) = info_out else {
+                return Box::pin(core::future::ready(SyscallResult::err(-1)));
+            };
+            if ua.write_user(out, &info).is_err() {
                 return Box::pin(core::future::ready(SyscallResult::err(-1)));
             }
             Box::pin(core::future::ready(SyscallResult::ok(0)))

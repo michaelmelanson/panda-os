@@ -29,12 +29,12 @@ fn checked_pixel_buffer_size(width: u32, height: u32) -> Option<usize> {
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_info(ua: &UserAccess, handle: u64, info_ptr: usize) -> SyscallFuture {
-    if info_ptr == 0 {
+pub fn handle_info(ua: &UserAccess, handle: u64, info_ptr: UserPtr<panda_abi::SurfaceInfoOut>) -> SyscallFuture {
+    if info_ptr.addr() == 0 {
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
 
-    let out: UserPtr<panda_abi::SurfaceInfoOut> = UserPtr::new(info_ptr);
+    let out = info_ptr;
 
     let result = scheduler::with_current_process(|proc| {
         let Some(resource) = proc.handles().get(handle) else {
@@ -76,12 +76,12 @@ pub fn handle_info(ua: &UserAccess, handle: u64, info_ptr: usize) -> SyscallFutu
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFuture {
-    if params_ptr == 0 {
+pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: UserPtr<panda_abi::BlitParams>) -> SyscallFuture {
+    if params_ptr.addr() == 0 {
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
 
-    let params: panda_abi::BlitParams = match ua.read_user(UserPtr::new(params_ptr)) {
+    let params: panda_abi::BlitParams = match ua.read_user(params_ptr) {
         Ok(p) => p,
         Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };
@@ -253,12 +253,12 @@ pub fn handle_blit(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFu
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_fill(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFuture {
-    if params_ptr == 0 {
+pub fn handle_fill(ua: &UserAccess, handle: u64, params_ptr: UserPtr<panda_abi::FillParams>) -> SyscallFuture {
+    if params_ptr.addr() == 0 {
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
 
-    let params: panda_abi::FillParams = match ua.read_user(UserPtr::new(params_ptr)) {
+    let params: panda_abi::FillParams = match ua.read_user(params_ptr) {
         Ok(p) => p,
         Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };
@@ -299,7 +299,7 @@ pub fn handle_fill(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFu
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_flush(ua: &UserAccess, handle: u64, rect_ptr: usize) -> SyscallFuture {
+pub fn handle_flush(ua: &UserAccess, handle: u64, rect_ptr: Option<UserPtr<panda_abi::SurfaceRect>>) -> SyscallFuture {
     let is_window = scheduler::with_current_process(|proc| {
         let Some(resource) = proc.handles().get(handle) else {
             return None;
@@ -327,9 +327,9 @@ pub fn handle_flush(ua: &UserAccess, handle: u64, rect_ptr: usize) -> SyscallFut
             return Box::pin(core::future::ready(SyscallResult::err(-1)));
         };
 
-        if rect_ptr != 0 {
+        if let Some(rp) = rect_ptr {
             // Read rect from userspace
-            let rect: panda_abi::SurfaceRect = match ua.read_user(UserPtr::new(rect_ptr)) {
+            let rect: panda_abi::SurfaceRect = match ua.read_user(rp) {
                 Ok(r) => r,
                 Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
             };
@@ -361,8 +361,8 @@ pub fn handle_flush(ua: &UserAccess, handle: u64, rect_ptr: usize) -> SyscallFut
                 return -1;
             };
 
-            let region = if rect_ptr != 0 {
-                let rect: panda_abi::SurfaceRect = match ua.read_user(UserPtr::new(rect_ptr)) {
+            let region = if let Some(rp) = rect_ptr {
+                let rect: panda_abi::SurfaceRect = match ua.read_user(rp) {
                     Ok(r) => r,
                     Err(_) => return -1,
                 };
@@ -397,12 +397,12 @@ pub fn handle_flush(ua: &UserAccess, handle: u64, rect_ptr: usize) -> SyscallFut
 /// Returns:
 /// - 0 on success
 /// - negative error code on failure
-pub fn handle_update_params(ua: &UserAccess, handle: u64, params_ptr: usize) -> SyscallFuture {
-    if params_ptr == 0 {
+pub fn handle_update_params(ua: &UserAccess, handle: u64, params_ptr: UserPtr<panda_abi::UpdateParamsIn>) -> SyscallFuture {
+    if params_ptr.addr() == 0 {
         return Box::pin(core::future::ready(SyscallResult::err(-1)));
     }
 
-    let params: panda_abi::UpdateParamsIn = match ua.read_user(UserPtr::new(params_ptr)) {
+    let params: panda_abi::UpdateParamsIn = match ua.read_user(params_ptr) {
         Ok(p) => p,
         Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
     };

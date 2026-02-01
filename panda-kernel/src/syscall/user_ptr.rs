@@ -59,6 +59,7 @@ pub struct UserPtr<T: Copy> {
 
 impl<T: Copy> UserPtr<T> {
     /// Create from a raw userspace address.
+    #[inline(always)]
     pub fn new(addr: usize) -> Self {
         Self {
             addr,
@@ -67,6 +68,7 @@ impl<T: Copy> UserPtr<T> {
     }
 
     /// Get the raw address.
+    #[inline(always)]
     pub fn addr(&self) -> usize {
         self.addr
     }

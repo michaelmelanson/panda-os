@@ -69,6 +69,7 @@ pub fn enable() {
 }
 
 /// Returns true if SMAP is enabled on this CPU.
+#[inline(always)]
 pub fn is_enabled() -> bool {
     SMAP_ENABLED.load(Ordering::Relaxed)
 }
@@ -103,6 +104,7 @@ pub struct UserspaceAccessGuard(());
 
 impl UserspaceAccessGuard {
     /// Create a new guard, temporarily disabling SMAP.
+    #[inline(always)]
     pub fn new() -> Self {
         unsafe {
             stac();
@@ -112,6 +114,7 @@ impl UserspaceAccessGuard {
 }
 
 impl Drop for UserspaceAccessGuard {
+    #[inline(always)]
     fn drop(&mut self) {
         unsafe {
             clac();
@@ -133,7 +136,7 @@ pub fn with_userspace_access<R>(f: impl FnOnce() -> R) -> R {
 /// Assert that the AC flag is clear. Panics if AC is set.
 ///
 /// Call this before returning to userspace to catch unbalanced `stac`/`clac`.
-#[inline]
+#[inline(always)]
 pub fn assert_ac_clear() {
     let rflags: u64;
     unsafe {

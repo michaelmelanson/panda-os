@@ -244,6 +244,27 @@ extern "x86-interrupt" fn default_page_fault_handler(
         }
     }
 
+    // Detect SMAP violations: kernel-mode access to a user-mapped page triggers
+    // a protection-violation page fault. The hallmark is: kernel mode, protection
+    // violation, and fault address in the lower (user) canonical half.
+    let is_smap_violation = !error_code.contains(PageFaultErrorCode::USER_MODE)
+        && error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION)
+        && fault_address.as_u64() <= 0x0000_7fff_ffff_ffff;
+
+    if is_smap_violation {
+        panic!(
+            "SMAP violation: kernel accessed user-mapped page without stac/clac bracketing\n  \
+             Fault address:   {fault_address:#020x}\n  \
+             Instruction:     {:#020x}\n  \
+             Stack pointer:   {:#020x}\n  \
+             Caused by {} ({error_code:?})\n  \
+             Hint: wrap the access in smap::with_userspace_access() or use UserAccess methods",
+            stack_frame.instruction_pointer,
+            stack_frame.stack_pointer,
+            if error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) { "write" } else { "read" },
+        );
+    }
+
     panic!(
         "Page fault:\n  Fault address:   {fault_address:#020x}\n  Current address: {:#020x}\n  Stack pointer:   {:#020x}\n  Caused by {} while executing in {} mode ({error_code:?})",
         stack_frame.instruction_pointer,
