@@ -245,6 +245,14 @@ pub const SEEK_END: u32 = 2;
 pub const MAX_MESSAGE_SIZE: usize = 4096;
 ```
 
+## Per-process handle limit
+
+Each process may hold at most **4096** open handles. Any syscall that creates a
+handle (`OP_ENVIRONMENT_OPEN`, `OP_ENVIRONMENT_SPAWN`, `OP_ENVIRONMENT_OPENDIR`,
+`OP_BUFFER_ALLOC`, `OP_CHANNEL_CREATE`, `OP_MAILBOX_CREATE`) will return `-1` if
+the limit is reached. Closing handles via `OP_FILE_CLOSE` frees slots so new
+handles can be created again.
+
 ## Error codes
 
 Negative return values indicate errors. See `panda_abi::ErrorCode`:

@@ -46,6 +46,7 @@ USERSPACE_TESTS := \
 	ext2_write_test \
 	fault_recovery_test \
 	fmask_test \
+	handle_limit_test \
 	heap_test \
 	keyboard_test \
 	mailbox_keyboard_test \

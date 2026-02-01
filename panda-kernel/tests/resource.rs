@@ -26,6 +26,8 @@ panda_kernel::test_harness!(
     handle_table_insert_and_get,
     handle_table_remove,
     handle_table_offset_state,
+    handle_table_limit_enforced,
+    handle_table_insert_after_remove,
     buffer_free_list_no_merge,
     buffer_free_list_merge_with_next,
     buffer_free_list_merge_with_prev,
@@ -216,8 +218,8 @@ fn handle_table_insert_and_get() {
     let resource1 = create_test_directory();
     let resource2 = Arc::new(MockCharOutput::new()) as Arc<dyn Resource>;
 
-    let id1 = table.insert(resource1);
-    let id2 = table.insert(resource2);
+    let id1 = table.insert(resource1).expect("insert should succeed");
+    let id2 = table.insert(resource2).expect("insert should succeed");
 
     // IDs should be different
     assert_ne!(id1, id2);
@@ -235,7 +237,7 @@ fn handle_table_remove() {
     let mut table = HandleTable::new();
 
     let resource = create_test_directory();
-    let id = table.insert(resource);
+    let id = table.insert(resource).expect("insert should succeed");
 
     // Should exist
     assert!(table.get(id).is_some());
@@ -255,7 +257,7 @@ fn handle_table_offset_state() {
     let mut table = HandleTable::new();
 
     let resource = create_test_directory();
-    let id = table.insert(resource);
+    let id = table.insert(resource).expect("insert should succeed");
 
     // Initial offset should be 0
     assert_eq!(table.get(id).unwrap().offset(), 0);
@@ -267,6 +269,57 @@ fn handle_table_offset_state() {
     // Offset persists across get calls
     table.get_mut(id).unwrap().set_offset(100);
     assert_eq!(table.get(id).unwrap().offset(), 100);
+}
+
+fn handle_table_limit_enforced() {
+    use panda_kernel::handle::{HandleError, MAX_HANDLES_PER_PROCESS};
+
+    let mut table = HandleTable::new();
+
+    // Fill the table up to the limit
+    for _ in 0..MAX_HANDLES_PER_PROCESS {
+        let resource = create_test_directory();
+        table.insert(resource).expect("insert should succeed within limit");
+    }
+
+    // The next insert should fail with TooManyHandles
+    let resource = create_test_directory();
+    let result = table.insert(resource);
+    assert_eq!(
+        result.err(),
+        Some(HandleError::TooManyHandles),
+        "Should reject insert when handle limit reached"
+    );
+}
+
+fn handle_table_insert_after_remove() {
+    use panda_kernel::handle::MAX_HANDLES_PER_PROCESS;
+
+    let mut table = HandleTable::new();
+
+    // Fill the table up to the limit, tracking one ID to remove
+    let mut first_id = None;
+    for i in 0..MAX_HANDLES_PER_PROCESS {
+        let resource = create_test_directory();
+        let id = table.insert(resource).expect("insert should succeed");
+        if i == 0 {
+            first_id = Some(id);
+        }
+    }
+
+    // Should be at the limit
+    let resource = create_test_directory();
+    assert!(table.insert(resource).is_err());
+
+    // Remove one handle — should free a slot
+    table.remove(first_id.unwrap());
+
+    // Now insert should succeed again
+    let resource = create_test_directory();
+    assert!(
+        table.insert(resource).is_ok(),
+        "Should be able to insert after removing a handle"
+    );
 }
 
 // Helper to create a mock process for buffer tests

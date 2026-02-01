@@ -1,0 +1,4 @@
+Handle limit test: starting
+Handle limit test: hit limit as expected
+Handle limit test: created channel after freeing slots
+PASS
