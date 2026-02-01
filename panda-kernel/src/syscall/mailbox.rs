@@ -69,9 +69,23 @@ pub fn handle_wait(_ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> Sys
             };
             Poll::Ready(SyscallResult::write_back_struct(0, &event_result, dst))
         } else {
-            // No events, block until one arrives
+            // Register for wake-up, then re-check the queue to close the
+            // race window between the check above and the registration.
+            // Without this, an event arriving between wait() and
+            // set_waiting() would be missed, causing the process to block
+            // forever.
             mailbox.waker().set_waiting(scheduler::current_process_id());
-            Poll::Pending
+
+            if let Some((handle_id, events)) = mailbox.wait() {
+                let event_result = panda_abi::MailboxEventResult {
+                    handle_id,
+                    events,
+                    _pad: 0,
+                };
+                Poll::Ready(SyscallResult::write_back_struct(0, &event_result, dst))
+            } else {
+                Poll::Pending
+            }
         }
     }))
 }
