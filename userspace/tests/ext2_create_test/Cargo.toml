@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 libpanda = { path = "../../libpanda" }
+panda-abi = { path = "../../../panda-abi" }
