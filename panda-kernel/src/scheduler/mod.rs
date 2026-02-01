@@ -7,7 +7,7 @@ mod rtc;
 use core::cmp::Reverse;
 
 use alloc::collections::{BTreeMap, BinaryHeap};
-use log::{debug, info};
+use log::{debug, info, warn};
 use spinning_top::RwSpinlock;
 
 use core::task::{Context, Poll};
@@ -61,12 +61,17 @@ impl Scheduler {
         self.update_process(id);
     }
 
+    /// Update the state maps for a process. If the process no longer exists
+    /// (e.g., it was removed between scheduling decisions), this is a no-op.
     fn update_process(&mut self, pid: ProcessId) {
         let Some(process) = self.processes.get(&pid) else {
-            panic!("No process with PID {pid:?}");
+            warn!("update_process: no process with PID {pid:?}, skipping");
+            return;
         };
 
         let entity = SchedulableEntity::Process(pid);
+        let current_state = process.state();
+        let last_scheduled = process.last_scheduled();
 
         for state in [
             ProcessState::Runnable,
@@ -75,8 +80,8 @@ impl Scheduler {
         ] {
             let state_map = self.states.entry(state).or_default();
 
-            if process.state() == state {
-                state_map.push((Reverse(process.last_scheduled()), entity));
+            if current_state == state {
+                state_map.push((Reverse(last_scheduled), entity));
             } else {
                 // Remove this process from states it doesn't belong to
                 state_map.retain(|(_, other_entity)| *other_entity != entity);
@@ -86,8 +91,14 @@ impl Scheduler {
 
     /// Find the next runnable entity (process or kernel task) for execution.
     /// Returns the entity, updating RTC timestamps for fair scheduling.
+    ///
+    /// If a process entity is popped from the runnable queue but is no longer in
+    /// the process table (e.g., it was removed between scheduling decisions), it
+    /// is silently skipped and the next entity is tried. This avoids panicking
+    /// when a process exits concurrently with scheduling.
     pub fn prepare_next_runnable(&mut self) -> Option<SchedulableEntity> {
-        // ensure nothing is currently running
+        // Invariant: nothing should be in Running state when we pick the next
+        // entity. This is a genuine scheduler invariant (not user-influenced).
         assert!(
             self.states
                 .entry(ProcessState::Running)
@@ -95,52 +106,53 @@ impl Scheduler {
                 .is_empty()
         );
 
-        let (_, next_entity) = self
-            .states
-            .entry(ProcessState::Runnable)
-            .or_default()
-            .pop()?;
+        let runnable = self.states.entry(ProcessState::Runnable).or_default();
 
-        // Update RTC timestamp for fair scheduling
-        match next_entity {
-            SchedulableEntity::Process(pid) => {
-                let Some(process) = self.processes.get_mut(&pid) else {
-                    panic!("No process exists with PID {pid:?}");
-                };
-                process.reset_last_scheduled();
-                self.change_state(pid, ProcessState::Running);
+        // Loop to skip stale process entries whose PIDs have been removed.
+        while let Some((_, next_entity)) = runnable.pop() {
+            match next_entity {
+                SchedulableEntity::Process(pid) => {
+                    let Some(process) = self.processes.get_mut(&pid) else {
+                        warn!(
+                            "prepare_next_runnable: process {pid:?} no longer exists, skipping"
+                        );
+                        continue;
+                    };
+                    process.reset_last_scheduled();
+                    self.change_state(pid, ProcessState::Running);
+                }
+                SchedulableEntity::KernelTask(task_id) => {
+                    // Update kernel task RTC
+                    self.kernel_task_rtc.insert(task_id, RTC::now());
+                    // Move to running state
+                    self.remove_from_state(ProcessState::Runnable, next_entity);
+                    self.add_to_state(ProcessState::Running, next_entity, RTC::now());
+                }
             }
-            SchedulableEntity::KernelTask(task_id) => {
-                // Update kernel task RTC
-                self.kernel_task_rtc.insert(task_id, RTC::now());
-                // Move to running state
-                self.remove_from_state(ProcessState::Runnable, next_entity);
-                self.add_to_state(ProcessState::Running, next_entity, RTC::now());
-            }
+
+            self.current = next_entity;
+            return Some(next_entity);
         }
 
-        self.current = next_entity;
-        Some(next_entity)
+        None
     }
 
     /// Get execution parameters for a process entity.
-    /// Panics if the entity is not a process.
+    /// Returns `None` if the process no longer exists.
     #[allow(dead_code)]
     pub fn get_process_exec_params(
         &self,
         pid: ProcessId,
-    ) -> (
+    ) -> Option<(
         x86_64::VirtAddr,
         x86_64::VirtAddr,
         x86_64::PhysAddr,
         Option<SavedState>,
-    ) {
-        let Some(process) = self.processes.get(&pid) else {
-            panic!("No process exists with PID {pid:?}");
-        };
+    )> {
+        let process = self.processes.get(&pid)?;
         let (ip, sp, page_table, saved_state) = process.exec_params();
         let saved = saved_state.cloned();
-        (ip, sp, page_table, saved)
+        Some((ip, sp, page_table, saved))
     }
 
     /// Remove a process from the scheduler and drop it (releasing resources).
@@ -174,9 +186,13 @@ impl Scheduler {
         self.current_process
     }
 
-    fn change_state(&mut self, pid: ProcessId, state: ProcessState) {
+    /// Change a process's scheduling state. If the process no longer exists
+    /// (e.g., it was removed concurrently), this logs a warning and returns
+    /// `false` instead of panicking.
+    fn change_state(&mut self, pid: ProcessId, state: ProcessState) -> bool {
         let Some(process) = self.processes.get_mut(&pid) else {
-            panic!("No process exists with PID {pid:?}");
+            warn!("change_state: process {pid:?} no longer exists, ignoring state change");
+            return false;
         };
 
         let entity = SchedulableEntity::Process(pid);
@@ -186,6 +202,7 @@ impl Scheduler {
 
         self.remove_from_state(prior_state, entity);
         self.add_to_state(state, entity, last_scheduled);
+        true
     }
 
     fn remove_from_state(&mut self, state: ProcessState, entity: SchedulableEntity) {
@@ -326,6 +343,7 @@ pub(super) fn start_timer() {
 pub(super) fn start_timer_with_deadline() {
     let timer_duration = {
         let scheduler = SCHEDULER.read();
+        // Invariant: only called after scheduler is initialised during boot.
         let scheduler = scheduler.as_ref().expect("Scheduler not initialized");
 
         let now = crate::time::uptime_ms();
@@ -345,16 +363,36 @@ pub(super) fn start_timer_with_deadline() {
 
 pub fn add_process(process: Process) {
     let mut scheduler = SCHEDULER.write();
+    // Invariant: scheduler must be initialised before processes can be added.
     let scheduler = scheduler
         .as_mut()
         .expect("Scheduler has not been initialized");
     scheduler.add(process);
 }
 
+/// Execute the next runnable entity in an infinite scheduling loop.
+///
+/// This function never returns. It continuously picks the next runnable entity
+/// (process or kernel task) and dispatches it. For processes, it handles pending
+/// async syscalls, preemption state restoration, and fresh starts.
+///
+/// # Error handling
+///
+/// If a process is selected for execution but is no longer in the process table
+/// (e.g., it was removed between the scheduling decision and the lookup), the
+/// scheduler logs a warning and loops back to pick the next entity. This avoids
+/// kernel panics when processes exit concurrently with scheduling decisions.
+///
+/// Scheduler initialisation `expect()` calls within this function guard against
+/// use before `init()` — a genuine kernel invariant, not a user-influenced path.
+///
+/// # Safety
+/// This function does not return. It switches to userspace or loops indefinitely.
 pub unsafe fn exec_next_runnable() -> ! {
     loop {
         let (next_entity, has_processes) = {
             let mut scheduler = SCHEDULER.write();
+            // Invariant: scheduler must be initialised before entering the scheduling loop.
             let scheduler = scheduler
                 .as_mut()
                 .expect("Scheduler has not been initialized");
@@ -366,20 +404,28 @@ pub unsafe fn exec_next_runnable() -> ! {
 
         match next_entity {
             Some(SchedulableEntity::Process(pid)) => {
-                // Check if process has a pending async syscall that needs polling
+                // Check if process has a pending async syscall that needs polling.
                 // IMPORTANT: We must set current_process and drop the scheduler lock
                 // BEFORE polling, because the future may call with_current_process.
+                //
+                // If the process was removed between prepare_next_runnable and here,
+                // we skip it and loop back to pick another entity.
                 let pending_syscall = {
                     let mut scheduler = SCHEDULER.write();
-                    let scheduler = scheduler.as_mut().unwrap();
+                    // Invariant: scheduler is initialised (checked above in same loop iteration).
+                    let scheduler = scheduler
+                        .as_mut()
+                        .expect("Scheduler has not been initialized");
+                    let Some(process) = scheduler.processes.get_mut(&pid) else {
+                        warn!(
+                            "exec_next_runnable: process {pid:?} vanished before pending syscall check, skipping"
+                        );
+                        continue;
+                    };
                     // Set current_process so with_current_process works inside the future
                     scheduler.current_process = pid;
                     // Take the pending syscall out so we can poll without holding the lock
-                    scheduler
-                        .processes
-                        .get_mut(&pid)
-                        .unwrap()
-                        .take_pending_syscall()
+                    process.take_pending_syscall()
                 };
                 // Lock is now dropped
 
@@ -392,10 +438,20 @@ pub unsafe fn exec_next_runnable() -> ! {
                     let result = pending.future.lock().as_mut().poll(&mut cx);
 
                     if result.is_pending() {
-                        // Future not ready — put the pending syscall back
+                        // Future not ready — put the pending syscall back if the
+                        // process still exists; otherwise discard it (process is gone).
                         let mut scheduler = SCHEDULER.write();
-                        let process = scheduler.as_mut().unwrap().processes.get_mut(&pid).unwrap();
-                        process.set_pending_syscall(pending);
+                        // Invariant: scheduler is initialised.
+                        let scheduler = scheduler
+                            .as_mut()
+                            .expect("Scheduler has not been initialized");
+                        if let Some(process) = scheduler.processes.get_mut(&pid) {
+                            process.set_pending_syscall(pending);
+                        } else {
+                            warn!(
+                                "exec_next_runnable: process {pid:?} removed while polling async syscall, discarding pending future"
+                            );
+                        }
                         Some((Poll::Pending, None))
                     } else {
                         // Future completed — keep callee_saved for the return path
@@ -411,13 +467,27 @@ pub unsafe fn exec_next_runnable() -> ! {
                         // Use return_from_deferred_syscall to restore the callee-saved
                         // registers (rbx/rbp/r12-r15) that were captured when the
                         // syscall went Pending, then sysretq with the result in rax.
-                        let (ip, sp, page_table) = {
+                        let exec_params = {
                             let mut scheduler = SCHEDULER.write();
-                            let scheduler = scheduler.as_mut().unwrap();
-                            let process = scheduler.processes.get_mut(&pid).unwrap();
-                            scheduler.current_process = pid;
-                            let (ip, sp, page_table, _) = process.exec_params();
-                            (ip, sp, page_table)
+                            // Invariant: scheduler is initialised.
+                            let scheduler = scheduler
+                                .as_mut()
+                                .expect("Scheduler has not been initialized");
+                            if let Some(process) = scheduler.processes.get_mut(&pid) {
+                                scheduler.current_process = pid;
+                                let (ip, sp, pt, _) = process.exec_params();
+                                Some((ip, sp, pt))
+                            } else {
+                                warn!(
+                                    "exec_next_runnable: process {pid:?} removed before async syscall return, discarding result"
+                                );
+                                None
+                            }
+                        };
+
+                        let Some((ip, sp, page_table)) = exec_params else {
+                            // Process gone — loop back to pick another entity
+                            continue;
                         };
 
                         // Switch page table before copy-out (needed for writeback)
@@ -445,27 +515,47 @@ pub unsafe fn exec_next_runnable() -> ! {
                         }
                     }
                     Some((Poll::Pending, _)) | Some((Poll::Ready(_), None)) => {
-                        // Future not ready - put process back to blocked state
+                        // Future not ready or process gone — block process if it still exists
                         {
                             let mut scheduler = SCHEDULER.write();
-                            let scheduler = scheduler.as_mut().unwrap();
+                            // Invariant: scheduler is initialised.
+                            let scheduler = scheduler
+                                .as_mut()
+                                .expect("Scheduler has not been initialized");
+                            // change_state handles missing PIDs gracefully (returns false)
                             scheduler.change_state(pid, ProcessState::Blocked);
                         }
                         // Loop back to pick another entity
                         continue;
                     }
                     None => {
-                        // No pending syscall - normal execution path
-                        // Get process execution parameters and yield callee-saved regs
-                        let (ip, sp, page_table, saved_state, yield_callee_saved) = {
+                        // No pending syscall - normal execution path.
+                        // Get process execution parameters and yield callee-saved regs.
+                        // If the process was removed, skip it.
+                        let exec_params = {
                             let mut scheduler = SCHEDULER.write();
-                            let scheduler = scheduler.as_mut().unwrap();
-                            scheduler.current_process = pid;
-                            let process = scheduler.processes.get_mut(&pid).unwrap();
-                            let saved_state = process.take_saved_state();
-                            let yield_cs = process.take_yield_callee_saved();
-                            let (ip, sp, pt, _) = process.exec_params();
-                            (ip, sp, pt, saved_state, yield_cs)
+                            // Invariant: scheduler is initialised.
+                            let scheduler = scheduler
+                                .as_mut()
+                                .expect("Scheduler has not been initialized");
+                            if let Some(process) = scheduler.processes.get_mut(&pid) {
+                                scheduler.current_process = pid;
+                                let saved_state = process.take_saved_state();
+                                let yield_cs = process.take_yield_callee_saved();
+                                let (ip, sp, pt, _) = process.exec_params();
+                                Some((ip, sp, pt, saved_state, yield_cs))
+                            } else {
+                                warn!(
+                                    "exec_next_runnable: process {pid:?} removed before dispatch, skipping"
+                                );
+                                None
+                            }
+                        };
+
+                        let Some((ip, sp, page_table, saved_state, yield_callee_saved)) =
+                            exec_params
+                        else {
+                            continue;
                         };
 
                         debug!("exec_next_runnable: jumping to userspace (pid={:?})", pid);
@@ -493,7 +583,10 @@ pub unsafe fn exec_next_runnable() -> ! {
 
                 // Update scheduler based on poll result
                 let mut scheduler = SCHEDULER.write();
-                let scheduler = scheduler.as_mut().unwrap();
+                // Invariant: scheduler is initialised (checked at top of loop).
+                let scheduler = scheduler
+                    .as_mut()
+                    .expect("Scheduler has not been initialized");
 
                 match result {
                     executor::PollResult::Completed => {
@@ -538,6 +631,7 @@ pub unsafe fn exec_next_runnable() -> ! {
 pub fn remove_process(pid: ProcessId) {
     let process = {
         let mut scheduler = SCHEDULER.write();
+        // Invariant: scheduler must be initialised before processes can be removed.
         let scheduler = scheduler
             .as_mut()
             .expect("Scheduler has not been initialized");
@@ -550,6 +644,7 @@ pub fn remove_process(pid: ProcessId) {
 /// Get the currently running process ID.
 pub fn current_process_id() -> ProcessId {
     let scheduler = SCHEDULER.read();
+    // Invariant: scheduler must be initialised before querying process ID.
     let scheduler = scheduler
         .as_ref()
         .expect("Scheduler has not been initialized");
@@ -557,6 +652,15 @@ pub fn current_process_id() -> ProcessId {
 }
 
 /// Execute a closure with mutable access to the current process.
+///
+/// # Error handling
+///
+/// The `expect()` on the scheduler is a boot invariant — this function is only
+/// called after the scheduler is initialised. The `expect()` on the current
+/// process lookup is also a kernel invariant: `current_process` is always set
+/// to a valid PID before any code path that calls `with_current_process`. If
+/// the current process were missing, it would indicate a serious internal bug
+/// (not a user-influenced race).
 pub fn with_current_process<F, R>(f: F) -> R
 where
     F: FnOnce(&mut Process) -> R,
@@ -567,10 +671,13 @@ where
 
     let result = {
         let mut scheduler = SCHEDULER.write();
+        // Invariant: scheduler must be initialised before calling with_current_process.
         let scheduler = scheduler
             .as_mut()
             .expect("Scheduler has not been initialized");
         let pid = scheduler.current_process_id();
+        // Invariant: current_process is always set to a valid PID in exec_next_runnable
+        // before dispatching to any code that calls with_current_process.
         let process = scheduler
             .processes
             .get_mut(&pid)
@@ -590,6 +697,13 @@ where
 ///
 /// This is the common implementation for yield_current and block_current_on.
 ///
+/// # Error handling
+///
+/// The `expect()` on the current process lookup is a kernel invariant:
+/// `suspend_current` is only called from an actively running process's syscall
+/// path, so the process must still be in the table. If it were missing, it
+/// would indicate a serious internal bug.
+///
 /// # Safety
 /// This function does not return to the caller. It switches to a different process.
 unsafe fn suspend_current(
@@ -598,11 +712,15 @@ unsafe fn suspend_current(
 ) -> ! {
     {
         let mut scheduler = SCHEDULER.write();
+        // Invariant: scheduler must be initialised before suspending processes.
         let scheduler = scheduler
             .as_mut()
             .expect("Scheduler has not been initialized");
 
         let pid = scheduler.current_process_id();
+        // Invariant: current process is always valid when called from an active
+        // syscall path (yield or block). The process cannot have been removed
+        // because it is currently executing.
         let process = scheduler
             .processes
             .get_mut(&pid)
@@ -644,8 +762,12 @@ pub unsafe fn yield_current(
 
 /// Wake a blocked process, making it runnable again.
 /// Called by wakers when data becomes available.
+///
+/// If the process no longer exists (e.g., it was removed while a waker was
+/// in flight), this is a no-op. This is expected behaviour and not an error.
 pub fn wake_process(pid: ProcessId) {
     let mut scheduler = SCHEDULER.write();
+    // Invariant: scheduler must be initialised before waking processes.
     let scheduler = scheduler
         .as_mut()
         .expect("Scheduler has not been initialized");

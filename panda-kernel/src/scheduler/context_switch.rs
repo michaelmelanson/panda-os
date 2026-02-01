@@ -111,7 +111,10 @@ pub(crate) extern "sysv64" fn timer_interrupt_handler(
     let should_switch = {
         // Try to acquire read lock - if we can't, don't switch
         if let Some(scheduler) = SCHEDULER.try_read() {
-            let scheduler = scheduler.as_ref().unwrap();
+            // If scheduler is not initialised yet (early boot), don't switch.
+            let Some(scheduler) = scheduler.as_ref() else {
+                return;
+            };
             // Switch if:
             // 1. Deadline tasks were woken, OR
             // 2. There are other runnable entities
@@ -146,16 +149,26 @@ pub(crate) extern "sysv64" fn timer_interrupt_handler(
 
 /// Preempt the current process: save its state and switch to the next runnable.
 ///
+/// # Error handling
+///
+/// The `expect()` on the current process lookup is a kernel invariant: we only
+/// reach this function when a timer interrupt fires during userspace execution,
+/// so the current process must still be in the table. If it were missing, it
+/// would indicate a serious internal bug (not a user-influenced race).
+///
 /// # Safety
 /// This function does not return. It switches to a different process.
 unsafe fn preempt_current(state: SavedState) -> ! {
     {
         let mut scheduler = SCHEDULER.write();
+        // Invariant: scheduler must be initialised before preemption can occur.
         let scheduler = scheduler
             .as_mut()
             .expect("Scheduler has not been initialized");
 
         let pid = scheduler.current_process_id();
+        // Invariant: current process is always valid during preemption — we
+        // interrupted it while it was running in userspace.
         let process = scheduler
             .processes
             .get_mut(&pid)
