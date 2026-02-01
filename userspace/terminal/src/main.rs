@@ -11,6 +11,7 @@ mod render;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+use ring_buffer::RingBuffer;
 use fontdue::{Font, FontSettings};
 use libpanda::{
     buffer::Buffer,
@@ -55,6 +56,10 @@ const LINE_HEIGHT: u32 = 20; // Font size + spacing
 /// Maximum number of lines kept in the scrollback buffer.
 /// At ~100 bytes per line this is roughly 100 KB.
 const MAX_SCROLLBACK_LINES: usize = 1000;
+
+/// Pre-allocated capacity for segment text strings, covering the
+/// vast majority of terminal lines without reallocation.
+const SEGMENT_TEXT_CAPACITY: usize = 80;
 
 /// A styled text segment within a line.
 #[derive(Clone)]
@@ -117,9 +122,9 @@ pub struct Terminal {
     dirty: Option<DirtyRect>,
     /// Glyph cache: avoids re-rasterizing the same character repeatedly
     glyph_cache: BTreeMap<char, (fontdue::Metrics, Vec<u8>)>,
-    /// Scrollback buffer of display lines.
-    /// New lines are pushed to the end; old lines beyond `MAX_SCROLLBACK_LINES` are dropped.
-    display_lines: Vec<Line>,
+    /// Scrollback buffer of display lines stored in a fixed-capacity ring buffer.
+    /// When full, the oldest line's allocations are recycled instead of dropped.
+    display_lines: RingBuffer<Line>,
 }
 
 impl Terminal {
@@ -138,7 +143,7 @@ impl Terminal {
         let fb_size = (width * height * 4) as usize;
         let framebuffer = Buffer::alloc(fb_size).expect("Failed to allocate terminal framebuffer");
 
-        let mut display_lines = Vec::new();
+        let mut display_lines = RingBuffer::new(MAX_SCROLLBACK_LINES);
         display_lines.push(Line { segments: Vec::new() });
 
         Self {
@@ -182,6 +187,7 @@ impl Terminal {
     pub fn clear(&mut self) {
         self.display_lines.clear();
         self.display_lines.push(Line { segments: Vec::new() });
+
         self.fb_fill(0, 0, self.width, self.height, COLOUR_BACKGROUND);
         self.flush();
         self.cursor_x = MARGIN;
@@ -375,14 +381,22 @@ impl Terminal {
     /// from the buffer so that existing content scrolls up instead of being
     /// cleared.
     pub fn newline(&mut self) {
-        // Start a new logical line in the buffer
-        self.display_lines.push(Line { segments: Vec::new() });
-
-        // Trim scrollback to the configured maximum
-        if self.display_lines.len() > MAX_SCROLLBACK_LINES {
-            let excess = self.display_lines.len() - MAX_SCROLLBACK_LINES;
-            self.display_lines.drain(..excess);
-        }
+        // Start a new logical line in the buffer, recycling the oldest
+        // line's allocations when the ring buffer is full.
+        self.display_lines.push_or_recycle(|slot| {
+            match slot {
+                Some(line) => {
+                    // Recycle: clear segment strings (keeps String allocations)
+                    // then truncate the segments vec (keeps Vec allocation).
+                    for seg in line.segments.iter_mut() {
+                        seg.text.clear();
+                    }
+                    line.segments.clear();
+                    None // recycled in-place
+                }
+                None => Some(Line { segments: Vec::new() }),
+            }
+        });
 
         self.cursor_x = MARGIN;
         self.cursor_y += LINE_HEIGHT;
@@ -431,7 +445,8 @@ impl Terminal {
         let mut budget = max_physical_rows;
 
         for i in (0..total).rev() {
-            let rows = self.physical_rows_for_line(&self.display_lines[i]);
+            let line = self.display_lines.get(i).unwrap();
+            let rows = self.physical_rows_for_line(line);
             if rows > budget {
                 break;
             }
@@ -439,29 +454,42 @@ impl Terminal {
             start = i;
         }
 
-        let lines_to_render: Vec<Line> = self.display_lines[start..].to_vec();
+        let render_count = total - start;
+
+        // Collect the chars and colours we need to render into a flat buffer
+        // to avoid holding a borrow on display_lines while mutating self.
+        // This is much cheaper than cloning all the String/Vec allocations.
+        let mut render_data: Vec<Vec<(char, u32)>> = Vec::with_capacity(render_count);
+        for i in start..total {
+            let line = self.display_lines.get(i).unwrap();
+            let mut line_chars: Vec<(char, u32)> = Vec::new();
+            for segment in &line.segments {
+                for ch in segment.text.chars() {
+                    line_chars.push((ch, segment.colour));
+                }
+            }
+            render_data.push(line_chars);
+        }
 
         // Clear the entire framebuffer
         self.fb_fill(0, 0, self.width, self.height, COLOUR_BACKGROUND);
 
-        // Re-draw each line from the buffer
+        // Re-draw each line from the collected data
         let max_x = self.width - MARGIN;
         let mut y = MARGIN;
 
-        for line in &lines_to_render {
+        for line_chars in &render_data {
             self.cursor_x = MARGIN;
             self.cursor_y = y;
 
-            for segment in &line.segments {
-                for ch in segment.text.chars() {
-                    let char_width = self.measure_char(ch);
-                    if self.cursor_x + char_width > max_x {
-                        // Soft-wrap: advance to next pixel row
-                        self.cursor_x = MARGIN;
-                        self.cursor_y += LINE_HEIGHT;
-                    }
-                    let _ = self.draw_char_coloured(ch, segment.colour, None);
+            for &(ch, colour) in line_chars {
+                let char_width = self.measure_char(ch);
+                if self.cursor_x + char_width > max_x {
+                    // Soft-wrap: advance to next pixel row
+                    self.cursor_x = MARGIN;
+                    self.cursor_y += LINE_HEIGHT;
                 }
+                let _ = self.draw_char_coloured(ch, colour, None);
             }
 
             // Advance y for the next line
@@ -475,17 +503,14 @@ impl Terminal {
         self.cursor_x = MARGIN;
 
         // Account for the content already on the last line
-        if let Some(last_line) = lines_to_render.last() {
-            // Re-measure the last line's content to position cursor_x correctly
+        if let Some(last_line_chars) = render_data.last() {
             let mut cx = MARGIN;
-            for segment in &last_line.segments {
-                for ch in segment.text.chars() {
-                    let char_width = self.measure_char(ch);
-                    if cx + char_width > max_x {
-                        cx = MARGIN;
-                    }
-                    cx += char_width;
+            for &(ch, _colour) in last_line_chars {
+                let char_width = self.measure_char(ch);
+                if cx + char_width > max_x {
+                    cx = MARGIN;
                 }
+                cx += char_width;
             }
             self.cursor_x = cx;
         }
@@ -568,7 +593,7 @@ impl Terminal {
                     return;
                 }
             }
-            let mut s = String::new();
+            let mut s = String::with_capacity(SEGMENT_TEXT_CAPACITY);
             s.push(ch);
             line.segments.push(Segment { text: s, colour });
         }

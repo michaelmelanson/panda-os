@@ -7,3 +7,4 @@ edition = "2021"
 libpanda = { path = "../libpanda" }
 panda-abi = { path = "../../panda-abi" }
 fontdue = { path = "../../vendor/fontdue", default-features = false, features = ["hashbrown"] }
+ring-buffer = { workspace = true }
