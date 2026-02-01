@@ -124,12 +124,24 @@ impl Mapping {
         let mut remaining = data;
         let mut current_offset = offset;
 
-        while !remaining.is_empty() {
-            let frame_idx = current_offset / 4096;
-            let offset_in_frame = current_offset % 4096;
-            let bytes_in_frame = (4096 - offset_in_frame).min(remaining.len());
+        // Find the starting frame by walking frame sizes (supports mixed 4KB/2MB frames)
+        let mut frame_idx = 0;
+        let mut frame_base_offset: usize = 0;
+        while frame_idx < frames.len() {
+            let frame_size = frames[frame_idx].size() as usize;
+            if frame_base_offset + frame_size > current_offset {
+                break;
+            }
+            frame_base_offset += frame_size;
+            frame_idx += 1;
+        }
 
+        while !remaining.is_empty() && frame_idx < frames.len() {
             let frame = &frames[frame_idx];
+            let frame_size = frame.size() as usize;
+            let offset_in_frame = current_offset - frame_base_offset;
+            let bytes_in_frame = (frame_size - offset_in_frame).min(remaining.len());
+
             // Use the frame's heap address directly instead of physical window
             let frame_virt = frame.virtual_address();
             let dst = unsafe { frame_virt.as_mut_ptr::<u8>().add(offset_in_frame) };
@@ -140,6 +152,8 @@ impl Mapping {
 
             remaining = &remaining[bytes_in_frame..];
             current_offset += bytes_in_frame;
+            frame_base_offset += frame_size;
+            frame_idx += 1;
         }
     }
 }
