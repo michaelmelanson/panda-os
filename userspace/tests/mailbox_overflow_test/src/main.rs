@@ -52,7 +52,7 @@ libpanda::main! {
                 Event::Channel(ChannelEvent::Readable) => {
                     // Drain all available messages from the channel.
                     let mut buf = [0u8; 64];
-                    while let Ok(len) = channel.try_recv(&mut buf) {
+                    while let Ok(Some(len)) = channel.try_recv(&mut buf) {
                         if len > 0 {
                             messages_received += 1;
                         }
@@ -61,7 +61,7 @@ libpanda::main! {
                 Event::Channel(ChannelEvent::Closed) => {
                     // Drain any remaining messages after close.
                     let mut buf = [0u8; 64];
-                    while let Ok(len) = channel.try_recv(&mut buf) {
+                    while let Ok(Some(len)) = channel.try_recv(&mut buf) {
                         if len > 0 {
                             messages_received += 1;
                         }
