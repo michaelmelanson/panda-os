@@ -77,7 +77,7 @@ impl OomHandler for BrkGrower {
             brk_grow(&mut talc.oom_handler.current_brk, min_size).ok_or(())?
         };
 
-        let new_memory = unsafe { Span::from_base_size(start as *mut u8, end - start) };
+        let new_memory = Span::from_base_size(start as *mut u8, end - start);
 
         let old_arena = talc.oom_handler.arena;
         if old_arena.is_empty() {
@@ -85,9 +85,11 @@ impl OomHandler for BrkGrower {
             let arena = unsafe { talc.claim(new_memory).map_err(|_| ())? };
             talc.oom_handler.arena = arena;
         } else {
-            // Extend the existing heap region. Since we always grow
-            // contiguously from current_brk, this extends the arena.
-            let arena = unsafe { talc.extend(old_arena, new_memory) };
+            // Extend the existing heap region. The extend() API requires
+            // that req_heap contains old_heap, so we combine the old arena
+            // with the new memory into one contiguous span.
+            let combined = old_arena.extend(new_memory);
+            let arena = unsafe { talc.extend(old_arena, combined) };
             talc.oom_handler.arena = arena;
         }
 
