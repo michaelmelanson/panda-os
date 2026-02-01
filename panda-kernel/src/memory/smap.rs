@@ -37,7 +37,7 @@ fn cpu_supports_smap() -> bool {
             "mov eax, 7",
             "xor ecx, ecx",
             "cpuid",
-            "mov {out}, ebx",
+            "mov {out:e}, ebx",
             "pop rbx",
             out = out(reg) result,
             out("eax") _,
@@ -81,7 +81,7 @@ pub fn is_enabled() -> bool {
 /// [`UserspaceAccessGuard`] or [`with_userspace_access`] instead.
 #[inline(always)]
 pub unsafe fn stac() {
-    core::arch::asm!("stac", options(nomem, nostack));
+    unsafe { core::arch::asm!("stac", options(nomem, nostack)); }
 }
 
 /// Re-enable SMAP (disallow kernel access to userspace pages).
@@ -90,7 +90,7 @@ pub unsafe fn stac() {
 /// Must be called after a preceding [`stac`] call.
 #[inline(always)]
 pub unsafe fn clac() {
-    core::arch::asm!("clac", options(nomem, nostack));
+    unsafe { core::arch::asm!("clac", options(nomem, nostack)); }
 }
 
 /// RAII guard that enables kernel access to user pages.

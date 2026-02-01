@@ -157,11 +157,13 @@ impl UserAccess {
     }
 
     /// Read a `Copy` struct from userspace (untyped address).
+    #[allow(dead_code)]
     pub fn read_struct<T: Copy>(&self, addr: usize) -> Result<T, SyscallError> {
         self.read_user(UserPtr::new(addr))
     }
 
     /// Write a `Copy` struct to userspace (untyped address).
+    #[allow(dead_code)]
     pub fn write_struct<T: Copy>(&self, addr: usize, value: &T) -> Result<(), SyscallError> {
         self.write_user(UserPtr::new(addr), value)
     }
@@ -184,6 +186,7 @@ pub enum SyscallError {
     /// A userspace pointer was outside the valid address range.
     BadUserPointer,
     /// The handle ID was invalid or of the wrong type.
+    #[allow(dead_code)]
     InvalidHandle,
 }
 

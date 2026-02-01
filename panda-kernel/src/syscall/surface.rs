@@ -4,7 +4,7 @@
 
 use alloc::boxed::Box;
 
-use crate::resource::{Buffer, BufferExt};
+use crate::resource::BufferExt;
 use crate::scheduler;
 
 use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr};
