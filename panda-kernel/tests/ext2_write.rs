@@ -1,7 +1,7 @@
 //! Tests for ext2 write primitives and bitmap operations.
 //!
 //! These tests verify:
-//! - Inode, Superblock, and BlockGroupDescriptor serialization round-trips
+//! - Inode, Superblock, and BlockGroupDescriptor serialisation round-trips
 //! - Bitmap bit manipulation correctness
 //! - Free count consistency after simulated alloc/free cycles
 
@@ -15,7 +15,7 @@ use panda_kernel::vfs::ext2::{
 };
 
 panda_kernel::test_harness!(
-    // Inode serialization round-trip tests
+    // Inode serialisation round-trip tests
     inode_to_bytes_round_trip,
     inode_to_bytes_preserves_mode,
     inode_to_bytes_preserves_size,
@@ -23,13 +23,13 @@ panda_kernel::test_harness!(
     inode_to_bytes_preserves_timestamps,
     inode_to_bytes_preserves_links_and_flags,
     inode_to_bytes_zeroed,
-    // Superblock serialization round-trip tests
+    // Superblock serialisation round-trip tests
     superblock_to_bytes_round_trip,
     superblock_to_bytes_preserves_magic,
     superblock_to_bytes_preserves_free_counts,
     superblock_to_bytes_preserves_geometry,
     superblock_to_bytes_preserves_features,
-    // BlockGroupDescriptor serialization round-trip tests
+    // BlockGroupDescriptor serialisation round-trip tests
     bgd_to_bytes_round_trip,
     bgd_to_bytes_preserves_bitmap_locations,
     bgd_to_bytes_preserves_free_counts,
@@ -50,7 +50,7 @@ panda_kernel::test_harness!(
     inode_struct_size_is_128,
     superblock_struct_size_is_1024,
     bgd_struct_size_is_32,
-    // Serialization consistency
+    // Serialisation consistency
     inode_file_type_preserved,
     inode_dir_type_preserved,
     inode_symlink_type_preserved,
@@ -88,17 +88,17 @@ fn make_bgd() -> BlockGroupDescriptor {
     unsafe { core::mem::zeroed() }
 }
 
-/// Deserialize an Inode from bytes (inverse of to_bytes).
+/// Deserialise an Inode from bytes (inverse of to_bytes).
 fn inode_from_bytes(bytes: &[u8; 128]) -> Inode {
     unsafe { core::ptr::read(bytes.as_ptr() as *const Inode) }
 }
 
-/// Deserialize a Superblock from bytes (inverse of to_bytes).
+/// Deserialise a Superblock from bytes (inverse of to_bytes).
 fn superblock_from_bytes(bytes: &[u8; 1024]) -> Superblock {
     unsafe { core::ptr::read(bytes.as_ptr() as *const Superblock) }
 }
 
-/// Deserialize a BlockGroupDescriptor from bytes (inverse of to_bytes).
+/// Deserialise a BlockGroupDescriptor from bytes (inverse of to_bytes).
 fn bgd_from_bytes(bytes: &[u8; 32]) -> BlockGroupDescriptor {
     unsafe { core::ptr::read(bytes.as_ptr() as *const BlockGroupDescriptor) }
 }
@@ -139,7 +139,7 @@ fn clear_bit(bitmap: &mut [u8], index: usize) {
 }
 
 // =============================================================================
-// Inode serialization round-trip tests
+// Inode serialisation round-trip tests
 // =============================================================================
 
 fn inode_to_bytes_round_trip() {
@@ -248,7 +248,7 @@ fn inode_to_bytes_zeroed() {
 }
 
 // =============================================================================
-// Superblock serialization round-trip tests
+// Superblock serialisation round-trip tests
 // =============================================================================
 
 fn superblock_to_bytes_round_trip() {
@@ -313,7 +313,7 @@ fn superblock_to_bytes_preserves_features() {
 }
 
 // =============================================================================
-// BlockGroupDescriptor serialization round-trip tests
+// BlockGroupDescriptor serialisation round-trip tests
 // =============================================================================
 
 fn bgd_to_bytes_round_trip() {
@@ -499,7 +499,7 @@ fn bgd_struct_size_is_32() {
 }
 
 // =============================================================================
-// Serialization consistency with type helpers
+// Serialisation consistency with type helpers
 // =============================================================================
 
 fn inode_file_type_preserved() {
@@ -550,7 +550,7 @@ fn free_count_decrement_consistency() {
     assert_eq!(bgd.free_blocks_count, 99);
     assert_eq!(sb.free_blocks_count, 999);
 
-    // Verify these survive serialization
+    // Verify these survive serialisation
     let sb_bytes = sb.to_bytes();
     let bgd_bytes = bgd.to_bytes();
     let sb_restored = superblock_from_bytes(&sb_bytes);
@@ -629,7 +629,7 @@ fn free_count_alloc_free_cycle() {
     assert_eq!(bgd.free_blocks_count, original_bgd_free_blocks);
     assert_eq!(bgd.free_inodes_count, original_bgd_free_inodes);
 
-    // Verify serialization preserves the restored counts
+    // Verify serialisation preserves the restored counts
     let sb_bytes = sb.to_bytes();
     let bgd_bytes = bgd.to_bytes();
     let sb_restored = superblock_from_bytes(&sb_bytes);

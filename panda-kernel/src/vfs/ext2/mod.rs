@@ -19,6 +19,7 @@ use alloc::vec::Vec;
 use async_trait::async_trait;
 use spinning_top::RwSpinlock;
 
+use crate::executor::async_mutex::AsyncMutex;
 use crate::resource::BlockDevice;
 use crate::vfs::{DirEntry, File, FileStat, Filesystem, FsError};
 
@@ -119,6 +120,12 @@ pub struct Ext2Fs {
     inodes_per_group: u32,
     /// Mutable filesystem state protected by a read-write spinlock.
     mutable: RwSpinlock<Ext2FsMutable>,
+    /// Async mutex serialising bitmap allocation/deallocation operations.
+    ///
+    /// This prevents TOCTOU races in the bitmap read-modify-write cycle
+    /// that spans multiple `.await` points. The `()` payload is unused;
+    /// the mutex exists solely for its exclusion property.
+    alloc_lock: AsyncMutex<()>,
 }
 
 impl Ext2Fs {
@@ -193,6 +200,7 @@ impl Ext2Fs {
                 superblock: sb,
                 block_groups,
             }),
+            alloc_lock: AsyncMutex::new(()),
         }))
     }
 
