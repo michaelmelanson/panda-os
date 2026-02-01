@@ -1187,6 +1187,12 @@ pub struct BlitParams {
     pub width: u32,
     pub height: u32,
     pub buffer_handle: u64,
+    /// Source x offset within the buffer (default 0).
+    pub src_x: u32,
+    /// Source y offset within the buffer (default 0).
+    pub src_y: u32,
+    /// Source buffer width in pixels. When 0, defaults to `width`.
+    pub src_stride: u32,
 }
 
 /// Parameters for fill operation.

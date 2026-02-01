@@ -124,6 +124,9 @@ impl Surface {
             width: buffer.width(),
             height: buffer.height(),
             buffer_handle: buffer.handle().as_raw(),
+            src_x: 0,
+            src_y: 0,
+            src_stride: 0,
         };
         let result = sys::surface::blit(self.handle, &params);
         if result < 0 {
