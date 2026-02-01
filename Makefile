@@ -156,6 +156,9 @@ unit-test:
 	@echo "Running panda-abi unit tests..."
 	@cargo test -p panda-abi --features std
 	@echo ""
+	@echo "Running ring-buffer unit tests..."
+	@cargo test -p ring-buffer
+	@echo ""
 	@echo "Running libpanda doctests..."
 	@cargo test -p libpanda --doc --no-default-features
 	@echo ""
