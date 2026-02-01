@@ -54,7 +54,12 @@ impl Logger {
 }
 
 impl log::Log for Logger {
-    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        // Suppress ERROR from tar-no-std: it logs at ERROR when it hits the
+        // end-of-archive zero blocks, which is normal TAR behaviour.
+        if metadata.target().starts_with("tar_no_std") && metadata.level() == log::Level::Error {
+            return false;
+        }
         true
     }
 
