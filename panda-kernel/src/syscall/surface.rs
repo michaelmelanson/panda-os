@@ -18,6 +18,28 @@ fn checked_pixel_buffer_size(width: u32, height: u32) -> Option<usize> {
         .map(|v| v as usize)
 }
 
+/// Check if all pixels in a rectangular region have alpha == 255.
+/// Bails early on the first non-opaque pixel, so the cost for mixed-alpha
+/// surfaces is negligible.
+fn is_region_opaque(
+    data: &[u8],
+    src_x: u32,
+    src_y: u32,
+    width: u32,
+    height: u32,
+    stride: u32,
+) -> bool {
+    for row in 0..height {
+        let row_start = ((src_y + row) * stride + src_x) as usize * 4;
+        for col in 0..width as usize {
+            if data.get(row_start + col * 4 + 3).copied() != Some(255) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Handle OP_SURFACE_INFO syscall.
 ///
 /// Gets surface dimensions and pixel format.
@@ -163,40 +185,61 @@ pub fn handle_blit(
                     return -1;
                 }
 
-                // Blit with alpha blending (operates on kernel-owned src_data)
-                for row in 0..params.height {
-                    for col in 0..params.width {
-                        let src_offset =
-                            (((params.src_y + row) * src_stride + params.src_x + col) * 4) as usize;
-                        let dst_offset =
-                            (((params.y + row) * window_width + params.x + col) * 4) as usize;
+                // Choose fast path (row memcpy) or slow path (per-pixel alpha blend).
+                // The opaque scan bails early on the first non-255 alpha byte,
+                // so mixed-alpha surfaces pay almost nothing for the check.
+                if is_region_opaque(&src_data, params.src_x, params.src_y, params.width, params.height, src_stride) {
+                    // Fast path: copy entire rows at once (one memcpy per scanline)
+                    let row_bytes = params.width as usize * 4;
+                    for row in 0..params.height {
+                        let src_row_start =
+                            ((params.src_y + row) * src_stride + params.src_x) as usize * 4;
+                        let dst_row_start =
+                            ((params.y + row) * window_width + params.x) as usize * 4;
 
-                        if dst_offset + 4 > window.pixel_data.len() {
+                        if dst_row_start + row_bytes > window.pixel_data.len() {
                             return -1;
                         }
 
-                        let src_a = src_data[src_offset + 3] as u16;
+                        window.pixel_data[dst_row_start..dst_row_start + row_bytes]
+                            .copy_from_slice(&src_data[src_row_start..src_row_start + row_bytes]);
+                    }
+                } else {
+                    // Slow path: per-pixel alpha blending
+                    for row in 0..params.height {
+                        for col in 0..params.width {
+                            let src_offset =
+                                (((params.src_y + row) * src_stride + params.src_x + col) * 4) as usize;
+                            let dst_offset =
+                                (((params.y + row) * window_width + params.x + col) * 4) as usize;
 
-                        if src_a == 0 {
-                            // Fully transparent - skip
-                            continue;
-                        } else if src_a == 255 {
-                            // Fully opaque - direct copy
-                            window.pixel_data[dst_offset..dst_offset + 4]
-                                .copy_from_slice(&src_data[src_offset..src_offset + 4]);
-                        } else {
-                            // Alpha blend: out = src * alpha + dst * (1 - alpha)
-                            let inv_a = 255 - src_a;
-                            for i in 0..3 {
-                                let src_c = src_data[src_offset + i] as u16;
-                                let dst_c = window.pixel_data[dst_offset + i] as u16;
-                                window.pixel_data[dst_offset + i] =
-                                    ((src_c * src_a + dst_c * inv_a) / 255) as u8;
+                            if dst_offset + 4 > window.pixel_data.len() {
+                                return -1;
                             }
-                            // Output alpha: src_a + dst_a * (1 - src_a)
-                            let dst_a = window.pixel_data[dst_offset + 3] as u16;
-                            window.pixel_data[dst_offset + 3] =
-                                (src_a + (dst_a * inv_a) / 255) as u8;
+
+                            let src_a = src_data[src_offset + 3] as u16;
+
+                            if src_a == 0 {
+                                // Fully transparent — skip
+                                continue;
+                            } else if src_a == 255 {
+                                // Fully opaque — direct copy
+                                window.pixel_data[dst_offset..dst_offset + 4]
+                                    .copy_from_slice(&src_data[src_offset..src_offset + 4]);
+                            } else {
+                                // Alpha blend: out = src * alpha + dst * (1 - alpha)
+                                let inv_a = 255 - src_a;
+                                for i in 0..3 {
+                                    let src_c = src_data[src_offset + i] as u16;
+                                    let dst_c = window.pixel_data[dst_offset + i] as u16;
+                                    window.pixel_data[dst_offset + i] =
+                                        ((src_c * src_a + dst_c * inv_a) / 255) as u8;
+                                }
+                                // Output alpha: src_a + dst_a * (1 - src_a)
+                                let dst_a = window.pixel_data[dst_offset + 3] as u16;
+                                window.pixel_data[dst_offset + 3] =
+                                    (src_a + (dst_a * inv_a) / 255) as u8;
+                            }
                         }
                     }
                 }
