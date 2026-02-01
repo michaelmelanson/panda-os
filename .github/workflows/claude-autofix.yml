@@ -3,10 +3,17 @@ name: Claude Autofix
 on:
   pull_request:
     types: [labeled]
+  # Re-trigger when CI completes so autofix can react to check failures
+  check_suite:
+    types: [completed]
 
 jobs:
   autofix:
-    if: github.event.label.name == 'autofix'
+    # Run when: (1) autofix label is added, or (2) a check suite fails on a PR
+    # For check_suite, the PR label check happens in the "Resolve PR info" step
+    if: >-
+      (github.event_name == 'pull_request' && github.event.label.name == 'autofix') ||
+      (github.event_name == 'check_suite' && github.event.check_suite.conclusion == 'failure')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -15,16 +22,58 @@ jobs:
       id-token: write
       actions: read
     steps:
+      - name: Resolve PR info
+        id: pr-info
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "pr_number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+            echo "pr_branch=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
+            echo "has_label=true" >> "$GITHUB_OUTPUT"
+          else
+            # check_suite event: get PR number from the check suite
+            PR_NUMBER=$(echo '${{ toJSON(github.event.check_suite.pull_requests) }}' | jq '.[0].number // empty')
+            if [ -z "$PR_NUMBER" ]; then
+              echo "has_label=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Check if this PR has the autofix label
+            HAS_LABEL=$(gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/labels --jq '[.[].name] | any(. == "autofix")' 2>/dev/null || echo "false")
+            echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+            PR_BRANCH=$(gh api repos/${{ github.repository }}/pulls/${PR_NUMBER} --jq '.head.ref')
+            echo "pr_branch=${PR_BRANCH}" >> "$GITHUB_OUTPUT"
+            echo "has_label=${HAS_LABEL}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check for autofix loop
+        if: steps.pr-info.outputs.has_label == 'true' && github.event_name == 'check_suite'
+        id: loop-check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Skip if the last commit was by claude (autofix already tried and failed)
+          LAST_AUTHOR=$(gh api repos/${{ github.repository }}/pulls/${{ steps.pr-info.outputs.pr_number }}/commits --jq '.[-1].author.login // .[-1].commit.author.name')
+          if [[ "$LAST_AUTHOR" == *claude* ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping: last commit was by $LAST_AUTHOR (autofix already attempted)"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout PR branch
+        if: steps.pr-info.outputs.has_label == 'true' && steps.loop-check.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
+          ref: ${{ steps.pr-info.outputs.pr_branch }}
           fetch-depth: 0
 
       - name: Install Rust toolchain
+        if: steps.pr-info.outputs.has_label == 'true' && steps.loop-check.outputs.skip != 'true'
         run: rustup show
 
       - name: Run Claude Autofix
+        if: steps.pr-info.outputs.has_label == 'true' && steps.loop-check.outputs.skip != 'true'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -36,13 +85,13 @@ jobs:
           prompt: |
             This PR has the "autofix" label. Please review the PR and fix any issues:
 
-            1. Check the CI status for this PR using `gh pr checks ${{ github.event.pull_request.number }}`.
+            1. Check the CI status for this PR using `gh pr checks ${{ steps.pr-info.outputs.pr_number }}`.
             2. If there are CI failures, read the failing workflow logs and fix the build/test errors.
             3. Review any code review comments on the PR and address the feedback.
             4. Commit and push your fixes to the PR branch.
-            5. When done, leave a comment on the PR summarizing what you did using `gh pr comment ${{ github.event.pull_request.number }} --body "<summary>"`. Include what issues you found, what you fixed, and what commits you pushed. If nothing needed fixing, say so.
+            5. When done, leave a comment on the PR summarizing what you did using `gh pr comment ${{ steps.pr-info.outputs.pr_number }} --body "<summary>"`. Include what issues you found, what you fixed, and what commits you pushed. If nothing needed fixing, say so.
 
-            PR: ${{ github.repository }}#${{ github.event.pull_request.number }}
-            Branch: ${{ github.event.pull_request.head.ref }}
+            PR: ${{ github.repository }}#${{ steps.pr-info.outputs.pr_number }}
+            Branch: ${{ steps.pr-info.outputs.pr_branch }}
           additional_permissions: |
             actions: read
