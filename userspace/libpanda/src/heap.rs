@@ -1,119 +1,107 @@
-//! Userspace heap allocator using brk syscall with demand paging.
+//! Userspace heap allocator using the `talc` crate with `brk()` growth.
 //!
-//! This implements a simple bump allocator that grows the heap via brk().
-//! The kernel handles page faults within the heap region by allocating
-//! physical frames on demand.
+//! This wraps the [`talc`] free-list allocator with a custom OOM handler
+//! that extends the heap via the `brk()` syscall. The allocator properly
+//! tracks free blocks and coalesces adjacent freed regions, so memory is
+//! reused after deallocation.
+//!
+//! ## Growth policy
+//!
+//! When the allocator cannot satisfy a request from its free list, the
+//! [`BrkGrower`] OOM handler is invoked. It rounds the needed size up to
+//! the next page boundary (4 KiB) and calls `brk()` to extend the heap.
+//! The new memory is added to the allocator's managed region via
+//! [`Talc::extend`] (if contiguous with the existing heap) or
+//! [`Talc::claim`] (for the initial allocation).
 
-use core::alloc::{GlobalAlloc, Layout};
-use core::ptr;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::alloc::Layout;
 
-use panda_abi::{HEAP_BASE, HEAP_MAX_SIZE, OP_PROCESS_BRK};
+use panda_abi::{HEAP_BASE, HEAP_MAX_SIZE};
+use spinning_top::RawSpinlock;
+use talc::{OomHandler, Span, Talc, Talck};
 
-use crate::handle::Handle;
-use crate::sys::send;
+use crate::sys::process::brk;
 
-/// Simple bump allocator for userspace heap.
+const PAGE_SIZE: usize = 4096;
+
+/// OOM handler that grows the heap via the `brk()` syscall.
 ///
-/// This allocator is simple but doesn't support deallocation.
-/// For a production system, you'd want a more sophisticated allocator
-/// like dlmalloc or a buddy allocator.
-pub struct BumpAllocator {
-    /// Current allocation pointer (next free address)
-    next: AtomicUsize,
-    /// Current program break (end of heap)
-    brk: AtomicUsize,
+/// Maintains the current program break and arena span so it can extend
+/// the heap when the allocator runs out of free memory.
+struct BrkGrower {
+    /// Current program break (end of committed heap memory).
+    current_brk: usize,
+    /// The current arena span managed by the allocator, tracked here
+    /// so we can pass it to [`Talc::extend`] on subsequent growths.
+    arena: Span,
 }
 
-impl BumpAllocator {
-    pub const fn new() -> Self {
+impl BrkGrower {
+    const fn new() -> Self {
         Self {
-            next: AtomicUsize::new(HEAP_BASE),
-            brk: AtomicUsize::new(HEAP_BASE),
-        }
-    }
-
-    /// Ensure the heap has at least `size` bytes available from `next`.
-    /// Grows the heap via brk() if needed.
-    fn ensure_capacity(&self, needed_end: usize) -> bool {
-        loop {
-            let current_brk = self.brk.load(Ordering::Acquire);
-
-            if needed_end <= current_brk {
-                return true;
-            }
-
-            // Need to grow - round up to page boundary for efficiency
-            let new_brk = (needed_end + 0xFFF) & !0xFFF;
-
-            // Check bounds
-            if new_brk > HEAP_BASE + HEAP_MAX_SIZE {
-                return false;
-            }
-
-            // Try to set the new brk via syscall
-            let result = send(Handle::SELF, OP_PROCESS_BRK, new_brk, 0, 0, 0);
-
-            if result as usize != new_brk {
-                // brk failed
-                return false;
-            }
-
-            // Update our cached brk
-            // Use compare_exchange to handle concurrent updates
-            match self.brk.compare_exchange(
-                current_brk,
-                new_brk,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return true,
-                Err(_) => continue, // Someone else updated it, retry
-            }
+            current_brk: HEAP_BASE,
+            arena: Span::empty(),
         }
     }
 }
 
-unsafe impl GlobalAlloc for BumpAllocator {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let size = layout.size();
-        let align = layout.align();
+/// Grow the heap by at least `min_size` bytes via `brk()`.
+/// Returns the (start, end) of the newly committed region, or `None` on failure.
+fn brk_grow(current_brk: &mut usize, min_size: usize) -> Option<(usize, usize)> {
+    let new_brk = align_up(*current_brk + min_size, PAGE_SIZE);
 
-        loop {
-            let current = self.next.load(Ordering::Acquire);
+    // Check bounds
+    if new_brk > HEAP_BASE + HEAP_MAX_SIZE {
+        return None;
+    }
 
-            // Align up
-            let aligned = (current + align - 1) & !(align - 1);
-            let end = match aligned.checked_add(size) {
-                Some(end) => end,
-                None => return ptr::null_mut(),
-            };
+    // Request the kernel to extend the program break
+    let result = brk(new_brk);
 
-            // Ensure we have capacity
-            if !self.ensure_capacity(end) {
-                return ptr::null_mut();
-            }
+    if result as usize != new_brk {
+        return None;
+    }
 
-            // Try to claim this region
-            match self
-                .next
-                .compare_exchange(current, end, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => {
-                    return aligned as *mut u8;
-                }
-                Err(_) => continue, // Retry
-            }
+    let old_brk = *current_brk;
+    *current_brk = new_brk;
+    Some((old_brk, new_brk))
+}
+
+impl OomHandler for BrkGrower {
+    fn handle_oom(talc: &mut Talc<Self>, layout: Layout) -> Result<(), ()> {
+        // Extract state from the OOM handler, then release the borrow
+        // so we can call talc.claim()/talc.extend() below.
+        let min_size = layout.size().max(PAGE_SIZE);
+
+        let (start, end) = {
+            brk_grow(&mut talc.oom_handler.current_brk, min_size).ok_or(())?
+        };
+
+        let new_memory = Span::from_base_size(start as *mut u8, end - start);
+
+        let old_arena = talc.oom_handler.arena;
+        if old_arena.is_empty() {
+            // First allocation — claim the initial region.
+            let arena = unsafe { talc.claim(new_memory).map_err(|_| ())? };
+            talc.oom_handler.arena = arena;
+        } else {
+            // Extend the existing heap region. The extend() API requires
+            // that req_heap contains old_heap, so we combine the old arena
+            // with the new memory into one contiguous span.
+            let combined = old_arena.extend(0, end - start);
+            let arena = unsafe { talc.extend(old_arena, combined) };
+            talc.oom_handler.arena = arena;
         }
-    }
 
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
-        // Bump allocator doesn't support deallocation.
-        // Memory is reclaimed when the process exits.
-        // A real allocator would track free blocks here.
+        Ok(())
     }
+}
+
+/// Align `val` up to the next multiple of `align`.
+const fn align_up(val: usize, align: usize) -> usize {
+    (val + align - 1) & !(align - 1)
 }
 
 #[cfg(feature = "os")]
 #[global_allocator]
-static ALLOCATOR: BumpAllocator = BumpAllocator::new();
+static ALLOCATOR: Talck<RawSpinlock, BrkGrower> = Talc::new(BrkGrower::new()).lock();
