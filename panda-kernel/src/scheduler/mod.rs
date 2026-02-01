@@ -19,6 +19,8 @@ use crate::process::{
     Process, ProcessId, ProcessState, ProcessWaker, SavedState, return_from_deferred_syscall,
     return_from_interrupt, return_from_syscall,
 };
+use crate::syscall::CalleeSavedRegs;
+use crate::syscall::user_ptr::SyscallResult;
 
 pub use rtc::RTC;
 
@@ -370,6 +372,171 @@ pub fn add_process(process: Process) {
     scheduler.add(process);
 }
 
+/// Acquire a write lock on the scheduler and pass a mutable reference to `f`.
+///
+/// The `expect()` guards against calling scheduler functions before `init()`,
+/// which is a genuine kernel invariant (not a user-influenced path).
+fn with_scheduler_mut<R>(f: impl FnOnce(&mut Scheduler) -> R) -> R {
+    let mut guard = SCHEDULER.write();
+    let scheduler = guard
+        .as_mut()
+        .expect("Scheduler has not been initialized");
+    f(scheduler)
+}
+
+/// Outcome of polling a process's pending async syscall.
+enum PendingSyscallOutcome {
+    /// The future completed with a result and the callee-saved registers to restore.
+    Completed(SyscallResult, CalleeSavedRegs),
+    /// The future is not yet ready; the process should be blocked.
+    Blocked,
+    /// The process had no pending syscall.
+    NoPending,
+}
+
+/// Take and poll the pending async syscall for `pid`.
+///
+/// Sets `current_process` so that `with_current_process` works inside the
+/// future. The scheduler lock is dropped before polling and re-acquired
+/// only when needed (to put the pending syscall back or discard it).
+fn poll_pending_syscall(pid: ProcessId) -> Option<PendingSyscallOutcome> {
+    // Take the pending syscall out (requires the lock).
+    let pending_syscall = with_scheduler_mut(|scheduler| {
+        let Some(process) = scheduler.processes.get_mut(&pid) else {
+            warn!("poll_pending_syscall: process {pid:?} vanished, skipping");
+            return None;
+        };
+        // Set current_process so with_current_process works inside the future
+        scheduler.current_process = pid;
+        Some(process.take_pending_syscall())
+    });
+    // Lock is now dropped.
+
+    let pending_syscall = pending_syscall?; // None ⇒ process gone
+
+    let Some(pending) = pending_syscall else {
+        return Some(PendingSyscallOutcome::NoPending);
+    };
+
+    // Create waker and poll without holding the scheduler lock.
+    let waker = ProcessWaker::new(pid).into_waker();
+    let mut cx = Context::from_waker(&waker);
+    let result = pending.future.lock().as_mut().poll(&mut cx);
+
+    if result.is_pending() {
+        // Put the pending syscall back if the process still exists.
+        with_scheduler_mut(|scheduler| {
+            if let Some(process) = scheduler.processes.get_mut(&pid) {
+                process.set_pending_syscall(pending);
+            } else {
+                warn!(
+                    "poll_pending_syscall: process {pid:?} removed while polling, discarding future"
+                );
+            }
+        });
+        Some(PendingSyscallOutcome::Blocked)
+    } else if let Poll::Ready(result) = result {
+        Some(PendingSyscallOutcome::Completed(result, pending.callee_saved))
+    } else {
+        // Poll returned Pending but we already handled that branch above;
+        // this is unreachable but included for exhaustiveness.
+        Some(PendingSyscallOutcome::Blocked)
+    }
+}
+
+/// Dispatch a completed async syscall result back to userspace.
+///
+/// Switches the page table, performs any writeback, and jumps to userspace via
+/// `return_from_deferred_syscall`. Returns `None` if the process was removed
+/// before we could dispatch.
+///
+/// # Safety
+/// This function does not return — it jumps to userspace.
+unsafe fn dispatch_completed_syscall(
+    pid: ProcessId,
+    result: SyscallResult,
+    callee_saved: CalleeSavedRegs,
+) -> Option<core::convert::Infallible> {
+    let exec_params = with_scheduler_mut(|scheduler| {
+        let process = scheduler.processes.get_mut(&pid)?;
+        scheduler.current_process = pid;
+        let (ip, sp, pt, _) = process.exec_params();
+        Some((ip, sp, pt))
+    });
+
+    let (ip, sp, page_table) = exec_params?;
+
+    unsafe {
+        crate::memory::switch_page_table(page_table);
+    }
+
+    // Copy out writeback data if present
+    if let Some(wb) = result.writeback {
+        let ua = unsafe { crate::syscall::user_ptr::UserAccess::new() };
+        let _ = ua.write(wb.dst, &wb.data);
+    }
+
+    debug!(
+        "dispatch_completed_syscall: pid={pid:?}, result={}, ip={:#x}, sp={:#x}",
+        result.code,
+        ip.as_u64(),
+        sp.as_u64(),
+    );
+    start_timer_with_deadline();
+    unsafe { return_from_deferred_syscall(ip, sp, result.code as u64, &callee_saved) }
+}
+
+/// Dispatch a process with no pending syscall (normal execution path).
+///
+/// Reads the process's saved state (preemption, yield, or fresh start) and
+/// jumps to userspace via the appropriate return path. Returns `None` if the
+/// process was removed before we could dispatch.
+///
+/// # Safety
+/// This function does not return — it jumps to userspace.
+unsafe fn dispatch_normal_process(pid: ProcessId) -> Option<core::convert::Infallible> {
+    let exec_params = with_scheduler_mut(|scheduler| {
+        let process = scheduler.processes.get_mut(&pid)?;
+        scheduler.current_process = pid;
+        let saved_state = process.take_saved_state();
+        let yield_cs = process.take_yield_callee_saved();
+        let (ip, sp, pt, _) = process.exec_params();
+        Some((ip, sp, pt, saved_state, yield_cs))
+    });
+
+    let (ip, sp, page_table, saved_state, yield_callee_saved) = exec_params?;
+
+    debug!("dispatch_normal_process: jumping to userspace (pid={pid:?})");
+    unsafe {
+        crate::memory::switch_page_table(page_table);
+    }
+    start_timer_with_deadline();
+
+    if let Some(state) = saved_state {
+        // Resuming from preemption — restore full state
+        unsafe { return_from_interrupt(&state) }
+    } else if let Some(callee_saved) = yield_callee_saved {
+        // Resuming from yield — restore callee-saved regs via sysretq
+        unsafe { return_from_deferred_syscall(ip, sp, 0, &callee_saved) }
+    } else {
+        // Fresh start — no registers to restore
+        unsafe { return_from_syscall(ip, sp, 0) }
+    }
+}
+
+/// Handle a kernel task: poll it once and update the scheduler accordingly.
+fn dispatch_kernel_task(task_id: executor::TaskId) {
+    let result = executor::poll_single_task(task_id);
+
+    with_scheduler_mut(|scheduler| match result {
+        executor::PollResult::Completed => scheduler.remove_kernel_task(task_id),
+        executor::PollResult::Pending => {
+            scheduler.change_kernel_task_state(task_id, ProcessState::Blocked)
+        }
+        executor::PollResult::NotFound => { /* task was already removed */ }
+    });
+}
+
 /// Execute the next runnable entity in an infinite scheduling loop.
 ///
 /// This function never returns. It continuously picks the next runnable entity
@@ -390,233 +557,60 @@ pub fn add_process(process: Process) {
 /// This function does not return. It switches to userspace or loops indefinitely.
 pub unsafe fn exec_next_runnable() -> ! {
     loop {
-        let (next_entity, has_processes) = {
-            let mut scheduler = SCHEDULER.write();
-            // Invariant: scheduler must be initialised before entering the scheduling loop.
-            let scheduler = scheduler
-                .as_mut()
-                .expect("Scheduler has not been initialized");
+        let (next_entity, has_processes) = with_scheduler_mut(|scheduler| {
             let entity = scheduler.prepare_next_runnable();
             let has_processes = !scheduler.processes.is_empty();
             (entity, has_processes)
-        };
-        // Lock is now dropped
+        });
 
         match next_entity {
             Some(SchedulableEntity::Process(pid)) => {
-                // Check if process has a pending async syscall that needs polling.
-                // IMPORTANT: We must set current_process and drop the scheduler lock
-                // BEFORE polling, because the future may call with_current_process.
-                //
-                // If the process was removed between prepare_next_runnable and here,
-                // we skip it and loop back to pick another entity.
-                let pending_syscall = {
-                    let mut scheduler = SCHEDULER.write();
-                    // Invariant: scheduler is initialised (checked above in same loop iteration).
-                    let scheduler = scheduler
-                        .as_mut()
-                        .expect("Scheduler has not been initialized");
-                    let Some(process) = scheduler.processes.get_mut(&pid) else {
-                        warn!(
-                            "exec_next_runnable: process {pid:?} vanished before pending syscall check, skipping"
-                        );
-                        continue;
-                    };
-                    // Set current_process so with_current_process works inside the future
-                    scheduler.current_process = pid;
-                    // Take the pending syscall out so we can poll without holding the lock
-                    process.take_pending_syscall()
-                };
-                // Lock is now dropped
-
-                let poll_result = if let Some(pending) = pending_syscall {
-                    // Create waker outside the lock
-                    let waker = ProcessWaker::new(pid).into_waker();
-                    let mut cx = Context::from_waker(&waker);
-
-                    // Poll the future without holding the scheduler lock
-                    let result = pending.future.lock().as_mut().poll(&mut cx);
-
-                    if result.is_pending() {
-                        // Future not ready — put the pending syscall back if the
-                        // process still exists; otherwise discard it (process is gone).
-                        let mut scheduler = SCHEDULER.write();
-                        // Invariant: scheduler is initialised.
-                        let scheduler = scheduler
-                            .as_mut()
-                            .expect("Scheduler has not been initialized");
-                        if let Some(process) = scheduler.processes.get_mut(&pid) {
-                            process.set_pending_syscall(pending);
-                        } else {
-                            warn!(
-                                "exec_next_runnable: process {pid:?} removed while polling async syscall, discarding pending future"
-                            );
-                        }
-                        Some((Poll::Pending, None))
-                    } else {
-                        // Future completed — keep callee_saved for the return path
-                        Some((result, Some(pending.callee_saved)))
-                    }
-                } else {
-                    None
+                let outcome = poll_pending_syscall(pid);
+                let Some(outcome) = outcome else {
+                    // Process vanished — pick another entity.
+                    continue;
                 };
 
-                match poll_result {
-                    Some((Poll::Ready(result), Some(callee_saved))) => {
-                        // Future completed - return result to userspace.
-                        // Use return_from_deferred_syscall to restore the callee-saved
-                        // registers (rbx/rbp/r12-r15) that were captured when the
-                        // syscall went Pending, then sysretq with the result in rax.
-                        let exec_params = {
-                            let mut scheduler = SCHEDULER.write();
-                            // Invariant: scheduler is initialised.
-                            let scheduler = scheduler
-                                .as_mut()
-                                .expect("Scheduler has not been initialized");
-                            if let Some(process) = scheduler.processes.get_mut(&pid) {
-                                scheduler.current_process = pid;
-                                let (ip, sp, pt, _) = process.exec_params();
-                                Some((ip, sp, pt))
-                            } else {
-                                warn!(
-                                    "exec_next_runnable: process {pid:?} removed before async syscall return, discarding result"
-                                );
-                                None
-                            }
-                        };
-
-                        let Some((ip, sp, page_table)) = exec_params else {
-                            // Process gone — loop back to pick another entity
-                            continue;
-                        };
-
-                        // Switch page table before copy-out (needed for writeback)
-                        unsafe {
-                            crate::memory::switch_page_table(page_table);
-                        }
-
-                        // Copy out writeback data if present
-                        if let Some(wb) = result.writeback {
-                            let ua = unsafe { crate::syscall::user_ptr::UserAccess::new() };
-                            let _ = ua.write(wb.dst, &wb.data);
-                        }
-
-                        debug!(
-                            "exec_next_runnable: async syscall completed (pid={:?}, result={}, ip={:#x}, sp={:#x})",
-                            pid,
-                            result.code,
-                            ip.as_u64(),
-                            sp.as_u64(),
-                        );
-                        start_timer_with_deadline();
-                        // Return to userspace, restoring callee-saved regs before sysretq
-                        unsafe {
-                            return_from_deferred_syscall(ip, sp, result.code as u64, &callee_saved)
-                        }
-                    }
-                    Some((Poll::Pending, _)) | Some((Poll::Ready(_), None)) => {
-                        // Future not ready or process gone — block process if it still exists
+                match outcome {
+                    PendingSyscallOutcome::Completed(result, callee_saved) => {
+                        if (unsafe { dispatch_completed_syscall(pid, result, callee_saved) })
+                            .is_none()
                         {
-                            let mut scheduler = SCHEDULER.write();
-                            // Invariant: scheduler is initialised.
-                            let scheduler = scheduler
-                                .as_mut()
-                                .expect("Scheduler has not been initialized");
-                            // change_state handles missing PIDs gracefully (returns false)
-                            scheduler.change_state(pid, ProcessState::Blocked);
+                            warn!("exec_next_runnable: process {pid:?} removed before async syscall return");
+                            continue;
                         }
-                        // Loop back to pick another entity
+                    }
+                    PendingSyscallOutcome::Blocked => {
+                        // Future not ready — block the process and pick another.
+                        with_scheduler_mut(|scheduler| {
+                            scheduler.change_state(pid, ProcessState::Blocked);
+                        });
                         continue;
                     }
-                    None => {
-                        // No pending syscall - normal execution path.
-                        // Get process execution parameters and yield callee-saved regs.
-                        // If the process was removed, skip it.
-                        let exec_params = {
-                            let mut scheduler = SCHEDULER.write();
-                            // Invariant: scheduler is initialised.
-                            let scheduler = scheduler
-                                .as_mut()
-                                .expect("Scheduler has not been initialized");
-                            if let Some(process) = scheduler.processes.get_mut(&pid) {
-                                scheduler.current_process = pid;
-                                let saved_state = process.take_saved_state();
-                                let yield_cs = process.take_yield_callee_saved();
-                                let (ip, sp, pt, _) = process.exec_params();
-                                Some((ip, sp, pt, saved_state, yield_cs))
-                            } else {
-                                warn!(
-                                    "exec_next_runnable: process {pid:?} removed before dispatch, skipping"
-                                );
-                                None
-                            }
-                        };
-
-                        let Some((ip, sp, page_table, saved_state, yield_callee_saved)) =
-                            exec_params
-                        else {
+                    PendingSyscallOutcome::NoPending => {
+                        if (unsafe { dispatch_normal_process(pid) }).is_none() {
+                            warn!("exec_next_runnable: process {pid:?} removed before dispatch");
                             continue;
-                        };
-
-                        debug!("exec_next_runnable: jumping to userspace (pid={:?})", pid);
-                        unsafe {
-                            crate::memory::switch_page_table(page_table);
-                        }
-                        start_timer_with_deadline();
-                        if let Some(state) = saved_state {
-                            // Resuming from preemption - restore full state
-                            unsafe { return_from_interrupt(&state) }
-                        } else if let Some(callee_saved) = yield_callee_saved {
-                            // Resuming from yield - restore callee-saved regs via sysretq
-                            unsafe { return_from_deferred_syscall(ip, sp, 0, &callee_saved) }
-                        } else {
-                            // Fresh start - no registers to restore
-                            unsafe { return_from_syscall(ip, sp, 0) }
                         }
                     }
                 }
             }
 
             Some(SchedulableEntity::KernelTask(task_id)) => {
-                // Poll the kernel task once
-                let result = executor::poll_single_task(task_id);
-
-                // Update scheduler based on poll result
-                let mut scheduler = SCHEDULER.write();
-                // Invariant: scheduler is initialised (checked at top of loop).
-                let scheduler = scheduler
-                    .as_mut()
-                    .expect("Scheduler has not been initialized");
-
-                match result {
-                    executor::PollResult::Completed => {
-                        // Task done, remove from scheduler
-                        scheduler.remove_kernel_task(task_id);
-                    }
-                    executor::PollResult::Pending => {
-                        // Task blocked, mark as blocked
-                        scheduler.change_kernel_task_state(task_id, ProcessState::Blocked);
-                    }
-                    executor::PollResult::NotFound => {
-                        // Task was removed, nothing to do
-                    }
-                }
-                // Immediately loop back to pick next entity
+                dispatch_kernel_task(task_id);
                 continue;
             }
 
             None if has_processes => {
-                // No runnable entities but userspace processes still exist - idle until interrupt
-                // Ensure timer is running for deadline tasks
+                // No runnable entities but userspace processes still exist — idle until interrupt.
                 start_timer_with_deadline();
                 x86_64::instructions::interrupts::enable_and_hlt();
-                // An interrupt woke us - loop back to check for runnable entities
+                // An interrupt woke us — loop back to check for runnable entities.
                 x86_64::instructions::interrupts::disable();
             }
             None => {
-                // No runnable entities and no userspace processes - exit
+                // No runnable entities and no userspace processes — exit.
                 info!("No processes remaining, halting");
-                // Exit QEMU if isa-debug-exit device is present (used by tests)
                 crate::qemu::exit_qemu(crate::qemu::QemuExitCode::Success);
             }
         }
