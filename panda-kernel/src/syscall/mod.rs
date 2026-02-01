@@ -234,11 +234,35 @@ fn build_future(
         OP_FILE_WRITE_BUFFER => Ok(buffer::handle_write_buffer(handle, arg0 as u64, arg1)),
 
         // Surface operations
-        OP_SURFACE_INFO => Ok(surface::handle_info(ua, handle, user_ptr::UserPtr::new(arg0))),
-        OP_SURFACE_BLIT => Ok(surface::handle_blit(ua, handle, user_ptr::UserPtr::new(arg0))),
-        OP_SURFACE_FILL => Ok(surface::handle_fill(ua, handle, user_ptr::UserPtr::new(arg0))),
-        OP_SURFACE_FLUSH => Ok(surface::handle_flush(ua, handle, if arg0 != 0 { Some(user_ptr::UserPtr::new(arg0)) } else { None })),
-        OP_SURFACE_UPDATE_PARAMS => Ok(surface::handle_update_params(ua, handle, user_ptr::UserPtr::new(arg0))),
+        OP_SURFACE_INFO => Ok(surface::handle_info(
+            ua,
+            handle,
+            user_ptr::UserPtr::new(arg0),
+        )),
+        OP_SURFACE_BLIT => Ok(surface::handle_blit(
+            ua,
+            handle,
+            user_ptr::UserPtr::new(arg0),
+        )),
+        OP_SURFACE_FILL => Ok(surface::handle_fill(
+            ua,
+            handle,
+            user_ptr::UserPtr::new(arg0),
+        )),
+        OP_SURFACE_FLUSH => Ok(surface::handle_flush(
+            ua,
+            handle,
+            if arg0 != 0 {
+                Some(user_ptr::UserPtr::new(arg0))
+            } else {
+                None
+            },
+        )),
+        OP_SURFACE_UPDATE_PARAMS => Ok(surface::handle_update_params(
+            ua,
+            handle,
+            user_ptr::UserPtr::new(arg0),
+        )),
 
         // Mailbox operations
         OP_MAILBOX_CREATE => Ok(mailbox::handle_create()),
@@ -253,14 +277,16 @@ fn build_future(
         _ => {
             error!("Unknown operation: {:#x}", operation);
             Ok(Box::pin(core::future::ready(user_ptr::SyscallResult::err(
-                -1,
+                panda_abi::ErrorCode::NotSupported,
             ))))
         }
     };
 
     match result {
         Ok(future) => future,
-        Err(_) => Box::pin(core::future::ready(user_ptr::SyscallResult::err(-1))),
+        Err(e) => Box::pin(core::future::ready(user_ptr::SyscallResult::err(
+            e.to_error_code(),
+        ))),
     }
 }
 

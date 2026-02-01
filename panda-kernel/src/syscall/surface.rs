@@ -65,18 +65,14 @@ fn is_region_opaque(
         let Some(y_off) = src_y.checked_add(row) else {
             return false;
         };
-        let Some(row_pixel) = y_off.checked_mul(stride).and_then(|v| v.checked_add(src_x))
-        else {
+        let Some(row_pixel) = y_off.checked_mul(stride).and_then(|v| v.checked_add(src_x)) else {
             return false;
         };
         let Some(row_start) = (row_pixel as usize).checked_mul(4) else {
             return false;
         };
         for col in 0..width as usize {
-            let Some(offset) = col
-                .checked_mul(4)
-                .and_then(|v| row_start.checked_add(v))
-            else {
+            let Some(offset) = col.checked_mul(4).and_then(|v| row_start.checked_add(v)) else {
                 return false;
             };
             let Some(alpha_idx) = offset.checked_add(3) else {
@@ -107,18 +103,20 @@ pub fn handle_info(
     info_ptr: UserPtr<panda_abi::SurfaceInfoOut>,
 ) -> SyscallFuture {
     if info_ptr.addr() == 0 {
-        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidArgument,
+        )));
     }
 
     let out = info_ptr;
 
     let result = scheduler::with_current_process(|proc| {
         let Some(resource) = proc.handles().get(handle) else {
-            return Err(());
+            return Err(panda_abi::ErrorCode::InvalidHandle);
         };
 
         let Some(surface) = resource.as_surface() else {
-            return Err(());
+            return Err(panda_abi::ErrorCode::InvalidHandle);
         };
 
         let info = surface.info();
@@ -133,11 +131,13 @@ pub fn handle_info(
     match result {
         Ok(info) => {
             if ua.write_user(out, &info).is_err() {
-                return Box::pin(core::future::ready(SyscallResult::err(-1)));
+                return Box::pin(core::future::ready(SyscallResult::err(
+                    panda_abi::ErrorCode::InvalidArgument,
+                )));
             }
             Box::pin(core::future::ready(SyscallResult::ok(0)))
         }
-        Err(()) => Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(code) => Box::pin(core::future::ready(SyscallResult::err(code))),
     }
 }
 
@@ -158,19 +158,25 @@ pub fn handle_blit(
     params_ptr: UserPtr<panda_abi::BlitParams>,
 ) -> SyscallFuture {
     if params_ptr.addr() == 0 {
-        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidArgument,
+        )));
     }
 
     let params: panda_abi::BlitParams = match ua.read_user(params_ptr) {
         Ok(p) => p,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
-    let result = scheduler::with_current_process(|proc| {
+    let result: Result<isize, panda_abi::ErrorCode> = scheduler::with_current_process(|proc| {
         // Check if this is a window resource
         let is_window = {
             let Some(resource) = proc.handles().get(handle) else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidHandle);
             };
             resource.as_window().is_some()
         };
@@ -179,10 +185,10 @@ pub fn handle_blit(
             // For windows, copy pixels from source buffer into window's pixel_data
             let source_buffer = {
                 let Some(buffer_handle) = proc.handles().get(params.buffer_handle) else {
-                    return -1;
+                    return Err(panda_abi::ErrorCode::InvalidHandle);
                 };
                 let Some(buffer) = buffer_handle.resource_arc().as_shared_buffer() else {
-                    return -1;
+                    return Err(panda_abi::ErrorCode::InvalidHandle);
                 };
                 buffer
             };
@@ -202,7 +208,7 @@ pub fn handle_blit(
                 params.height,
                 src_stride,
             ) else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidArgument);
             };
 
             // Copy pixel data from user-mapped buffer into a kernel-owned Vec.
@@ -216,14 +222,14 @@ pub fn handle_blit(
             });
 
             let Some(src_data) = src_data else {
-                return -1;
+                return Err(panda_abi::ErrorCode::BufferTooSmall);
             };
 
             let Some(resource) = proc.handles().get(handle) else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidHandle);
             };
             let Some(window_arc) = resource.as_window() else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidHandle);
             };
 
             let window_id = {
@@ -234,23 +240,30 @@ pub fn handle_blit(
 
                 // Bounds check — use checked arithmetic to prevent wrapping.
                 let Some(dst_right) = params.x.checked_add(params.width) else {
-                    return -1;
+                    return Err(panda_abi::ErrorCode::InvalidArgument);
                 };
                 let Some(dst_bottom) = params.y.checked_add(params.height) else {
-                    return -1;
+                    return Err(panda_abi::ErrorCode::InvalidArgument);
                 };
                 if dst_right > window_width || dst_bottom > window_height {
-                    return -1;
+                    return Err(panda_abi::ErrorCode::InvalidArgument);
                 }
 
                 // Choose fast path (row memcpy) or slow path (per-pixel alpha blend).
                 // The opaque scan bails early on the first non-255 alpha byte,
                 // so mixed-alpha surfaces pay almost nothing for the check.
-                if is_region_opaque(&src_data, params.src_x, params.src_y, params.width, params.height, src_stride) {
+                if is_region_opaque(
+                    &src_data,
+                    params.src_x,
+                    params.src_y,
+                    params.width,
+                    params.height,
+                    src_stride,
+                ) {
                     // Fast path: copy entire rows at once (one memcpy per scanline).
                     // Pixel offsets use checked arithmetic — userspace-controlled u32 values.
                     let Some(row_bytes) = (params.width as usize).checked_mul(4) else {
-                        return -1;
+                        return Err(panda_abi::ErrorCode::InvalidArgument);
                     };
                     for row in 0..params.height {
                         let Some(src_row_start) = params
@@ -260,7 +273,7 @@ pub fn handle_blit(
                             .and_then(|v| v.checked_add(params.src_x))
                             .and_then(|v| (v as usize).checked_mul(4))
                         else {
-                            return -1;
+                            return Err(panda_abi::ErrorCode::InvalidArgument);
                         };
                         let Some(dst_row_start) = params
                             .y
@@ -269,14 +282,14 @@ pub fn handle_blit(
                             .and_then(|v| v.checked_add(params.x))
                             .and_then(|v| (v as usize).checked_mul(4))
                         else {
-                            return -1;
+                            return Err(panda_abi::ErrorCode::InvalidArgument);
                         };
 
                         if dst_row_start + row_bytes > window.pixel_data.len() {
-                            return -1;
+                            return Err(panda_abi::ErrorCode::InvalidArgument);
                         }
                         if src_row_start + row_bytes > src_data.len() {
-                            return -1;
+                            return Err(panda_abi::ErrorCode::InvalidArgument);
                         }
 
                         window.pixel_data[dst_row_start..dst_row_start + row_bytes]
@@ -296,7 +309,7 @@ pub fn handle_blit(
                                 .and_then(|v| v.checked_mul(4))
                                 .map(|v| v as usize)
                             else {
-                                return -1;
+                                return Err(panda_abi::ErrorCode::InvalidArgument);
                             };
                             let Some(dst_offset) = params
                                 .y
@@ -307,11 +320,11 @@ pub fn handle_blit(
                                 .and_then(|v| v.checked_mul(4))
                                 .map(|v| v as usize)
                             else {
-                                return -1;
+                                return Err(panda_abi::ErrorCode::InvalidArgument);
                             };
 
                             if dst_offset + 4 > window.pixel_data.len() {
-                                return -1;
+                                return Err(panda_abi::ErrorCode::InvalidArgument);
                             }
 
                             let src_a = src_data[src_offset + 3] as u16;
@@ -348,20 +361,20 @@ pub fn handle_blit(
 
             // Mark window dirty
             crate::compositor::mark_window_dirty(window_id);
-            0
+            Ok(0)
         } else {
             // For non-window surfaces, use traditional blit.
             // Get both buffer and surface handles in the same scope to avoid
             // raw pointer reconstruction.
             let Some(buffer_resource) = proc.handles().get(params.buffer_handle) else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidHandle);
             };
             let Some(buffer) = buffer_resource.as_buffer() else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidHandle);
             };
 
             let Some(expected_size) = checked_pixel_buffer_size(params.width, params.height) else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidArgument);
             };
 
             // Copy pixel data from user-mapped buffer into kernel-owned Vec
@@ -375,24 +388,27 @@ pub fn handle_blit(
             });
 
             let Some(pixel_data) = pixel_data else {
-                return -1;
+                return Err(panda_abi::ErrorCode::BufferTooSmall);
             };
 
             let Some(resource) = proc.handles().get(handle) else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidHandle);
             };
             let Some(surface) = resource.as_surface() else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidHandle);
             };
 
             match surface.blit(params.x, params.y, params.width, params.height, &pixel_data) {
-                Ok(()) => 0,
-                Err(_) => -1,
+                Ok(()) => Ok(0),
+                Err(_) => Err(panda_abi::ErrorCode::IoError),
             }
         }
     });
 
-    Box::pin(core::future::ready(SyscallResult::ok(result)))
+    match result {
+        Ok(v) => Box::pin(core::future::ready(SyscallResult::ok(v))),
+        Err(code) => Box::pin(core::future::ready(SyscallResult::err(code))),
+    }
 }
 
 /// Handle OP_SURFACE_FILL syscall.
@@ -412,21 +428,27 @@ pub fn handle_fill(
     params_ptr: UserPtr<panda_abi::FillParams>,
 ) -> SyscallFuture {
     if params_ptr.addr() == 0 {
-        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidArgument,
+        )));
     }
 
     let params: panda_abi::FillParams = match ua.read_user(params_ptr) {
         Ok(p) => p,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
-    let result = scheduler::with_current_process(|proc| {
+    let result: Result<isize, panda_abi::ErrorCode> = scheduler::with_current_process(|proc| {
         let Some(resource) = proc.handles().get(handle) else {
-            return -1;
+            return Err(panda_abi::ErrorCode::InvalidHandle);
         };
 
         let Some(surface) = resource.as_surface() else {
-            return -1;
+            return Err(panda_abi::ErrorCode::InvalidHandle);
         };
 
         match surface.fill(
@@ -436,12 +458,15 @@ pub fn handle_fill(
             params.height,
             params.colour,
         ) {
-            Ok(()) => 0,
-            Err(_) => -1,
+            Ok(()) => Ok(0),
+            Err(_) => Err(panda_abi::ErrorCode::IoError),
         }
     });
 
-    Box::pin(core::future::ready(SyscallResult::ok(result)))
+    match result {
+        Ok(v) => Box::pin(core::future::ready(SyscallResult::ok(v))),
+        Err(code) => Box::pin(core::future::ready(SyscallResult::err(code))),
+    }
 }
 
 /// Handle OP_SURFACE_FLUSH syscall.
@@ -469,7 +494,9 @@ pub fn handle_flush(
     });
 
     let Some(is_window) = is_window else {
-        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidHandle,
+        )));
     };
 
     if is_window {
@@ -485,14 +512,20 @@ pub fn handle_flush(
         });
 
         let Some(window_id) = window_id else {
-            return Box::pin(core::future::ready(SyscallResult::err(-1)));
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidHandle,
+            )));
         };
 
         if let Some(rp) = rect_ptr {
             // Read rect from userspace
             let rect: panda_abi::SurfaceRect = match ua.read_user(rp) {
                 Ok(r) => r,
-                Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+                Err(_) => {
+                    return Box::pin(core::future::ready(SyscallResult::err(
+                        panda_abi::ErrorCode::InvalidArgument,
+                    )));
+                }
             };
             let compositor_rect = crate::resource::Rect {
                 x: rect.x,
@@ -513,19 +546,19 @@ pub fn handle_flush(
         })
     } else {
         // For non-window surfaces, use traditional synchronous flush
-        let result = scheduler::with_current_process(|proc| {
+        let result: Result<isize, panda_abi::ErrorCode> = scheduler::with_current_process(|proc| {
             let Some(resource) = proc.handles().get(handle) else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidHandle);
             };
 
             let Some(surface) = resource.as_surface() else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidHandle);
             };
 
             let region = if let Some(rp) = rect_ptr {
                 let rect: panda_abi::SurfaceRect = match ua.read_user(rp) {
                     Ok(r) => r,
-                    Err(_) => return -1,
+                    Err(_) => return Err(panda_abi::ErrorCode::InvalidArgument),
                 };
                 Some(crate::resource::Rect {
                     x: rect.x,
@@ -538,12 +571,15 @@ pub fn handle_flush(
             };
 
             match surface.flush(region) {
-                Ok(()) => 0,
-                Err(_) => -1,
+                Ok(()) => Ok(0),
+                Err(_) => Err(panda_abi::ErrorCode::IoError),
             }
         });
 
-        Box::pin(core::future::ready(SyscallResult::ok(result)))
+        match result {
+            Ok(v) => Box::pin(core::future::ready(SyscallResult::ok(v))),
+            Err(code) => Box::pin(core::future::ready(SyscallResult::err(code))),
+        }
     }
 }
 
@@ -564,21 +600,27 @@ pub fn handle_update_params(
     params_ptr: UserPtr<panda_abi::UpdateParamsIn>,
 ) -> SyscallFuture {
     if params_ptr.addr() == 0 {
-        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidArgument,
+        )));
     }
 
     let params: panda_abi::UpdateParamsIn = match ua.read_user(params_ptr) {
         Ok(p) => p,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
-    let result = scheduler::with_current_process(|proc| {
+    let result: Result<isize, panda_abi::ErrorCode> = scheduler::with_current_process(|proc| {
         let Some(resource) = proc.handles().get(handle) else {
-            return -1;
+            return Err(panda_abi::ErrorCode::InvalidHandle);
         };
 
         let Some(window_arc) = resource.as_window() else {
-            return -1;
+            return Err(panda_abi::ErrorCode::InvalidHandle);
         };
 
         let window_id = {
@@ -594,7 +636,7 @@ pub fn handle_update_params(
 
                 let Some(buffer_size) = checked_pixel_buffer_size(params.width, params.height)
                 else {
-                    return -1;
+                    return Err(panda_abi::ErrorCode::InvalidArgument);
                 };
 
                 window.pixel_data.resize(buffer_size, 0);
@@ -610,8 +652,11 @@ pub fn handle_update_params(
             crate::compositor::mark_window_dirty(window_id);
         }
 
-        0
+        Ok(0)
     });
 
-    Box::pin(core::future::ready(SyscallResult::ok(result)))
+    match result {
+        Ok(v) => Box::pin(core::future::ready(SyscallResult::ok(v))),
+        Err(code) => Box::pin(core::future::ready(SyscallResult::err(code))),
+    }
 }

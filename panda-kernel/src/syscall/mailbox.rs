@@ -24,7 +24,9 @@ pub fn handle_create() -> SyscallFuture {
     });
     match result {
         Some(handle_id) => Box::pin(core::future::ready(SyscallResult::ok(handle_id as isize))),
-        None => Box::pin(core::future::ready(SyscallResult::err(-1))),
+        None => Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::TooManyHandles,
+        ))),
     }
 }
 
@@ -40,7 +42,9 @@ pub fn handle_create() -> SyscallFuture {
 /// If no events are available, blocks until one arrives.
 pub fn handle_wait(_ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> SyscallFuture {
     if out_ptr == 0 {
-        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidArgument,
+        )));
     }
 
     let dst = super::user_ptr::UserSlice::new(
@@ -59,10 +63,10 @@ pub fn handle_wait(_ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> Sys
 
     Box::pin(poll_fn(move |_cx| {
         let Some(ref resource) = resource else {
-            return Poll::Ready(SyscallResult::err(-1));
+            return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
         let Some(mailbox) = resource.as_mailbox() else {
-            return Poll::Ready(SyscallResult::err(-1));
+            return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
 
         // Try to dequeue an event. If none available, register for
@@ -97,7 +101,9 @@ pub fn handle_wait(_ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> Sys
 /// Returns 1 if an event was available, 0 if no events, negative on error.
 pub fn handle_poll(ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> SyscallFuture {
     if out_ptr == 0 {
-        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidArgument,
+        )));
     }
 
     let result = scheduler::with_current_process(|proc| {
@@ -115,10 +121,14 @@ pub fn handle_poll(ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> Sysc
             };
             match ua.write_user(UserPtr::new(out_ptr), &event_result) {
                 Ok(_) => Box::pin(core::future::ready(SyscallResult::ok(1))),
-                Err(_) => Box::pin(core::future::ready(SyscallResult::err(-1))),
+                Err(_) => Box::pin(core::future::ready(SyscallResult::err(
+                    panda_abi::ErrorCode::InvalidArgument,
+                ))),
             }
         }
         Some(None) => Box::pin(core::future::ready(SyscallResult::ok(0))),
-        None => Box::pin(core::future::ready(SyscallResult::err(-1))),
+        None => Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidHandle,
+        ))),
     }
 }

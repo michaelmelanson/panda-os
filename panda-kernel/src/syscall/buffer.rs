@@ -58,17 +58,23 @@ pub fn handle_alloc(ua: &UserAccess, size: usize, info_ptr: usize) -> SyscallFut
     match result {
         Some((handle_id, Some(info))) => {
             let Some(out) = info_out else {
-                return Box::pin(core::future::ready(SyscallResult::err(-1)));
+                return Box::pin(core::future::ready(SyscallResult::err(
+                    panda_abi::ErrorCode::InvalidArgument,
+                )));
             };
             if ua.write_user(out, &info).is_err() {
-                return Box::pin(core::future::ready(SyscallResult::err(-1)));
+                return Box::pin(core::future::ready(SyscallResult::err(
+                    panda_abi::ErrorCode::InvalidArgument,
+                )));
             }
             Box::pin(core::future::ready(SyscallResult::ok(handle_id as isize)))
         }
         Some((handle_id, None)) => {
             Box::pin(core::future::ready(SyscallResult::ok(handle_id as isize)))
         }
-        None => Box::pin(core::future::ready(SyscallResult::err(-1))),
+        None => Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::IoError,
+        ))),
     }
 }
 
@@ -173,28 +179,34 @@ pub fn handle_resize(
     match result {
         Ok(Some(info)) => {
             let Some(out) = info_out else {
-                return Box::pin(core::future::ready(SyscallResult::err(-1)));
+                return Box::pin(core::future::ready(SyscallResult::err(
+                    panda_abi::ErrorCode::InvalidArgument,
+                )));
             };
             if ua.write_user(out, &info).is_err() {
-                return Box::pin(core::future::ready(SyscallResult::err(-1)));
+                return Box::pin(core::future::ready(SyscallResult::err(
+                    panda_abi::ErrorCode::InvalidArgument,
+                )));
             }
             Box::pin(core::future::ready(SyscallResult::ok(0)))
         }
         Ok(None) => Box::pin(core::future::ready(SyscallResult::ok(0))),
-        Err(()) => Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(()) => Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidHandle,
+        ))),
     }
 }
 
 /// Handle buffer free.
 pub fn handle_free(handle_id: u64) -> SyscallFuture {
-    let result = scheduler::with_current_process(|proc| {
+    let result: Result<(), panda_abi::ErrorCode> = scheduler::with_current_process(|proc| {
         // Get buffer's virtual address and size before removing
         let (vaddr, num_pages) = {
             let Some(handle) = proc.handles().get(handle_id) else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidHandle);
             };
             let Some(buffer) = handle.as_buffer() else {
-                return -1;
+                return Err(panda_abi::ErrorCode::InvalidHandle);
             };
             let vaddr = x86_64::VirtAddr::new(buffer.mapped_addr() as u64);
             let num_pages = (buffer.size() + 4095) / 4096;
@@ -203,15 +215,18 @@ pub fn handle_free(handle_id: u64) -> SyscallFuture {
 
         // Remove the handle (drops the buffer, unmapping pages)
         if proc.handles_mut().remove(handle_id).is_none() {
-            return -1;
+            return Err(panda_abi::ErrorCode::InvalidHandle);
         }
 
         // Free the virtual address space
         proc.free_buffer_vaddr(vaddr, num_pages);
 
-        0
+        Ok(())
     });
-    Box::pin(core::future::ready(SyscallResult::ok(result)))
+    match result {
+        Ok(()) => Box::pin(core::future::ready(SyscallResult::ok(0))),
+        Err(code) => Box::pin(core::future::ready(SyscallResult::err(code))),
+    }
 }
 
 /// Handle reading from file into buffer.
@@ -224,7 +239,11 @@ pub fn handle_read_buffer(file_handle_id: u64, buffer_handle_id: u64) -> Syscall
         Some((buffer.clone(), buffer.size()))
     }) {
         Some(info) => info,
-        None => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        None => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidHandle,
+            )));
+        }
     };
 
     // Get VFS file and current offset
@@ -239,7 +258,11 @@ pub fn handle_read_buffer(file_handle_id: u64, buffer_handle_id: u64) -> Syscall
         ))
     }) {
         Some(info) => info,
-        None => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        None => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidHandle,
+            )));
+        }
     };
 
     // Create async future for the read
@@ -249,7 +272,7 @@ pub fn handle_read_buffer(file_handle_id: u64, buffer_handle_id: u64) -> Syscall
 
         // Seek to current offset
         if file.seek(SeekFrom::Start(file_offset)).await.is_err() {
-            return SyscallResult::err(-1);
+            return SyscallResult::err(panda_abi::ErrorCode::IoError);
         }
 
         // Read into a kernel bounce buffer, then copy into the user-mapped buffer.
@@ -271,7 +294,7 @@ pub fn handle_read_buffer(file_handle_id: u64, buffer_handle_id: u64) -> Syscall
                 });
                 SyscallResult::ok(n as isize)
             }
-            Err(_) => SyscallResult::err(-1),
+            Err(_) => SyscallResult::err(panda_abi::ErrorCode::IoError),
         }
     })
 }
@@ -296,7 +319,11 @@ pub fn handle_write_buffer(
         })
     }) {
         Some(info) => info,
-        None => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        None => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidHandle,
+            )));
+        }
     };
 
     // Get VFS file and current offset
@@ -311,7 +338,11 @@ pub fn handle_write_buffer(
         ))
     }) {
         Some(info) => info,
-        None => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        None => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidHandle,
+            )));
+        }
     };
 
     // Create async future for the write
@@ -321,7 +352,7 @@ pub fn handle_write_buffer(
 
         // Seek to current offset
         if file.seek(SeekFrom::Start(file_offset)).await.is_err() {
-            return SyscallResult::err(-1);
+            return SyscallResult::err(panda_abi::ErrorCode::IoError);
         }
 
         // Write from buffer
@@ -335,7 +366,7 @@ pub fn handle_write_buffer(
                 });
                 SyscallResult::ok(n as isize)
             }
-            Err(_) => SyscallResult::err(-1),
+            Err(_) => SyscallResult::err(panda_abi::ErrorCode::IoError),
         }
     })
 }

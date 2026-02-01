@@ -36,10 +36,10 @@ pub fn handle_wait(handle_id: u64) -> SyscallFuture {
 
     Box::pin(poll_fn(move |_cx| {
         let Some(ref resource) = resource else {
-            return Poll::Ready(SyscallResult::err(-1));
+            return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
         let Some(process_iface) = resource.as_process() else {
-            return Poll::Ready(SyscallResult::err(-1));
+            return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
 
         match process_iface.exit_code() {
@@ -57,7 +57,9 @@ pub fn handle_wait(handle_id: u64) -> SyscallFuture {
 
 /// Handle process signal operation.
 pub fn handle_signal() -> SyscallFuture {
-    Box::pin(core::future::ready(SyscallResult::err(-1)))
+    Box::pin(core::future::ready(SyscallResult::err(
+        panda_abi::ErrorCode::NotSupported,
+    )))
 }
 
 /// Handle process brk operation.

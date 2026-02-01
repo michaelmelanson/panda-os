@@ -843,12 +843,84 @@ pub enum ErrorCode {
     PermissionDenied = 7,
     /// I/O error.
     IoError = 8,
-    /// Would block (used internally, not returned to userspace).
+    /// Would block (for non-blocking operations).
     WouldBlock = 9,
     /// Invalid argument.
     InvalidArgument = 10,
     /// Protocol error (unexpected message type).
     Protocol = 11,
+    /// Handle not found or wrong type.
+    InvalidHandle = 12,
+    /// Per-process handle limit reached.
+    TooManyHandles = 13,
+    /// Channel peer has closed.
+    ChannelClosed = 14,
+    /// Channel message exceeds maximum size.
+    MessageTooLarge = 15,
+    /// Buffer too small for the requested operation.
+    BufferTooSmall = 16,
+}
+
+impl ErrorCode {
+    /// Convert to a negative `isize` for syscall return values.
+    ///
+    /// Each variant is returned as its negated discriminant:
+    /// `NotFound` (1) becomes `-1`, `InvalidHandle` (12) becomes `-12`, etc.
+    /// `Ok` (0) becomes `0`.
+    pub fn to_isize(self) -> isize {
+        -(self as u32 as isize)
+    }
+
+    /// Convert a negative `isize` syscall return value back to an `ErrorCode`.
+    ///
+    /// Returns `None` if the value doesn't correspond to a known variant.
+    pub fn from_isize(value: isize) -> Option<Self> {
+        let discriminant = (-value) as u32;
+        match discriminant {
+            0 => Some(ErrorCode::Ok),
+            1 => Some(ErrorCode::NotFound),
+            2 => Some(ErrorCode::InvalidOffset),
+            3 => Some(ErrorCode::NotReadable),
+            4 => Some(ErrorCode::NotWritable),
+            5 => Some(ErrorCode::NotSeekable),
+            6 => Some(ErrorCode::NotSupported),
+            7 => Some(ErrorCode::PermissionDenied),
+            8 => Some(ErrorCode::IoError),
+            9 => Some(ErrorCode::WouldBlock),
+            10 => Some(ErrorCode::InvalidArgument),
+            11 => Some(ErrorCode::Protocol),
+            12 => Some(ErrorCode::InvalidHandle),
+            13 => Some(ErrorCode::TooManyHandles),
+            14 => Some(ErrorCode::ChannelClosed),
+            15 => Some(ErrorCode::MessageTooLarge),
+            16 => Some(ErrorCode::BufferTooSmall),
+            _ => None,
+        }
+    }
+}
+
+impl core::fmt::Display for ErrorCode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ErrorCode::Ok => write!(f, "success"),
+            ErrorCode::NotFound => write!(f, "not found"),
+            ErrorCode::InvalidOffset => write!(f, "invalid offset"),
+            ErrorCode::NotReadable => write!(f, "not readable"),
+            ErrorCode::NotWritable => write!(f, "not writable"),
+            ErrorCode::NotSeekable => write!(f, "not seekable"),
+            ErrorCode::NotSupported => write!(f, "not supported"),
+            ErrorCode::PermissionDenied => write!(f, "permission denied"),
+            ErrorCode::IoError => write!(f, "I/O error"),
+            ErrorCode::WouldBlock => write!(f, "operation would block"),
+            ErrorCode::InvalidArgument => write!(f, "invalid argument"),
+            ErrorCode::Protocol => write!(f, "protocol error"),
+            ErrorCode::InvalidHandle => write!(f, "invalid handle"),
+            ErrorCode::TooManyHandles => write!(f, "too many handles"),
+            ErrorCode::ChannelClosed => write!(f, "channel closed"),
+            ErrorCode::MessageTooLarge => write!(f, "message too large"),
+            ErrorCode::BufferTooSmall => write!(f, "buffer too small"),
+        }
+    }
 }
 
 // =============================================================================

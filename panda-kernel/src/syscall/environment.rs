@@ -36,7 +36,11 @@ pub fn handle_open(
 
     let uri = match ua.read_str(uri_ptr, uri_len) {
         Ok(u) => u,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
     debug!(
@@ -78,13 +82,13 @@ pub fn handle_open(
                     }
                     None => {
                         info!("handle_open future: handle limit reached for {}", uri);
-                        SyscallResult::err(-1)
+                        SyscallResult::err(panda_abi::ErrorCode::TooManyHandles)
                     }
                 }
             }
             None => {
                 info!("handle_open future: failed to open {}", uri);
-                SyscallResult::err(-1)
+                SyscallResult::err(panda_abi::ErrorCode::NotFound)
             }
         }
     })
@@ -106,12 +110,20 @@ pub fn handle_mount(
 ) -> SyscallFuture {
     let fstype = match ua.read_str(fstype_ptr, fstype_len) {
         Ok(s) => s,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
     let mountpoint = match ua.read_str(mountpoint_ptr, mountpoint_len) {
         Ok(s) => s,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
     info!("handle_mount: fstype={}, mountpoint={}", fstype, mountpoint);
@@ -125,12 +137,12 @@ pub fn handle_mount(
                 }
                 Err(e) => {
                     error!("Failed to mount ext2 at {}: {}", mountpoint, e);
-                    SyscallResult::err(-1)
+                    SyscallResult::err(panda_abi::ErrorCode::IoError)
                 }
             },
             _ => {
                 error!("Unknown filesystem type: {}", fstype);
-                SyscallResult::err(-1)
+                SyscallResult::err(panda_abi::ErrorCode::NotSupported)
             }
         }
     })
@@ -149,7 +161,11 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
     // Read spawn parameters from userspace
     let params: panda_abi::SpawnParams = match ua.read_user(params_ptr) {
         Ok(p) => p,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
     let mailbox_handle = params.mailbox;
@@ -164,7 +180,11 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
 
     let uri = match ua.read_str(params.path_ptr, params.path_len) {
         Ok(u) => u,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
     debug!("SPAWN: uri={}", uri);
@@ -188,13 +208,13 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
     Box::pin(async move {
         let Some(resource) = resource::open(&uri).await else {
             error!("SPAWN: failed to open {}", uri);
-            return SyscallResult::err(-1);
+            return SyscallResult::err(panda_abi::ErrorCode::NotFound);
         };
 
         // Read the file via async VFS interface
         let Some(vfs_file) = resource.as_vfs_file() else {
             error!("SPAWN: {} is not a readable file", uri);
-            return SyscallResult::err(-1);
+            return SyscallResult::err(panda_abi::ErrorCode::NotReadable);
         };
 
         let file_lock = vfs_file.file();
@@ -205,7 +225,7 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
             Ok(s) => s,
             Err(e) => {
                 error!("SPAWN: failed to stat {}: {:?}", uri, e);
-                return SyscallResult::err(-1);
+                return SyscallResult::err(panda_abi::ErrorCode::IoError);
             }
         };
         let size = stat.size as usize;
@@ -221,14 +241,14 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
                 Ok(n) => total_read += n,
                 Err(e) => {
                     error!("SPAWN: failed to read {}: {:?}", uri, e);
-                    return SyscallResult::err(-1);
+                    return SyscallResult::err(panda_abi::ErrorCode::IoError);
                 }
             }
         }
 
         if total_read != size {
             error!("SPAWN: incomplete read: {} of {} bytes", total_read, size);
-            return SyscallResult::err(-1);
+            return SyscallResult::err(panda_abi::ErrorCode::IoError);
         }
 
         let elf_data = elf_data.into_boxed_slice();
@@ -237,11 +257,8 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
         let mut process = match Process::from_elf_data(Context::new_user_context(), elf_ptr) {
             Ok(p) => p,
             Err(e) => {
-                error!(
-                    "SPAWN: failed to create process from {}: {:?}",
-                    uri, e
-                );
-                return SyscallResult::err(-1);
+                error!("SPAWN: failed to create process from {}: {:?}", uri, e);
+                return SyscallResult::err(panda_abi::ErrorCode::InvalidArgument);
             }
         };
         let pid = process.id();
@@ -294,7 +311,7 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
         });
         match result {
             Some(handle_id) => SyscallResult::ok(handle_id as isize),
-            None => SyscallResult::err(-1),
+            None => SyscallResult::err(panda_abi::ErrorCode::TooManyHandles),
         }
     })
 }
@@ -304,7 +321,11 @@ pub fn handle_log(ua: &UserAccess, msg_ptr: usize, msg_len: usize) -> SyscallFut
     debug!("LOG: msg_ptr={:#x}, msg_len={}", msg_ptr, msg_len);
     let msg = match ua.read_str(msg_ptr, msg_len) {
         Ok(m) => m,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
     info!("LOG: {msg}");
     Box::pin(core::future::ready(SyscallResult::ok(0)))
@@ -321,12 +342,16 @@ pub fn handle_time() -> SyscallFuture {
 pub fn handle_opendir(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> SyscallFuture {
     let uri = match ua.read_str(uri_ptr, uri_len) {
         Ok(u) => u,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
     Box::pin(async move {
         let Some(entries) = resource::readdir(&uri).await else {
-            return SyscallResult::err(-1);
+            return SyscallResult::err(panda_abi::ErrorCode::NotFound);
         };
 
         let dir_resource = resource::DirectoryResource::new(entries);
@@ -335,7 +360,7 @@ pub fn handle_opendir(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> Syscal
         });
         match result {
             Some(handle_id) => SyscallResult::ok(handle_id as isize),
-            None => SyscallResult::err(-1),
+            None => SyscallResult::err(panda_abi::ErrorCode::TooManyHandles),
         }
     })
 }

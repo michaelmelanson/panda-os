@@ -51,11 +51,16 @@ pub fn handle_create(ua: &UserAccess, out_handles_ptr: usize) -> SyscallFuture {
     });
 
     let Some((handle_a, handle_b)) = result else {
-        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::TooManyHandles,
+        )));
     };
 
     // Write the handle IDs to userspace
-    let result = ua.write_user(UserPtr::<[u64; 2]>::new(out_handles_ptr), &[handle_a, handle_b]);
+    let result = ua.write_user(
+        UserPtr::<[u64; 2]>::new(out_handles_ptr),
+        &[handle_a, handle_b],
+    );
 
     let code = match result {
         Ok(_) => {
@@ -118,10 +123,10 @@ pub fn handle_send(
     // ua is NOT captured — compiler enforces this since UserAccess is !Send.
     Ok(Box::pin(poll_fn(move |_cx| {
         let Some(ref resource) = resource else {
-            return Poll::Ready(SyscallResult::err(-1));
+            return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
         let Some(channel) = resource.as_channel() else {
-            return Poll::Ready(SyscallResult::err(-1));
+            return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
 
         match channel.send(&msg) {
@@ -131,15 +136,19 @@ pub fn handle_send(
             }
             Err(ChannelError::QueueFull) => {
                 if flags & CHANNEL_NONBLOCK != 0 {
-                    return Poll::Ready(SyscallResult::err(-1));
+                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::WouldBlock));
                 }
                 debug!("channel_send: queue full, blocking...");
                 channel.waker().set_waiting(scheduler::current_process_id());
                 Poll::Pending
             }
-            Err(ChannelError::MessageTooLarge) => Poll::Ready(SyscallResult::err(-2)),
-            Err(ChannelError::PeerClosed) => Poll::Ready(SyscallResult::err(-3)),
-            Err(_) => Poll::Ready(SyscallResult::err(-4)),
+            Err(ChannelError::MessageTooLarge) => {
+                Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::MessageTooLarge))
+            }
+            Err(ChannelError::PeerClosed) => {
+                Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::ChannelClosed))
+            }
+            Err(_) => Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::IoError)),
         }
     })))
 }
@@ -167,10 +176,10 @@ pub fn handle_recv(handle: u64, buf_ptr: usize, buf_len: usize, flags: usize) ->
 
     Box::pin(poll_fn(move |_cx| {
         let Some(ref resource) = resource else {
-            return Poll::Ready(SyscallResult::err(-1));
+            return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
         let Some(channel) = resource.as_channel() else {
-            return Poll::Ready(SyscallResult::err(-1));
+            return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
 
         // Cap allocation to MAX_MESSAGE_SIZE (messages can never exceed this)
@@ -185,15 +194,19 @@ pub fn handle_recv(handle: u64, buf_ptr: usize, buf_len: usize, flags: usize) ->
             }
             Err(ChannelError::QueueEmpty) => {
                 if flags & CHANNEL_NONBLOCK != 0 {
-                    return Poll::Ready(SyscallResult::err(-1));
+                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::WouldBlock));
                 }
                 debug!("channel_recv: queue empty, blocking...");
                 channel.waker().set_waiting(scheduler::current_process_id());
                 Poll::Pending
             }
-            Err(ChannelError::BufferTooSmall) => Poll::Ready(SyscallResult::err(-2)),
-            Err(ChannelError::PeerClosed) => Poll::Ready(SyscallResult::err(-3)),
-            Err(_) => Poll::Ready(SyscallResult::err(-4)),
+            Err(ChannelError::BufferTooSmall) => {
+                Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::BufferTooSmall))
+            }
+            Err(ChannelError::PeerClosed) => {
+                Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::ChannelClosed))
+            }
+            Err(_) => Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::IoError)),
         }
     }))
 }

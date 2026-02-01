@@ -131,8 +131,7 @@ impl UserAccess {
     pub fn write(&self, dst: UserSlice, data: &[u8]) -> Result<usize, SyscallError> {
         self.validate(dst)?;
         Ok(smap::with_userspace_access(|| {
-            let slice =
-                unsafe { core::slice::from_raw_parts_mut(dst.addr as *mut u8, dst.len) };
+            let slice = unsafe { core::slice::from_raw_parts_mut(dst.addr as *mut u8, dst.len) };
             let n = data.len().min(slice.len());
             slice[..n].copy_from_slice(&data[..n]);
             n
@@ -190,6 +189,16 @@ pub enum SyscallError {
     InvalidHandle,
 }
 
+impl SyscallError {
+    /// Convert to the corresponding `ErrorCode` for syscall return.
+    pub fn to_error_code(&self) -> panda_abi::ErrorCode {
+        match self {
+            SyscallError::BadUserPointer => panda_abi::ErrorCode::InvalidArgument,
+            SyscallError::InvalidHandle => panda_abi::ErrorCode::InvalidHandle,
+        }
+    }
+}
+
 /// Result of a syscall future, with optional data to write back to userspace.
 pub struct SyscallResult {
     /// The return code (placed in `rax` when returning to userspace).
@@ -207,10 +216,10 @@ impl SyscallResult {
         }
     }
 
-    /// An error result.
-    pub fn err(code: isize) -> Self {
+    /// An error result. The `ErrorCode` is negated for the syscall return value.
+    pub fn err(code: panda_abi::ErrorCode) -> Self {
         Self {
-            code,
+            code: code.to_isize(),
             writeback: None,
         }
     }

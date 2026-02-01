@@ -79,7 +79,7 @@ fn handle_read_vfs(
         let seek_result: Result<u64, crate::vfs::FsError> =
             file.seek(SeekFrom::Start(offset)).await;
         if seek_result.is_err() {
-            return SyscallResult::err(-1);
+            return SyscallResult::err(panda_abi::ErrorCode::IoError);
         }
 
         // Read into kernel bounce buffer (capped to prevent kernel heap exhaustion)
@@ -96,7 +96,7 @@ fn handle_read_vfs(
                 kernel_buf.truncate(n);
                 SyscallResult::write_back(n as isize, kernel_buf, dst)
             }
-            Err(_) => SyscallResult::err(-1),
+            Err(_) => SyscallResult::err(panda_abi::ErrorCode::IoError),
         }
     })
 }
@@ -158,10 +158,10 @@ fn handle_read_sync(handle_id: u64, dst: UserSlice, flags: u32) -> SyscallFuture
 
             Box::pin(poll_fn(move |_cx| {
                 let Some(ref resource) = resource else {
-                    return Poll::Ready(SyscallResult::err(-1));
+                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
                 };
                 let Some(event_source) = resource.as_event_source() else {
-                    return Poll::Ready(SyscallResult::err(-1));
+                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
                 };
 
                 if let Some(event) = event_source.poll() {
@@ -189,7 +189,9 @@ fn handle_read_sync(handle_id: u64, dst: UserSlice, flags: u32) -> SyscallFuture
         }
         None => {
             // Invalid handle
-            Box::pin(core::future::ready(SyscallResult::err(-1)))
+            Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidHandle,
+            )))
         }
     }
 }
@@ -249,7 +251,11 @@ fn handle_write_vfs(
     // Copy data from userspace into kernel buffer before building future
     let data = match ua.read(UserSlice::new(buf_ptr, buf_len)) {
         Ok(d) => d,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
     Box::pin(async move {
@@ -258,7 +264,7 @@ fn handle_write_vfs(
 
         // Seek to current offset
         if file.seek(SeekFrom::Start(offset)).await.is_err() {
-            return SyscallResult::err(-1);
+            return SyscallResult::err(panda_abi::ErrorCode::IoError);
         }
 
         // Write data from kernel buffer
@@ -271,7 +277,7 @@ fn handle_write_vfs(
                 });
                 SyscallResult::ok(n as isize)
             }
-            Err(_) => SyscallResult::err(-1),
+            Err(_) => SyscallResult::err(panda_abi::ErrorCode::IoError),
         }
     })
 }
@@ -289,25 +295,32 @@ fn handle_write_sync(
     // Copy data from userspace
     let data = match ua.read(UserSlice::new(buf_ptr, buf_len)) {
         Ok(d) => d,
-        Err(_) => return Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
     };
 
-    let result = scheduler::with_current_process(|proc| {
+    let result: Result<isize, panda_abi::ErrorCode> = scheduler::with_current_process(|proc| {
         let Some(handle) = proc.handles_mut().get_mut(handle_id) else {
-            return -1;
+            return Err(panda_abi::ErrorCode::InvalidHandle);
         };
 
         if let Some(char_out) = handle.as_char_output() {
             match char_out.write(&data) {
-                Ok(n) => n as isize,
-                Err(_) => -1,
+                Ok(n) => Ok(n as isize),
+                Err(_) => Err(panda_abi::ErrorCode::IoError),
             }
         } else {
-            -1
+            Err(panda_abi::ErrorCode::NotWritable)
         }
     });
 
-    Box::pin(core::future::ready(SyscallResult::ok(result)))
+    match result {
+        Ok(n) => Box::pin(core::future::ready(SyscallResult::ok(n))),
+        Err(code) => Box::pin(core::future::ready(SyscallResult::err(code))),
+    }
 }
 
 /// Handle file seek operation.
@@ -333,7 +346,9 @@ pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> Syscal
     });
 
     let Some(vfs_file) = vfs_file else {
-        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidHandle,
+        )));
     };
 
     // Get current offset
@@ -348,7 +363,9 @@ pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> Syscal
     if whence == SEEK_SET {
         let new_offset = offset as i64;
         if new_offset < 0 {
-            return Box::pin(core::future::ready(SyscallResult::err(-1)));
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidOffset,
+            )));
         }
         scheduler::with_current_process(|proc| {
             if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
@@ -361,7 +378,9 @@ pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> Syscal
     if whence == SEEK_CUR {
         let new_offset = current as i64 + offset as i64;
         if new_offset < 0 {
-            return Box::pin(core::future::ready(SyscallResult::err(-1)));
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidOffset,
+            )));
         }
         scheduler::with_current_process(|proc| {
             if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
@@ -383,7 +402,7 @@ pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> Syscal
                 Ok(s) => {
                     let new_offset = s.size as i64 + offset as i64;
                     if new_offset < 0 {
-                        return SyscallResult::err(-1);
+                        return SyscallResult::err(panda_abi::ErrorCode::InvalidOffset);
                     }
                     scheduler::with_current_process(|proc| {
                         if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
@@ -392,11 +411,13 @@ pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> Syscal
                     });
                     SyscallResult::ok(new_offset as isize)
                 }
-                Err(_) => SyscallResult::err(-1),
+                Err(_) => SyscallResult::err(panda_abi::ErrorCode::IoError),
             }
         })
     } else {
-        Box::pin(core::future::ready(SyscallResult::err(-1)))
+        Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidArgument,
+        )))
     }
 }
 
@@ -438,14 +459,14 @@ pub fn handle_stat(handle_id: u64, stat_ptr: usize) -> SyscallFuture {
                     };
                     SyscallResult::write_back_struct(0, &file_stat, dst)
                 }
-                Err(_) => SyscallResult::err(-1),
+                Err(_) => SyscallResult::err(panda_abi::ErrorCode::IoError),
             }
         })
     } else {
         // Sync path for non-VFS resources
         let result = scheduler::with_current_process(|proc| {
             let Some(handle) = proc.handles().get(handle_id) else {
-                return Err(());
+                return Err(panda_abi::ErrorCode::InvalidHandle);
             };
 
             let file_stat = if handle.as_directory().is_some() {
@@ -466,21 +487,22 @@ pub fn handle_stat(handle_id: u64, stat_ptr: usize) -> SyscallFuture {
             Ok(file_stat) => Box::pin(core::future::ready(SyscallResult::write_back_struct(
                 0, &file_stat, dst,
             ))),
-            Err(()) => Box::pin(core::future::ready(SyscallResult::err(-1))),
+            Err(code) => Box::pin(core::future::ready(SyscallResult::err(code))),
         }
     }
 }
 
 /// Handle file close operation.
 pub fn handle_close(handle_id: u64) -> SyscallFuture {
-    let result = scheduler::with_current_process(|proc| {
-        if proc.handles_mut().remove(handle_id).is_some() {
-            0
-        } else {
-            -1
-        }
-    });
-    Box::pin(core::future::ready(SyscallResult::ok(result)))
+    let removed =
+        scheduler::with_current_process(|proc| proc.handles_mut().remove(handle_id).is_some());
+    if removed {
+        Box::pin(core::future::ready(SyscallResult::ok(0)))
+    } else {
+        Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidHandle,
+        )))
+    }
 }
 
 /// Handle directory read operation (read next entry from directory handle).
@@ -524,10 +546,14 @@ pub fn handle_readdir(ua: &UserAccess, handle_id: u64, entry_ptr: usize) -> Sysc
             // Write entry to userspace via validated pointer
             match ua.write_user(UserPtr::new(entry_ptr), &dir_entry) {
                 Ok(_) => Box::pin(core::future::ready(SyscallResult::ok(1))),
-                Err(_) => Box::pin(core::future::ready(SyscallResult::err(-1))),
+                Err(_) => Box::pin(core::future::ready(SyscallResult::err(
+                    panda_abi::ErrorCode::InvalidArgument,
+                ))),
             }
         }
         Ok(None) => Box::pin(core::future::ready(SyscallResult::ok(0))),
-        Err(()) => Box::pin(core::future::ready(SyscallResult::err(-1))),
+        Err(()) => Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidHandle,
+        ))),
     }
 }
