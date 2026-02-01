@@ -88,7 +88,7 @@ impl OomHandler for BrkGrower {
             // Extend the existing heap region. The extend() API requires
             // that req_heap contains old_heap, so we combine the old arena
             // with the new memory into one contiguous span.
-            let combined = old_arena.extend(new_memory);
+            let combined = old_arena.extend(0, end - start);
             let arena = unsafe { talc.extend(old_arena, combined) };
             talc.oom_handler.arena = arena;
         }
