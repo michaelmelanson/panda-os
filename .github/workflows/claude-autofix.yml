@@ -52,13 +52,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Skip if the last commit was by claude (autofix already tried and failed)
-          LAST_AUTHOR=$(gh api repos/${{ github.repository }}/pulls/${{ steps.pr-info.outputs.pr_number }}/commits --jq '.[-1].author.login // .[-1].commit.author.name')
-          if [[ "$LAST_AUTHOR" == *claude* ]]; then
+          # Count consecutive claude commits at the end of the PR to detect retry loops
+          COMMITS=$(gh api repos/${{ github.repository }}/pulls/${{ steps.pr-info.outputs.pr_number }}/commits --jq '.[].author.login')
+          CONSECUTIVE=0
+          for author in $(echo "$COMMITS" | tac); do
+            if [[ "$author" == *claude* ]]; then
+              CONSECUTIVE=$((CONSECUTIVE + 1))
+            else
+              break
+            fi
+          done
+          echo "consecutive_attempts=$CONSECUTIVE" >> "$GITHUB_OUTPUT"
+          if [ "$CONSECUTIVE" -ge 3 ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Skipping: last commit was by $LAST_AUTHOR (autofix already attempted)"
+            echo "Skipping: $CONSECUTIVE consecutive autofix attempts (limit is 3)"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "Autofix attempt $((CONSECUTIVE + 1)) of 3"
           fi
 
       - name: Checkout PR branch
