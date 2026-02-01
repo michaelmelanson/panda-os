@@ -85,6 +85,8 @@ pub(crate) struct VirtioBlockDeviceInner {
     pub(crate) completed_tokens: BTreeSet<VirtioToken>,
     /// Cancelled requests with in-flight I/O.
     cancelled_requests: BTreeMap<VirtioToken, CancelledRequest>,
+    /// Wakers for futures that hit QueueFull and need to retry submission.
+    pub(crate) queue_full_wakers: Vec<TaskWaker>,
 }
 
 impl VirtioBlockDeviceInner {
@@ -252,6 +254,12 @@ impl VirtioBlockDeviceInner {
                 token
             );
             break;
+        }
+
+        // Wake any futures that were blocked on a full queue — a completion
+        // means there is now space to submit new requests.
+        for waker in self.queue_full_wakers.drain(..) {
+            waker.wake();
         }
 
         // Try to submit queued requests
@@ -536,6 +544,7 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
         async_wakers: BTreeMap::new(),
         completed_tokens: BTreeSet::new(),
         cancelled_requests: BTreeMap::new(),
+        queue_full_wakers: Vec::new(),
     };
 
     let block_device = Arc::new(Spinlock::new(block_device));

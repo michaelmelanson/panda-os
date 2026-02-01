@@ -158,7 +158,9 @@ impl<Op: IoOperation> Future for VirtioBlockFuture<Op> {
                 let raw_token = match raw_token {
                     Ok(t) => t,
                     Err(VirtioError::QueueFull) => {
-                        // Queue full - register waker and return pending
+                        // Queue full — register waker so the process is re-polled
+                        // when completions free up queue space, then yield.
+                        device.queue_full_wakers.push(cx.waker().clone());
                         return Poll::Pending;
                     }
                     Err(_) => return Poll::Ready(Err(BlockError::IoError)),
