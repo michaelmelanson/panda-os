@@ -236,8 +236,10 @@ pub struct Ext2Fs {
 impl Ext2Fs {
     pub async fn mount(device: Arc<dyn BlockDevice>) -> Result<Arc<Self>, &'static str>;
     pub async fn read_inode(&self, ino: u32) -> Result<Inode, FsError>;
+    pub async fn write_inode(&self, ino: u32, inode: &Inode) -> Result<(), FsError>;
     pub async fn lookup(&self, path: &str) -> Result<u32, FsError>;
     pub async fn get_block(&self, inode: &Inode, file_block: u32) -> Result<u32, FsError>;
+    pub async fn alloc_block(&self) -> Result<u32, FsError>;
 }
 ```
 
@@ -245,7 +247,9 @@ impl Ext2Fs {
 
 ```rust
 pub struct Ext2File {
+    fs: Arc<Ext2Fs>,
     device: Arc<dyn BlockDevice>,
+    ino: u32,
     inode: Inode,
     block_size: u32,
     size: u64,
@@ -253,10 +257,21 @@ pub struct Ext2File {
 }
 ```
 
-Implements `File` trait with async read/seek/stat. Read handles:
+The `fs` field provides access to `Ext2Fs` methods for block allocation and inode updates during writes.
+
+Implements `File` trait with async read/write/seek/stat.
+
+Read handles:
 - Sparse holes (block number 0 returns zeros)
 - Multi-block reads across block boundaries
 - Indirect block lookups
+
+Write handles:
+- Block allocation for new data via the block bitmap
+- Read-modify-write for partial block writes
+- File extension (growing the file size)
+- Indirect block allocation (single, double, triple) via `set_block_number`
+- Inode metadata updates (size, block count including indirect metadata blocks)
 
 ## BlockDeviceFile
 

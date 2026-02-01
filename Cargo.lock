@@ -251,6 +251,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ext2_write_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
 name = "fault_child"
 version = "0.1.0"
 dependencies = [

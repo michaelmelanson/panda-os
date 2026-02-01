@@ -1,0 +1,13 @@
+# Verify filesystem state after write tests.
+#
+# Lines starting with '>' are debugfs commands.
+# All other non-comment lines are expected patterns that must appear
+# in order in the debugfs output.
+
+# Test 1+2: hello.txt was overwritten and then appended to
+>cat hello.txt
+Written by Panda OS! Extra data appended.
+
+# Test 4: nested.txt had bytes 7-13 overwritten with "PATCHED"
+>cat subdir/nested.txt
+Nested PATCHED

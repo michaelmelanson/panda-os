@@ -14,7 +14,7 @@ pub use structs::*;
 
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use async_trait::async_trait;
 use spinning_top::RwSpinlock;
@@ -88,6 +88,29 @@ async fn read_block_ptr(
     Ok(u32::from_le_bytes(buf))
 }
 
+/// Write a single block pointer into an indirect block.
+///
+/// If `block` is 0, this is a bug — the caller must allocate the indirect block
+/// before calling this function.
+async fn write_block_ptr(
+    device: &dyn BlockDevice,
+    block: u32,
+    index: u32,
+    block_size: u32,
+    value: u32,
+) -> Result<(), FsError> {
+    if block == 0 {
+        return Err(FsError::IoError);
+    }
+    let offset = block as u64 * block_size as u64 + index as u64 * 4;
+    let buf = value.to_le_bytes();
+    device
+        .write_at(offset, &buf)
+        .await
+        .map_err(|_| FsError::IoError)?;
+    Ok(())
+}
+
 // =============================================================================
 // Mutable filesystem state
 // =============================================================================
@@ -126,6 +149,9 @@ pub struct Ext2Fs {
     /// that spans multiple `.await` points. The `()` payload is unused;
     /// the mutex exists solely for its exclusion property.
     alloc_lock: AsyncMutex<()>,
+    /// Weak self-reference used to hand `Arc<Ext2Fs>` to open files so they
+    /// can perform writes (block allocation, inode writeback, etc.).
+    self_ref: RwSpinlock<Weak<Ext2Fs>>,
 }
 
 impl Ext2Fs {
@@ -190,7 +216,7 @@ impl Ext2Fs {
             })
             .collect();
 
-        Ok(Arc::new(Self {
+        let fs = Arc::new(Self {
             device,
             block_size,
             inode_size,
@@ -201,7 +227,10 @@ impl Ext2Fs {
                 block_groups,
             }),
             alloc_lock: AsyncMutex::new(()),
-        }))
+            self_ref: RwSpinlock::new(Weak::new()),
+        });
+        *fs.self_ref.write() = Arc::downgrade(&fs);
+        Ok(fs)
     }
 
     // =========================================================================
@@ -387,6 +416,135 @@ impl Ext2Fs {
         get_block_number(&*self.device, &inode.block, self.block_size, file_block).await
     }
 
+    /// Set the physical block number for a file block index, handling indirect blocks.
+    ///
+    /// This is the write-side mirror of `get_block`. For file block indices
+    /// beyond the 12 direct slots it will allocate indirect, double-indirect,
+    /// or triple-indirect index blocks as needed.
+    ///
+    /// The caller must update the inode on disk after this returns (the inode's
+    /// `block` array may have been mutated for direct or first-level indirect
+    /// pointers).
+    /// Set the physical block number for a logical file block index.
+    ///
+    /// Returns the number of *metadata* blocks (indirect index blocks) that
+    /// were newly allocated. The caller must include these in `inode.blocks`
+    /// alongside the data block itself.
+    pub async fn set_block_number(
+        &self,
+        inode: &mut Inode,
+        file_block: u32,
+        value: u32,
+    ) -> Result<u32, FsError> {
+        let ptrs_per_block = self.block_size / 4;
+        let mut meta_blocks: u32 = 0;
+
+        // Direct blocks (0-11)
+        if file_block < 12 {
+            inode.block[file_block as usize] = value;
+            return Ok(0);
+        }
+
+        // Single indirect block (12)
+        let fb = file_block - 12;
+        if fb < ptrs_per_block {
+            if inode.block[12] == 0 {
+                let ind = self.alloc_block().await?;
+                // Zero out the new indirect block
+                let zeroes = alloc::vec![0u8; self.block_size as usize];
+                self.write_block(ind, &zeroes).await?;
+                inode.block[12] = ind;
+                meta_blocks += 1;
+            }
+            write_block_ptr(&*self.device, inode.block[12], fb, self.block_size, value)
+                .await?;
+            return Ok(meta_blocks);
+        }
+
+        // Double indirect block (13)
+        let fb = fb - ptrs_per_block;
+        if fb < ptrs_per_block * ptrs_per_block {
+            if inode.block[13] == 0 {
+                let dbl = self.alloc_block().await?;
+                let zeroes = alloc::vec![0u8; self.block_size as usize];
+                self.write_block(dbl, &zeroes).await?;
+                inode.block[13] = dbl;
+                meta_blocks += 1;
+            }
+            let idx1 = fb / ptrs_per_block;
+            let idx2 = fb % ptrs_per_block;
+            let ind = read_block_ptr(&*self.device, inode.block[13], idx1, self.block_size).await?;
+            let ind = if ind == 0 {
+                let new_ind = self.alloc_block().await?;
+                let zeroes = alloc::vec![0u8; self.block_size as usize];
+                self.write_block(new_ind, &zeroes).await?;
+                write_block_ptr(
+                    &*self.device,
+                    inode.block[13],
+                    idx1,
+                    self.block_size,
+                    new_ind,
+                )
+                .await?;
+                meta_blocks += 1;
+                new_ind
+            } else {
+                ind
+            };
+            write_block_ptr(&*self.device, ind, idx2, self.block_size, value).await?;
+            return Ok(meta_blocks);
+        }
+
+        // Triple indirect block (14)
+        let fb = fb - ptrs_per_block * ptrs_per_block;
+        let pp = ptrs_per_block * ptrs_per_block;
+        if inode.block[14] == 0 {
+            let tri = self.alloc_block().await?;
+            let zeroes = alloc::vec![0u8; self.block_size as usize];
+            self.write_block(tri, &zeroes).await?;
+            inode.block[14] = tri;
+            meta_blocks += 1;
+        }
+
+        let idx1 = fb / pp;
+        let idx2 = (fb % pp) / ptrs_per_block;
+        let idx3 = fb % ptrs_per_block;
+
+        let dbl = read_block_ptr(&*self.device, inode.block[14], idx1, self.block_size).await?;
+        let dbl = if dbl == 0 {
+            let new_dbl = self.alloc_block().await?;
+            let zeroes = alloc::vec![0u8; self.block_size as usize];
+            self.write_block(new_dbl, &zeroes).await?;
+            write_block_ptr(
+                &*self.device,
+                inode.block[14],
+                idx1,
+                self.block_size,
+                new_dbl,
+            )
+            .await?;
+            meta_blocks += 1;
+            new_dbl
+        } else {
+            dbl
+        };
+
+        let ind = read_block_ptr(&*self.device, dbl, idx2, self.block_size).await?;
+        let ind = if ind == 0 {
+            let new_ind = self.alloc_block().await?;
+            let zeroes = alloc::vec![0u8; self.block_size as usize];
+            self.write_block(new_ind, &zeroes).await?;
+            write_block_ptr(&*self.device, dbl, idx2, self.block_size, new_ind).await?;
+            meta_blocks += 1;
+            new_ind
+        } else {
+            ind
+        };
+
+        write_block_ptr(&*self.device, ind, idx3, self.block_size, value).await?;
+        Ok(meta_blocks)
+    }
+
     /// Read a full block from disk.
     pub async fn read_block(&self, block: u32, buf: &mut [u8]) -> Result<(), FsError> {
         if block >= self.blocks_count {
@@ -551,12 +709,13 @@ impl Filesystem for Ext2Fs {
             return Err(FsError::NotFound); // Can't open directories as files
         }
 
-        Ok(Box::new(Ext2File::new(
-            self.device.clone(),
-            inode,
-            ino,
-            self.block_size,
-        )))
+        let fs_arc = self
+            .self_ref
+            .read()
+            .upgrade()
+            .ok_or(FsError::IoError)?;
+
+        Ok(Box::new(Ext2File::new(fs_arc, inode, ino)))
     }
 
     async fn stat(&self, path: &str) -> Result<FileStat, FsError> {

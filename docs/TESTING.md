@@ -305,6 +305,55 @@ The kernel emits a `<<<PROCESS_FAULT>>>` marker in the error log when it kills a
 
 This pattern is useful for any test where the expected behaviour is for the kernel to kill the process (protection violations, invalid memory access, etc.).
 
+### Filesystem state testing with debugfs
+
+For tests that modify on-disk filesystem state (e.g., writing to an ext2 partition), you can verify the resulting disk contents after the test completes using `expected_debugfs.txt`. This runs the Linux `debugfs` tool against the test disk image and checks that expected patterns appear in its output.
+
+1. Create `userspace/tests/my_test/expected_debugfs.txt`:
+
+```
+# Lines starting with '>' are debugfs commands.
+# All other non-comment lines are expected patterns that must appear
+# in order in the debugfs output.
+
+# Verify file was written correctly
+>cat hello.txt
+Hello from Panda OS!
+
+# Verify nested file was modified
+>cat subdir/nested.txt
+Modified content
+```
+
+2. The test harness:
+   - Extracts all lines starting with `>` as debugfs commands (the `>` prefix is stripped)
+   - Runs them against the test disk image (`test-disk.img`) using `debugfs`
+   - Checks that each non-comment, non-command line appears in the debugfs output in order
+   - Fails if any expected pattern is missing
+
+**File format:**
+- Lines starting with `#` are comments (ignored)
+- Lines starting with `>` are debugfs commands (e.g., `>cat hello.txt`, `>ls /`, `>stat file.txt`)
+- All other non-blank lines are expected output patterns, matched in order using substring matching
+- Patterns are consumed sequentially: after matching pattern N, pattern N+1 is searched for only in the output that follows
+
+**When to use this:** Use `expected_debugfs.txt` when your test writes to a block device and you need to verify the on-disk state is correct. This is particularly useful for filesystem write tests where you want to confirm that data, metadata, and directory structures were persisted correctly. Combine it with `expected.txt` to verify both runtime behaviour (log output) and persistent state (disk contents).
+
+**Requirements:** The test must use a disk image. Tests that need a disk image should be added to the appropriate section in `scripts/setup-userspace-test.sh` and `scripts/run-qemu-test.sh` (for the virtio-blk drive attachment).
+
+Example from `ext2_write_test/expected_debugfs.txt`:
+```
+# Verify filesystem state after write tests.
+
+# Test 1+2: hello.txt was overwritten and then appended to
+>cat hello.txt
+Written by Panda OS! Extra data appended.
+
+# Test 4: nested.txt had bytes 7-13 overwritten with "PATCHED"
+>cat subdir/nested.txt
+Nested PATCHED
+```
+
 ### Exit codes
 
 - Exit code 0: Test passed

@@ -43,6 +43,7 @@ USERSPACE_TESTS := \
 	env_test \
 	error_test \
 	ext2_test \
+	ext2_write_test \
 	fault_recovery_test \
 	fmask_test \
 	heap_test \
