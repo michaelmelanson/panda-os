@@ -18,10 +18,10 @@ use device::PciDevice;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PciSegmentGroup {
-    group_id: u16,
-    base_address: VirtAddr,
-    bus_number_start: u8,
-    bus_number_end: u8,
+    pub(crate) group_id: u16,
+    pub(crate) base_address: VirtAddr,
+    pub(crate) bus_number_start: u8,
+    pub(crate) bus_number_end: u8,
 }
 
 impl PciSegmentGroup {
@@ -46,7 +46,7 @@ impl PciSegmentGroup {
     }
 }
 
-static PCI_SEGMENT_GROUPS: RwSpinlock<Vec<PciSegmentGroup>> = RwSpinlock::new(Vec::default());
+pub(crate) static PCI_SEGMENT_GROUPS: RwSpinlock<Vec<PciSegmentGroup>> = RwSpinlock::new(Vec::default());
 
 /// ECAM mappings for PCI config space (persist for kernel lifetime).
 static ECAM_MAPPINGS: RwSpinlock<Vec<PhysicalMapping>> = RwSpinlock::new(Vec::new());

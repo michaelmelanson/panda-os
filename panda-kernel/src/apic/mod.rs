@@ -172,7 +172,7 @@ pub fn init() {
 
     *LOCAL_APIC.lock() = Some(apic);
 
-    // Calibrate the timer
+    // Calibrate the APIC timer and TSC
     calibrate_timer();
 
     // Initialize the I/O APIC

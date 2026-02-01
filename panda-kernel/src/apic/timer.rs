@@ -3,6 +3,7 @@
 //! Uses the PIT (Programmable Interval Timer) as a reference clock to
 //! calibrate the APIC timer frequency.
 
+use core::arch::x86_64::_rdtsc;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use log::debug;
@@ -61,9 +62,10 @@ fn pit_wait_ms(ms: u32) {
     }
 }
 
-/// Calibrate the APIC timer using the PIT as a reference.
+/// Calibrate the APIC timer and TSC using the PIT as a reference.
 ///
-/// This measures how many APIC timer ticks occur during a known time period.
+/// This measures how many APIC timer ticks and TSC ticks occur during a
+/// known time period, calibrating both with a single PIT wait.
 pub fn calibrate_timer() {
     with_local_apic(|apic| {
         // Configure timer with maximum divider for calibration
@@ -75,13 +77,19 @@ pub fn calibrate_timer() {
         // Start APIC timer with maximum count
         apic.set_timer_count(0xFFFF_FFFF);
 
+        // Read TSC before the wait
+        let tsc_start = unsafe { _rdtsc() };
+
         // Wait for calibration period
         pit_wait_ms(CALIBRATION_MS);
 
-        // Read how many ticks elapsed
+        // Read TSC after the wait
+        let tsc_end = unsafe { _rdtsc() };
+
+        // Read how many APIC timer ticks elapsed
         let elapsed = 0xFFFF_FFFF - apic.timer_count();
 
-        // Calculate ticks per millisecond (accounting for divider)
+        // Calculate APIC ticks per millisecond (accounting for divider)
         let ticks_per_ms = elapsed / CALIBRATION_MS;
 
         TICKS_PER_MS.store(ticks_per_ms, Ordering::SeqCst);
@@ -93,6 +101,17 @@ pub fn calibrate_timer() {
             "APIC timer calibrated: {} ticks/ms ({} MHz bus)",
             ticks_per_ms,
             (ticks_per_ms as u64 * 16) / 1000 // Approximate bus frequency
+        );
+
+        // Calibrate TSC from the same PIT wait
+        let tsc_elapsed = tsc_end - tsc_start;
+        let tsc_ticks_per_ms = tsc_elapsed / CALIBRATION_MS as u64;
+        crate::time::set_tsc_frequency(tsc_ticks_per_ms, tsc_end);
+
+        debug!(
+            "TSC calibrated: {} ticks/ms (~{} MHz)",
+            tsc_ticks_per_ms,
+            tsc_ticks_per_ms / 1000
         );
     });
 }
