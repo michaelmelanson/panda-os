@@ -1,7 +1,11 @@
+# @unordered
 Mailbox test: starting
 Mailbox test: child spawned, waiting for events...
+# @barrier
+# ChannelReadable and ChannelClosed can arrive in either order
 Mailbox test: got ChannelReadable event!
 Mailbox test: message content correct
 Mailbox test: got ChannelClosed event!
+# @barrier
 Mailbox test: all events received correctly
 PASS

@@ -13,12 +13,14 @@ Created by Panda!
 In subdir
 
 # Test 4: hello.txt was unlinked — should not appear in root listing
->ls /
+# Use ls -l for one-entry-per-line output (plain ls wraps multiple entries
+# per line, which breaks the ordered pattern matcher).
+>ls -l /
 subdir
 large.bin
 newfile.txt
 
 # Verify subdir contains both original and created files
->ls subdir
+>ls -l subdir
 nested.txt
 created.txt
