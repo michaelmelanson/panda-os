@@ -48,11 +48,22 @@ pub trait File: Send + Sync {
 ```rust
 #[async_trait]
 pub trait Filesystem: Send + Sync {
+    // Required (read operations):
     async fn open(&self, path: &str) -> Result<Box<dyn File>, FsError>;
     async fn stat(&self, path: &str) -> Result<FileStat, FsError>;
     async fn readdir(&self, path: &str) -> Result<Vec<DirEntry>, FsError>;
+
+    // Optional (write operations — default to Err(FsError::ReadOnlyFs)):
+    async fn create(&self, path: &str, mode: u16) -> Result<Box<dyn File>, FsError>;
+    async fn unlink(&self, path: &str) -> Result<(), FsError>;
+    async fn mkdir(&self, path: &str, mode: u16) -> Result<(), FsError>;
+    async fn rmdir(&self, path: &str) -> Result<(), FsError>;
+    async fn truncate(&self, path: &str, size: u64) -> Result<(), FsError>;
+    async fn sync(&self) -> Result<(), FsError>;
 }
 ```
+
+Write operations have default implementations that return `FsError::ReadOnlyFs`, so read-only filesystems (e.g., TarFs) work without implementing them.
 
 ### BlockDevice Trait
 
@@ -73,10 +84,41 @@ Filesystems are mounted at path prefixes. The VFS resolves paths by finding the 
 
 ```rust
 pub fn mount(path: &str, fs: Arc<dyn Filesystem>);
+
+// Read operations:
 pub async fn open(path: &str) -> Result<Box<dyn File>, FsError>;
 pub async fn stat(path: &str) -> Result<FileStat, FsError>;
 pub async fn readdir(path: &str) -> Result<Vec<DirEntry>, FsError>;
+
+// Write operations:
+pub async fn create(path: &str, mode: u16) -> Result<Box<dyn File>, FsError>;
+pub async fn unlink(path: &str) -> Result<(), FsError>;
+pub async fn mkdir(path: &str, mode: u16) -> Result<(), FsError>;
+pub async fn rmdir(path: &str) -> Result<(), FsError>;
+pub async fn truncate(path: &str, size: u64) -> Result<(), FsError>;
+pub async fn sync(path: &str) -> Result<(), FsError>;
 ```
+
+All paths are canonicalised before mount-point resolution to prevent directory traversal attacks.
+
+## Error types
+
+`FsError` covers all filesystem error conditions:
+
+| Variant | Description |
+|---------|-------------|
+| `NotFound` | Path not found |
+| `InvalidOffset` | Invalid seek offset |
+| `NotReadable` | Resource is not readable |
+| `NotWritable` | Resource is not writable |
+| `NotSeekable` | Resource is not seekable |
+| `NoSpace` | Filesystem is full |
+| `AlreadyExists` | File or directory already exists at path |
+| `NotEmpty` | Directory is not empty (for rmdir) |
+| `IsDirectory` | Operation not valid on directories |
+| `NotDirectory` | Expected a directory but found a file |
+| `ReadOnlyFs` | Filesystem is mounted read-only |
+| `IoError` | Block device I/O failure |
 
 ## Virtio Block Driver
 

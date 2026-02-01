@@ -204,7 +204,7 @@ impl Ext2Fs {
     /// Resolve path to inode number.
     ///
     /// Defence-in-depth: `.` and `..` components are rejected here even though
-    /// the VFS layer should have already canonicalized the path. This prevents
+    /// the VFS layer should have already canonicalised the path. This prevents
     /// mount-point escape if canonicalization is ever bypassed.
     pub async fn lookup(&self, path: &str) -> Result<u32, FsError> {
         let path = path.trim_matches('/');
@@ -384,6 +384,7 @@ impl Filesystem for Ext2Fs {
         Ok(Box::new(Ext2File::new(
             self.device.clone(),
             inode,
+            ino,
             self.block_size,
         )))
     }
@@ -394,6 +395,12 @@ impl Filesystem for Ext2Fs {
         Ok(FileStat {
             size: inode.size(),
             is_dir: inode.is_dir(),
+            mode: inode.mode,
+            inode: ino as u64,
+            nlinks: inode.links_count as u64,
+            mtime: inode.mtime as u64,
+            ctime: inode.ctime as u64,
+            atime: inode.atime as u64,
         })
     }
 

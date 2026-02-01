@@ -86,6 +86,12 @@ impl Filesystem for TarFs {
             return Ok(FileStat {
                 size: *len as u64,
                 is_dir: false,
+                mode: 0o644,
+                inode: 0,
+                nlinks: 1,
+                mtime: 0,
+                ctime: 0,
+                atime: 0,
             });
         }
 
@@ -101,6 +107,12 @@ impl Filesystem for TarFs {
                 return Ok(FileStat {
                     size: 0,
                     is_dir: true,
+                    mode: 0o755,
+                    inode: 0,
+                    nlinks: 1,
+                    mtime: 0,
+                    ctime: 0,
+                    atime: 0,
                 });
             }
         }
@@ -208,6 +220,12 @@ impl File for TarFile {
         Ok(FileStat {
             size: self.len as u64,
             is_dir: false,
+            mode: 0o644,
+            inode: 0,
+            nlinks: 1,
+            mtime: 0,
+            ctime: 0,
+            atime: 0,
         })
     }
 }

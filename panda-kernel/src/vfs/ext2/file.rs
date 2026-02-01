@@ -15,6 +15,8 @@ pub struct Ext2File {
     device: Arc<dyn BlockDevice>,
     /// The file's inode data.
     inode: Inode,
+    /// The inode number (not stored in the on-disk inode; derived from table position).
+    ino: u32,
     /// Block size.
     block_size: u32,
     /// Total file size.
@@ -28,11 +30,12 @@ pub struct Ext2File {
 
 impl Ext2File {
     /// Create a new ext2 file.
-    pub fn new(device: Arc<dyn BlockDevice>, inode: Inode, block_size: u32) -> Self {
+    pub fn new(device: Arc<dyn BlockDevice>, inode: Inode, ino: u32, block_size: u32) -> Self {
         Self {
             size: inode.size(),
             device,
             inode,
+            ino,
             block_size,
             pos: 0,
             indirect_cache: None,
@@ -182,6 +185,12 @@ impl File for Ext2File {
         Ok(FileStat {
             size: self.size,
             is_dir: false,
+            mode: self.inode.mode,
+            inode: self.ino as u64,
+            nlinks: self.inode.links_count as u64,
+            mtime: self.inode.mtime as u64,
+            ctime: self.inode.ctime as u64,
+            atime: self.inode.atime as u64,
         })
     }
 }
