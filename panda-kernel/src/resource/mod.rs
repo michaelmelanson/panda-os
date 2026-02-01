@@ -121,6 +121,14 @@ pub trait Resource: Send + Sync {
         None
     }
 
+    /// Get the absolute VFS path for this directory resource.
+    ///
+    /// Returns `Some(path)` if this is a VFS-backed directory that supports
+    /// mutation operations (create, unlink).
+    fn as_vfs_directory_path(&self) -> Option<alloc::string::String> {
+        None
+    }
+
     /// Get this resource as a Channel (for message-based IPC).
     fn as_channel(&self) -> Option<&ChannelEndpoint> {
         None

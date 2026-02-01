@@ -698,6 +698,79 @@ impl Ext2Fs {
     pub fn mutable(&self) -> &RwSpinlock<Ext2FsMutable> {
         &self.mutable
     }
+
+    /// Free all data blocks and indirect index blocks owned by an inode.
+    ///
+    /// Walks the direct block pointers (0–11), single indirect (12),
+    /// double indirect (13), and triple indirect (14) block pointers,
+    /// freeing every allocated block. This is used by `unlink` when the
+    /// link count reaches zero, and will also be needed by `truncate`.
+    pub async fn free_inode_blocks(&self, inode: &Inode) -> Result<(), FsError> {
+        let ptrs_per_block = self.block_size() / 4;
+        let block_size = self.block_size() as usize;
+
+        // Free direct blocks (0–11)
+        for i in 0..12 {
+            if inode.block[i] != 0 {
+                self.free_block(inode.block[i]).await?;
+            }
+        }
+
+        // Free indirect blocks at each level of indirection
+        for (slot, depth) in [(12, 1u32), (13, 2), (14, 3)] {
+            if inode.block[slot] != 0 {
+                self.free_indirect_block(inode.block[slot], block_size, ptrs_per_block, depth)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Recursively free an indirect block and all blocks it points to.
+    ///
+    /// `depth` is 1 for single indirect, 2 for double, 3 for triple.
+    /// At depth 1, the block contains data block pointers which are freed.
+    /// At depth > 1, each pointer leads to another level of indirection.
+    /// The indirect block itself is freed after all its children.
+    async fn free_indirect_block(
+        &self,
+        block_num: u32,
+        block_size: usize,
+        ptrs_per_block: u32,
+        depth: u32,
+    ) -> Result<(), FsError> {
+        let mut buf = alloc::vec![0u8; block_size];
+        self.read_block(block_num, &mut buf).await?;
+
+        for i in 0..ptrs_per_block as usize {
+            let ptr = read_block_ptr_from_buf(&buf, i);
+            if ptr == 0 {
+                continue;
+            }
+            if depth == 1 {
+                self.free_block(ptr).await?;
+            } else {
+                self.free_indirect_block(ptr, block_size, ptrs_per_block, depth - 1)
+                    .await?;
+            }
+        }
+
+        // Free the indirect block itself
+        self.free_block(block_num).await?;
+        Ok(())
+    }
+}
+
+/// Read a u32 block pointer from a buffer at the given index.
+fn read_block_ptr_from_buf(buf: &[u8], index: usize) -> u32 {
+    let offset = index * 4;
+    u32::from_le_bytes([
+        buf[offset],
+        buf[offset + 1],
+        buf[offset + 2],
+        buf[offset + 3],
+    ])
 }
 
 #[async_trait]

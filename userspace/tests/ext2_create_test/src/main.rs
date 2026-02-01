@@ -44,12 +44,18 @@ libpanda::main! {
     }
     environment::log("ext2_create_test: ext2 mounted at /mnt");
 
+    // Open the root directory handle for create/unlink operations
+    let Ok(root_dir) = environment::opendir("file:/mnt") else {
+        environment::log("FAIL: Could not opendir file:/mnt");
+        return 1;
+    };
+
     // =========================================================================
     // Test 1: Create a new file, write to it, close, reopen and read back
     // =========================================================================
     environment::log("ext2_create_test: Test 1 - Create new file");
-    let Ok(handle) = environment::create("file:/mnt/newfile.txt", 0o644, 0) else {
-        environment::log("FAIL: Could not create file:/mnt/newfile.txt");
+    let Ok(handle) = environment::create(root_dir, "newfile.txt", 0o644, 0) else {
+        environment::log("FAIL: Could not create newfile.txt in /mnt");
         return 1;
     };
 
@@ -84,8 +90,12 @@ libpanda::main! {
     // Test 2: Create a file in a subdirectory
     // =========================================================================
     environment::log("ext2_create_test: Test 2 - Create file in subdirectory");
-    let Ok(handle) = environment::create("file:/mnt/subdir/created.txt", 0o644, 0) else {
-        environment::log("FAIL: Could not create file:/mnt/subdir/created.txt");
+    let Ok(subdir_handle) = environment::opendir("file:/mnt/subdir") else {
+        environment::log("FAIL: Could not opendir file:/mnt/subdir");
+        return 1;
+    };
+    let Ok(handle) = environment::create(subdir_handle, "created.txt", 0o644, 0) else {
+        environment::log("FAIL: Could not create created.txt in /mnt/subdir");
         return 1;
     };
 
@@ -96,13 +106,14 @@ libpanda::main! {
         return 1;
     }
     file::close(handle);
+    file::close(subdir_handle);
     environment::log("ext2_create_test: Test 2 passed");
 
     // =========================================================================
     // Test 3: Create duplicate file returns error
     // =========================================================================
     environment::log("ext2_create_test: Test 3 - Duplicate create returns error");
-    match environment::create("file:/mnt/newfile.txt", 0o644, 0) {
+    match environment::create(root_dir, "newfile.txt", 0o644, 0) {
         Err(libpanda::ErrorCode::AlreadyExists) => {
             // Expected
         }
@@ -121,8 +132,8 @@ libpanda::main! {
     // Test 4: Unlink a file
     // =========================================================================
     environment::log("ext2_create_test: Test 4 - Unlink file");
-    if let Err(_) = environment::unlink("file:/mnt/hello.txt") {
-        environment::log("FAIL: Could not unlink file:/mnt/hello.txt");
+    if let Err(_) = environment::unlink(root_dir, "hello.txt") {
+        environment::log("FAIL: Could not unlink hello.txt from /mnt");
         return 1;
     }
 
@@ -143,6 +154,9 @@ libpanda::main! {
     // Test 5: Verify directory listing
     // =========================================================================
     environment::log("ext2_create_test: Test 5 - Verify directory listing");
+
+    // Close the old root_dir handle (its snapshot is stale) and reopen
+    file::close(root_dir);
     let Ok(dir_handle) = environment::opendir("file:/mnt") else {
         environment::log("FAIL: Could not opendir file:/mnt");
         return 1;

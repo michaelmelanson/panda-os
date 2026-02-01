@@ -336,8 +336,8 @@ pub fn handle_time() -> SyscallFuture {
     Box::pin(core::future::ready(SyscallResult::ok(0)))
 }
 
-/// Map a VFS `FsError` to a syscall error code (negative value).
-fn fs_error_code(e: crate::vfs::FsError) -> panda_abi::ErrorCode {
+/// Map a VFS `FsError` to an `ErrorCode`.
+pub(super) fn fs_error_code(e: crate::vfs::FsError) -> panda_abi::ErrorCode {
     use crate::vfs::FsError;
     match e {
         FsError::NotFound => panda_abi::ErrorCode::NotFound,
@@ -355,126 +355,11 @@ fn fs_error_code(e: crate::vfs::FsError) -> panda_abi::ErrorCode {
     }
 }
 
-/// Handle environment create operation.
-///
-/// This syscall is async — creating a file requires disk I/O.
-///
-/// Arguments:
-/// - path_ptr, path_len: URI of file to create (e.g., "file:/mnt/newfile.txt")
-/// - mode: File permissions (e.g., 0o644)
-/// - mailbox_handle: Handle of mailbox to attach to (0 = don't attach)
-pub fn handle_create(
-    ua: &UserAccess,
-    path_ptr: usize,
-    path_len: usize,
-    mode: usize,
-    mailbox_handle: usize,
-) -> SyscallFuture {
-    let mailbox_handle = mailbox_handle as u64;
-    let mode = mode as u16;
-
-    let uri = match ua.read_str(path_ptr, path_len) {
-        Ok(u) => u,
-        Err(_) => {
-            return Box::pin(core::future::ready(SyscallResult::err(
-                panda_abi::ErrorCode::InvalidArgument,
-            )));
-        }
-    };
-
-    info!("handle_create: uri={}, mode={:#o}", uri, mode);
-
-    Box::pin(async move {
-        // Parse the URI — expect "file:/path"
-        let path = match uri.strip_prefix("file:") {
-            Some(p) => p,
-            None => {
-                error!("handle_create: unsupported URI scheme: {}", uri);
-                return SyscallResult::err(panda_abi::ErrorCode::InvalidArgument);
-            }
-        };
-
-        match crate::vfs::create(path, mode).await {
-            Ok(file) => {
-                let vfs_resource = resource::scheme::VfsFileResource::new(file);
-                let result: Result<isize, panda_abi::ErrorCode> =
-                    scheduler::with_current_process(|proc| {
-                        let handle_id = proc
-                            .handles_mut()
-                            .insert(Arc::new(vfs_resource))
-                            .map_err(|_| panda_abi::ErrorCode::TooManyHandles)?;
-
-                        // Attach to mailbox if requested
-                        if mailbox_handle != 0 {
-                            if let Some(mailbox_h) = proc.handles().get(mailbox_handle) {
-                                if let Some(mailbox) = mailbox_h.as_mailbox() {
-                                    mailbox.attach(handle_id, 0);
-                                }
-                            }
-                        }
-
-                        Ok(handle_id as isize)
-                    });
-                match result {
-                    Ok(handle_id) => {
-                        info!("handle_create: created file, handle_id={}", handle_id);
-                        SyscallResult::ok(handle_id)
-                    }
-                    Err(code) => SyscallResult::err(code),
-                }
-            }
-            Err(e) => {
-                info!("handle_create: failed: {:?}", e);
-                SyscallResult::err(fs_error_code(e))
-            }
-        }
-    })
-}
-
-/// Handle environment unlink operation.
-///
-/// This syscall is async — unlinking a file requires disk I/O.
-///
-/// Arguments:
-/// - path_ptr, path_len: URI of file to unlink (e.g., "file:/mnt/file.txt")
-pub fn handle_unlink(ua: &UserAccess, path_ptr: usize, path_len: usize) -> SyscallFuture {
-    let uri = match ua.read_str(path_ptr, path_len) {
-        Ok(u) => u,
-        Err(_) => {
-            return Box::pin(core::future::ready(SyscallResult::err(
-                panda_abi::ErrorCode::InvalidArgument,
-            )));
-        }
-    };
-
-    info!("handle_unlink: uri={}", uri);
-
-    Box::pin(async move {
-        // Parse the URI — expect "file:/path"
-        let path = match uri.strip_prefix("file:") {
-            Some(p) => p,
-            None => {
-                error!("handle_unlink: unsupported URI scheme: {}", uri);
-                return SyscallResult::err(panda_abi::ErrorCode::InvalidArgument);
-            }
-        };
-
-        match crate::vfs::unlink(path).await {
-            Ok(()) => {
-                info!("handle_unlink: unlinked {}", path);
-                SyscallResult::ok(0)
-            }
-            Err(e) => {
-                info!("handle_unlink: failed: {:?}", e);
-                SyscallResult::err(fs_error_code(e))
-            }
-        }
-    })
-}
-
 /// Handle environment opendir operation.
 ///
 /// This syscall is async - directory listing may require disk I/O.
+/// For `file:` URIs, the returned directory handle supports create/unlink
+/// operations via the VFS path.
 pub fn handle_opendir(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> SyscallFuture {
     let uri = match ua.read_str(uri_ptr, uri_len) {
         Ok(u) => u,
@@ -490,7 +375,15 @@ pub fn handle_opendir(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> Syscal
             return SyscallResult::err(panda_abi::ErrorCode::NotFound);
         };
 
-        let dir_resource = resource::DirectoryResource::new(entries);
+        // For file: URIs, store the VFS path so create/unlink can use it
+        let dir_resource = if let Some(vfs_path) = uri.strip_prefix("file:") {
+            resource::DirectoryResource::with_vfs_path(
+                entries,
+                alloc::string::String::from(vfs_path),
+            )
+        } else {
+            resource::DirectoryResource::new(entries)
+        };
         let result = scheduler::with_current_process(|proc| {
             proc.handles_mut().insert(Arc::new(dir_resource)).ok()
         });
