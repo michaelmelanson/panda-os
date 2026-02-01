@@ -1,0 +1,15 @@
+# Expected log output for ext2_create_test
+ext2_create_test: Starting
+ext2_create_test: Mounting ext2 filesystem
+ext2_create_test: ext2 mounted at /mnt
+ext2_create_test: Test 1 - Create new file
+ext2_create_test: Test 1 passed
+ext2_create_test: Test 2 - Create file in subdirectory
+ext2_create_test: Test 2 passed
+ext2_create_test: Test 3 - Duplicate create returns error
+ext2_create_test: Test 3 passed
+ext2_create_test: Test 4 - Unlink file
+ext2_create_test: Test 4 passed
+ext2_create_test: Test 5 - Verify directory listing
+ext2_create_test: Test 5 passed
+ext2_create_test: All tests passed!

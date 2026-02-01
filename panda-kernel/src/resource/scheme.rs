@@ -154,12 +154,12 @@ impl SchemeHandler for FileScheme {
 }
 
 /// A file resource wrapping a VFS file.
-struct VfsFileResource {
+pub struct VfsFileResource {
     file: Spinlock<Box<dyn vfs::File>>,
 }
 
 impl VfsFileResource {
-    fn new(file: Box<dyn vfs::File>) -> Self {
+    pub fn new(file: Box<dyn vfs::File>) -> Self {
         Self {
             file: Spinlock::new(file),
         }

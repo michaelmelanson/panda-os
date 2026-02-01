@@ -1,0 +1,24 @@
+# Verify filesystem state after create/unlink tests.
+#
+# Lines starting with '>' are debugfs commands.
+# All other non-comment lines are expected patterns that must appear
+# in order in the debugfs output.
+
+# Test 1: newfile.txt was created and written to
+>cat newfile.txt
+Created by Panda!
+
+# Test 2: created.txt was created in subdir
+>cat subdir/created.txt
+In subdir
+
+# Test 4: hello.txt was unlinked — should not appear in root listing
+>ls /
+newfile.txt
+subdir
+large.bin
+
+# Verify subdir contains both original and created files
+>ls subdir
+nested.txt
+created.txt

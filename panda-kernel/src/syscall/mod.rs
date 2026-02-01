@@ -223,6 +223,8 @@ fn build_future(
         OP_ENVIRONMENT_TIME => Ok(environment::handle_time()),
         OP_ENVIRONMENT_OPENDIR => Ok(environment::handle_opendir(ua, arg0, arg1)),
         OP_ENVIRONMENT_MOUNT => Ok(environment::handle_mount(ua, arg0, arg1, arg2, arg3)),
+        OP_ENVIRONMENT_CREATE => Ok(environment::handle_create(ua, arg0, arg1, arg2, arg3)),
+        OP_ENVIRONMENT_UNLINK => Ok(environment::handle_unlink(ua, arg0, arg1)),
 
         // Buffer operations
         OP_BUFFER_ALLOC => Ok(buffer::handle_alloc(ua, arg0, arg1)),

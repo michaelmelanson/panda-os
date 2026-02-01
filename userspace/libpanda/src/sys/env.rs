@@ -107,3 +107,33 @@ pub fn mount(fstype: &str, mountpoint: &str) -> isize {
         mountpoint.len(),
     )
 }
+
+/// Create a new file.
+///
+/// Returns file handle on success, or negative error code.
+#[inline(always)]
+pub fn create(path: &str, mode: u16, mailbox: u64) -> isize {
+    send(
+        Handle::ENVIRONMENT,
+        OP_ENVIRONMENT_CREATE,
+        path.as_ptr() as usize,
+        path.len(),
+        mode as usize,
+        mailbox as usize,
+    )
+}
+
+/// Unlink (delete) a file.
+///
+/// Returns 0 on success, or negative error code.
+#[inline(always)]
+pub fn unlink(path: &str) -> isize {
+    send(
+        Handle::ENVIRONMENT,
+        OP_ENVIRONMENT_UNLINK,
+        path.as_ptr() as usize,
+        path.len(),
+        0,
+        0,
+    )
+}

@@ -250,6 +250,10 @@ pub enum Operation {
     EnvironmentOpendir = 0x3_0004,
     /// Mount filesystem: (fstype_ptr, fstype_len, mountpoint_ptr, mountpoint_len) -> 0 or error
     EnvironmentMount = 0x3_0005,
+    /// Create file: (path_ptr, path_len, mode) -> file_handle or error
+    EnvironmentCreate = 0x3_0006,
+    /// Unlink (delete) file: (path_ptr, path_len) -> 0 or error
+    EnvironmentUnlink = 0x3_0007,
 
     // Buffer operations (0x4_0000 - 0x4_FFFF)
     /// Allocate a shared buffer: (size, info_ptr) -> buffer_handle or error
@@ -323,6 +327,8 @@ impl Operation {
             0x3_0003 => Some(Self::EnvironmentTime),
             0x3_0004 => Some(Self::EnvironmentOpendir),
             0x3_0005 => Some(Self::EnvironmentMount),
+            0x3_0006 => Some(Self::EnvironmentCreate),
+            0x3_0007 => Some(Self::EnvironmentUnlink),
             0x4_0000 => Some(Self::BufferAlloc),
             0x4_0002 => Some(Self::BufferResize),
             0x4_0003 => Some(Self::BufferFree),
@@ -417,6 +423,10 @@ pub const OP_ENVIRONMENT_OPENDIR: u32 = Operation::EnvironmentOpendir as u32;
 /// fstype: "ext2" to mount ext2 on first block device
 /// mountpoint: e.g., "/mnt"
 pub const OP_ENVIRONMENT_MOUNT: u32 = Operation::EnvironmentMount as u32;
+/// Create file: (path_ptr, path_len, mode) -> file_handle or error
+pub const OP_ENVIRONMENT_CREATE: u32 = Operation::EnvironmentCreate as u32;
+/// Unlink (delete) file: (path_ptr, path_len) -> 0 or error
+pub const OP_ENVIRONMENT_UNLINK: u32 = Operation::EnvironmentUnlink as u32;
 
 // Buffer operations (0x4_0000 - 0x4_FFFF)
 /// Allocate a shared buffer: (size, info_ptr) -> buffer_handle or error
@@ -859,6 +869,16 @@ pub enum ErrorCode {
     MessageTooLarge = 15,
     /// Buffer too small for the requested operation.
     BufferTooSmall = 16,
+    /// Resource already exists.
+    AlreadyExists = 17,
+    /// No space left on device.
+    NoSpace = 18,
+    /// Directory is not empty.
+    NotEmpty = 19,
+    /// Is a directory (operation not valid on directories).
+    IsDirectory = 20,
+    /// Not a directory.
+    NotDirectory = 21,
 }
 
 impl ErrorCode {
@@ -894,6 +914,11 @@ impl ErrorCode {
             14 => Some(ErrorCode::ChannelClosed),
             15 => Some(ErrorCode::MessageTooLarge),
             16 => Some(ErrorCode::BufferTooSmall),
+            17 => Some(ErrorCode::AlreadyExists),
+            18 => Some(ErrorCode::NoSpace),
+            19 => Some(ErrorCode::NotEmpty),
+            20 => Some(ErrorCode::IsDirectory),
+            21 => Some(ErrorCode::NotDirectory),
             _ => None,
         }
     }
@@ -919,6 +944,11 @@ impl core::fmt::Display for ErrorCode {
             ErrorCode::ChannelClosed => write!(f, "channel closed"),
             ErrorCode::MessageTooLarge => write!(f, "message too large"),
             ErrorCode::BufferTooSmall => write!(f, "buffer too small"),
+            ErrorCode::AlreadyExists => write!(f, "already exists"),
+            ErrorCode::NoSpace => write!(f, "no space left on device"),
+            ErrorCode::NotEmpty => write!(f, "directory not empty"),
+            ErrorCode::IsDirectory => write!(f, "is a directory"),
+            ErrorCode::NotDirectory => write!(f, "not a directory"),
         }
     }
 }

@@ -1,0 +1,185 @@
+//! Test creating and deleting files on the ext2 filesystem.
+//!
+//! Exercises:
+//! 1. Create a new file in the root directory, write to it, and read back
+//! 2. Create a new file in a subdirectory
+//! 3. Attempt to create a duplicate file (expect AlreadyExists)
+//! 4. Unlink a file and verify it disappears
+//! 5. Verify directory listings reflect create/unlink changes
+
+#![no_std]
+#![no_main]
+
+use libpanda::environment;
+use libpanda::file;
+use libpanda::handle::Handle;
+
+/// Seek to absolute position (SEEK_SET = 0).
+fn seek_to(handle: Handle, pos: i64) {
+    file::seek(handle, pos, 0);
+}
+
+/// Read the entire file from position 0, returning the number of bytes read.
+fn read_all(handle: Handle, buf: &mut [u8]) -> usize {
+    seek_to(handle, 0);
+    let mut total = 0usize;
+    loop {
+        let n = file::read(handle, &mut buf[total..]);
+        if n <= 0 {
+            break;
+        }
+        total += n as usize;
+    }
+    total
+}
+
+libpanda::main! {
+    environment::log("ext2_create_test: Starting");
+
+    // Mount ext2 filesystem
+    environment::log("ext2_create_test: Mounting ext2 filesystem");
+    if let Err(_) = environment::mount("ext2", "/mnt") {
+        environment::log("FAIL: Could not mount ext2 filesystem");
+        return 1;
+    }
+    environment::log("ext2_create_test: ext2 mounted at /mnt");
+
+    // =========================================================================
+    // Test 1: Create a new file, write to it, close, reopen and read back
+    // =========================================================================
+    environment::log("ext2_create_test: Test 1 - Create new file");
+    let Ok(handle) = environment::create("file:/mnt/newfile.txt", 0o644, 0) else {
+        environment::log("FAIL: Could not create file:/mnt/newfile.txt");
+        return 1;
+    };
+
+    let data = b"Created by Panda!";
+    let n = file::write(handle, data);
+    if n != data.len() as isize {
+        environment::log("FAIL: write returned wrong count");
+        return 1;
+    }
+    file::close(handle);
+
+    // Reopen and read back
+    let Ok(handle) = environment::open("file:/mnt/newfile.txt", 0, 0) else {
+        environment::log("FAIL: Could not reopen file:/mnt/newfile.txt");
+        return 1;
+    };
+    let mut buf = [0u8; 64];
+    let n = file::read(handle, &mut buf);
+    if n <= 0 {
+        environment::log("FAIL: Could not read after create");
+        return 1;
+    }
+    let content = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
+    if content != "Created by Panda!" {
+        environment::log("FAIL: Read-back content mismatch");
+        return 1;
+    }
+    file::close(handle);
+    environment::log("ext2_create_test: Test 1 passed");
+
+    // =========================================================================
+    // Test 2: Create a file in a subdirectory
+    // =========================================================================
+    environment::log("ext2_create_test: Test 2 - Create file in subdirectory");
+    let Ok(handle) = environment::create("file:/mnt/subdir/created.txt", 0o644, 0) else {
+        environment::log("FAIL: Could not create file:/mnt/subdir/created.txt");
+        return 1;
+    };
+
+    let data = b"In subdir";
+    let n = file::write(handle, data);
+    if n != data.len() as isize {
+        environment::log("FAIL: subdir write returned wrong count");
+        return 1;
+    }
+    file::close(handle);
+    environment::log("ext2_create_test: Test 2 passed");
+
+    // =========================================================================
+    // Test 3: Create duplicate file returns error
+    // =========================================================================
+    environment::log("ext2_create_test: Test 3 - Duplicate create returns error");
+    match environment::create("file:/mnt/newfile.txt", 0o644, 0) {
+        Err(libpanda::ErrorCode::AlreadyExists) => {
+            // Expected
+        }
+        Err(_) => {
+            // Also acceptable — any error for duplicate create
+        }
+        Ok(h) => {
+            file::close(h);
+            environment::log("FAIL: Duplicate create succeeded");
+            return 1;
+        }
+    }
+    environment::log("ext2_create_test: Test 3 passed");
+
+    // =========================================================================
+    // Test 4: Unlink a file
+    // =========================================================================
+    environment::log("ext2_create_test: Test 4 - Unlink file");
+    if let Err(_) = environment::unlink("file:/mnt/hello.txt") {
+        environment::log("FAIL: Could not unlink file:/mnt/hello.txt");
+        return 1;
+    }
+
+    // Verify it's gone
+    match environment::open("file:/mnt/hello.txt", 0, 0) {
+        Err(_) => {
+            // Expected — file not found
+        }
+        Ok(h) => {
+            file::close(h);
+            environment::log("FAIL: Unlinked file still openable");
+            return 1;
+        }
+    }
+    environment::log("ext2_create_test: Test 4 passed");
+
+    // =========================================================================
+    // Test 5: Verify directory listing
+    // =========================================================================
+    environment::log("ext2_create_test: Test 5 - Verify directory listing");
+    let Ok(dir_handle) = environment::opendir("file:/mnt") else {
+        environment::log("FAIL: Could not opendir file:/mnt");
+        return 1;
+    };
+
+    let mut found_newfile = false;
+    let mut found_hello = false;
+    let mut entry = libpanda::DirEntry {
+        name: [0u8; 255],
+        name_len: 0,
+        is_dir: false,
+    };
+    loop {
+        let n = file::readdir(dir_handle, &mut entry);
+        if n <= 0 {
+            break;
+        }
+        let name = core::str::from_utf8(&entry.name[..entry.name_len as usize]).unwrap_or("");
+        if name == "newfile.txt" {
+            found_newfile = true;
+        }
+        if name == "hello.txt" {
+            found_hello = true;
+        }
+    }
+    file::close(dir_handle);
+
+    if !found_newfile {
+        environment::log("FAIL: newfile.txt not found in directory listing");
+        return 1;
+    }
+    if found_hello {
+        environment::log("FAIL: hello.txt still in directory listing after unlink");
+        return 1;
+    }
+    environment::log("ext2_create_test: Test 5 passed");
+
+    environment::log("ext2_create_test: All tests passed!");
+    0
+}

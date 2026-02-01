@@ -14,7 +14,7 @@ mod event_source;
 mod mailbox;
 mod process;
 mod process_resource;
-mod scheme;
+pub(crate) mod scheme;
 mod spawn_handle;
 mod surface;
 mod window;

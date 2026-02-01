@@ -51,7 +51,7 @@ if [ "$TEST_NAME" = "block_test" ]; then
 fi
 
 # Create ext2 disk for ext2_test and ext2_write_test
-if [ "$TEST_NAME" = "ext2_test" ] || [ "$TEST_NAME" = "ext2_write_test" ]; then
+if [ "$TEST_NAME" = "ext2_test" ] || [ "$TEST_NAME" = "ext2_write_test" ] || [ "$TEST_NAME" = "ext2_create_test" ]; then
     dd if=/dev/zero of="$BUILD_DIR/test-disk.img" bs=1M count=10 2>/dev/null
     mkfs.ext2 -F "$BUILD_DIR/test-disk.img" >/dev/null 2>&1
     # Populate with test files using debugfs

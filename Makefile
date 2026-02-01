@@ -43,6 +43,7 @@ USERSPACE_TESTS := \
 	device_path_test \
 	env_test \
 	error_test \
+	ext2_create_test \
 	ext2_test \
 	ext2_write_test \
 	fault_recovery_test \
