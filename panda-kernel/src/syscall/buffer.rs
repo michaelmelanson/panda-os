@@ -30,7 +30,14 @@ pub fn handle_alloc(ua: &UserAccess, size: usize, info_ptr: usize) -> SyscallFut
                 let buffer_size = Buffer::size(&*buffer);
                 let handle_id = match proc.handles_mut().insert_typed(HandleType::Buffer, buffer) {
                     Ok(id) => id,
-                    Err(_) => return None,
+                    Err(_) => {
+                        let num_pages = (size + 4095) / 4096;
+                        proc.free_buffer_vaddr(
+                            x86_64::VirtAddr::new(mapped_addr as u64),
+                            num_pages,
+                        );
+                        return None;
+                    }
                 };
 
                 // Write full info to userspace if pointer provided

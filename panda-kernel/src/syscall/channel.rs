@@ -37,10 +37,16 @@ pub fn handle_create(ua: &UserAccess, out_handles_ptr: usize) -> SyscallFuture {
             .handles_mut()
             .insert_typed(HandleType::Channel, Arc::new(endpoint_a))
             .ok()?;
-        let handle_b = proc
+        let handle_b = match proc
             .handles_mut()
             .insert_typed(HandleType::Channel, Arc::new(endpoint_b))
-            .ok()?;
+        {
+            Ok(id) => id,
+            Err(_) => {
+                proc.handles_mut().remove(handle_a);
+                return None;
+            }
+        };
         Some((handle_a, handle_b))
     });
 
