@@ -56,7 +56,8 @@ impl Mailbox {
 
     /// Post an event to this mailbox.
     /// Called by resources when events occur.
-    /// The event is filtered by the handle's event mask.
+    /// The event mask determines which event *types* to accept (bits 0-7),
+    /// but the full event value is delivered (including encoded data in upper bits).
     ///
     /// The pending queue is bounded to [`panda_abi::MAX_MAILBOX_EVENTS`] entries.
     /// When the queue is full, the event is coalesced with an existing entry for
@@ -66,11 +67,12 @@ impl Mailbox {
     pub fn post_event(&self, handle_id: HandleId, events: u32) {
         let mut inner = self.inner.lock();
 
-        // Check if handle is attached and filter by mask
+        // Check if handle is attached and filter by mask.
+        // The mask determines which event TYPES to accept,
+        // but we deliver the full event including any encoded data.
         if let Some(&mask) = inner.attached.get(&handle_id) {
-            let masked = events & mask;
-            if masked != 0 {
-                push_event_bounded(&mut inner.pending, handle_id, masked);
+            if events & mask != 0 {
+                push_event_bounded(&mut inner.pending, handle_id, events);
                 // Wake the waiting process
                 inner.waker.wake();
             }
