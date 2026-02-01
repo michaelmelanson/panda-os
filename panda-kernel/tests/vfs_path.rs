@@ -29,6 +29,7 @@ panda_kernel::test_harness!(
     open_with_dot_works,
     stat_canonicalizes,
     readdir_canonicalizes,
+    write_methods_return_read_only_fs,
 );
 
 /// A no-op waker for busy-polling.
@@ -227,4 +228,32 @@ fn readdir_canonicalizes() {
     );
     let entries = result.unwrap();
     assert!(!entries.is_empty(), "/test should have entries");
+}
+
+fn write_methods_return_read_only_fs() {
+    ensure_mounts();
+
+    // create
+    let result = block_on(Box::pin(vfs::create("/test/newfile.txt", 0o644)));
+    assert_eq!(result.unwrap_err(), vfs::FsError::ReadOnlyFs);
+
+    // unlink
+    let result = block_on(Box::pin(vfs::unlink("/test/hello.txt")));
+    assert_eq!(result.unwrap_err(), vfs::FsError::ReadOnlyFs);
+
+    // mkdir
+    let result = block_on(Box::pin(vfs::mkdir("/test/newdir", 0o755)));
+    assert_eq!(result.unwrap_err(), vfs::FsError::ReadOnlyFs);
+
+    // rmdir
+    let result = block_on(Box::pin(vfs::rmdir("/test/sub")));
+    assert_eq!(result.unwrap_err(), vfs::FsError::ReadOnlyFs);
+
+    // truncate
+    let result = block_on(Box::pin(vfs::truncate("/test/hello.txt", 0)));
+    assert_eq!(result.unwrap_err(), vfs::FsError::ReadOnlyFs);
+
+    // sync
+    let result = block_on(Box::pin(vfs::sync("/test")));
+    assert_eq!(result.unwrap_err(), vfs::FsError::ReadOnlyFs);
 }

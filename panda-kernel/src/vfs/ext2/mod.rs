@@ -384,6 +384,7 @@ impl Filesystem for Ext2Fs {
         Ok(Box::new(Ext2File::new(
             self.device.clone(),
             inode,
+            ino,
             self.block_size,
         )))
     }
@@ -394,6 +395,12 @@ impl Filesystem for Ext2Fs {
         Ok(FileStat {
             size: inode.size(),
             is_dir: inode.is_dir(),
+            mode: inode.mode,
+            inode: ino as u64,
+            nlinks: inode.links_count as u64,
+            mtime: inode.mtime as u64,
+            ctime: inode.ctime as u64,
+            atime: inode.atime as u64,
         })
     }
 

@@ -80,6 +80,20 @@ pub enum FsError {
     NotWritable,
     /// Resource is not seekable
     NotSeekable,
+    /// Filesystem is full; no space left for allocation
+    NoSpace,
+    /// A file or directory already exists at the given path
+    AlreadyExists,
+    /// Directory is not empty (e.g., for rmdir)
+    NotEmpty,
+    /// Operation is not valid on a directory (e.g., truncate on a dir)
+    IsDirectory,
+    /// Expected a directory but found a file
+    NotDirectory,
+    /// Filesystem is mounted read-only
+    ReadOnlyFs,
+    /// Block device I/O failure
+    IoError,
 }
 
 /// File metadata
@@ -89,6 +103,18 @@ pub struct FileStat {
     pub size: u64,
     /// Whether this is a directory
     pub is_dir: bool,
+    /// File permissions mode (e.g., 0o755)
+    pub mode: u16,
+    /// Inode number
+    pub inode: u64,
+    /// Number of hard links
+    pub nlinks: u64,
+    /// Last modification time (Unix timestamp)
+    pub mtime: u64,
+    /// Creation / status-change time (Unix timestamp)
+    pub ctime: u64,
+    /// Last access time (Unix timestamp)
+    pub atime: u64,
 }
 
 /// Directory entry
@@ -113,6 +139,49 @@ pub trait Filesystem: Send + Sync {
 
     /// List directory contents
     async fn readdir(&self, path: &str) -> Result<Vec<DirEntry>, FsError>;
+
+    /// Create a new file at the given path with the given mode.
+    ///
+    /// Returns the opened file handle. The default implementation returns
+    /// `ReadOnlyFs`, allowing read-only filesystems to work without changes.
+    async fn create(&self, _path: &str, _mode: u16) -> Result<Box<dyn File>, FsError> {
+        Err(FsError::ReadOnlyFs)
+    }
+
+    /// Remove (unlink) a file at the given path.
+    ///
+    /// The default implementation returns `ReadOnlyFs`.
+    async fn unlink(&self, _path: &str) -> Result<(), FsError> {
+        Err(FsError::ReadOnlyFs)
+    }
+
+    /// Create a directory at the given path with the given mode.
+    ///
+    /// The default implementation returns `ReadOnlyFs`.
+    async fn mkdir(&self, _path: &str, _mode: u16) -> Result<(), FsError> {
+        Err(FsError::ReadOnlyFs)
+    }
+
+    /// Remove an empty directory at the given path.
+    ///
+    /// The default implementation returns `ReadOnlyFs`.
+    async fn rmdir(&self, _path: &str) -> Result<(), FsError> {
+        Err(FsError::ReadOnlyFs)
+    }
+
+    /// Truncate (or extend) a file to the given size.
+    ///
+    /// The default implementation returns `ReadOnlyFs`.
+    async fn truncate(&self, _path: &str, _size: u64) -> Result<(), FsError> {
+        Err(FsError::ReadOnlyFs)
+    }
+
+    /// Flush all pending metadata and data to the backing store.
+    ///
+    /// The default implementation returns `ReadOnlyFs`.
+    async fn sync(&self) -> Result<(), FsError> {
+        Err(FsError::ReadOnlyFs)
+    }
 }
 
 /// An open file (async interface).
@@ -238,6 +307,67 @@ pub async fn readdir(path: &str) -> Result<Vec<DirEntry>, FsError> {
     mounts[index].fs.readdir(&relative).await
 }
 
+/// Create a new file at the given absolute path (async).
+///
+/// The path is canonicalized before mount-point resolution.
+pub async fn create(path: &str, mode: u16) -> Result<Box<dyn File>, FsError> {
+    let canonical = canonicalize(path);
+    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
+    let mounts = MOUNTS.read();
+    mounts[index].fs.create(&relative, mode).await
+}
+
+/// Remove (unlink) a file at the given absolute path (async).
+///
+/// The path is canonicalized before mount-point resolution.
+pub async fn unlink(path: &str) -> Result<(), FsError> {
+    let canonical = canonicalize(path);
+    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
+    let mounts = MOUNTS.read();
+    mounts[index].fs.unlink(&relative).await
+}
+
+/// Create a directory at the given absolute path (async).
+///
+/// The path is canonicalized before mount-point resolution.
+pub async fn mkdir(path: &str, mode: u16) -> Result<(), FsError> {
+    let canonical = canonicalize(path);
+    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
+    let mounts = MOUNTS.read();
+    mounts[index].fs.mkdir(&relative, mode).await
+}
+
+/// Remove an empty directory at the given absolute path (async).
+///
+/// The path is canonicalized before mount-point resolution.
+pub async fn rmdir(path: &str) -> Result<(), FsError> {
+    let canonical = canonicalize(path);
+    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
+    let mounts = MOUNTS.read();
+    mounts[index].fs.rmdir(&relative).await
+}
+
+/// Truncate (or extend) a file at the given absolute path (async).
+///
+/// The path is canonicalized before mount-point resolution.
+pub async fn truncate(path: &str, size: u64) -> Result<(), FsError> {
+    let canonical = canonicalize(path);
+    let (index, relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
+    let mounts = MOUNTS.read();
+    mounts[index].fs.truncate(&relative, size).await
+}
+
+/// Flush all pending metadata and data for the filesystem at the given path (async).
+///
+/// The path is used to identify which mounted filesystem to sync.
+/// The path is canonicalized before mount-point resolution.
+pub async fn sync(path: &str) -> Result<(), FsError> {
+    let canonical = canonicalize(path);
+    let (index, _relative) = resolve_path(&canonical).ok_or(FsError::NotFound)?;
+    let mounts = MOUNTS.read();
+    mounts[index].fs.sync().await
+}
+
 // =============================================================================
 // Block Device File Wrapper
 // =============================================================================
@@ -299,6 +429,12 @@ impl File for BlockDeviceFile {
         Ok(FileStat {
             size: self.device.size(),
             is_dir: false,
+            mode: 0o660,
+            inode: 0,
+            nlinks: 1,
+            mtime: 0,
+            ctime: 0,
+            atime: 0,
         })
     }
 }
