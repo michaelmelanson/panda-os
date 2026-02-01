@@ -27,8 +27,6 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use goblin::elf::Elf;
-use log::error;
 use x86_64::VirtAddr;
 
 use crate::handle::HandleTable;
@@ -138,17 +136,6 @@ impl Process {
     /// Returns an error if the ELF binary is malformed or unsupported.
     pub fn from_elf_data(context: Context, data: *const [u8]) -> Result<Self, ProcessError> {
         let data = unsafe { data.as_ref().unwrap() };
-        let elf_parsed = match Elf::parse(data) {
-            Ok(elf) => elf,
-            Err(e) => {
-                error!("Failed to parse ELF binary: {}", e);
-                return Err(ProcessError::InvalidElf("failed to parse ELF binary"));
-            }
-        };
-        if !elf_parsed.is_64 {
-            error!("32-bit binaries are not supported");
-            return Err(ProcessError::Not64Bit);
-        }
 
         // Save current page table and switch to the new context's page table
         let saved_page_table = memory::current_page_table_phys();
@@ -156,7 +143,9 @@ impl Process {
             context.activate();
         }
 
-        let mappings = elf::load_elf(&elf_parsed, data)?;
+        // Uses our minimal ELF parser — only reads ELF header + program headers,
+        // skipping section headers, symbol tables, and relocations.
+        let (entry_point, mappings) = elf::load_elf(data)?;
 
         // Switch back to the original page table
         unsafe {
@@ -198,7 +187,7 @@ impl Process {
             last_scheduled: RTC::zero(),
             context,
             sp: stack_pointer,
-            ip: VirtAddr::new(elf_parsed.entry),
+            ip: VirtAddr::new(entry_point),
             mappings,
             handles,
             saved_state: None,

@@ -127,6 +127,32 @@ For example, a keyboard resource implements `as_event_source()` and `as_keyboard
 
 Resources can also provide a waker for blocking, report supported events for mailbox integration, and attach to mailboxes for event notification.
 
+## ELF loading and process startup
+
+Process creation uses the `panda-elf` crate (`crates/panda-elf`), a minimal `no_std` ELF64 parser that reads only the ELF header (64 bytes) and program header table (N × 56 bytes). Section headers, symbol tables, string tables, relocations, and dynamic linking info are not parsed. This avoids the overhead of a full ELF parse library, which is significant in debug mode.
+
+The parser validates: ELF magic, 64-bit class, little-endian encoding, and program header table bounds. For each PT_LOAD segment, security validation checks that virtual addresses and file offsets are within bounds and don't extend into kernel space.
+
+### Page table batching
+
+When mapping ELF segments, several optimisations reduce page table overhead:
+
+1. **Batch TLB flushes**: Instead of issuing an `INVLPG` for each page, a single `flush_all` is issued after all mappings are complete. For new process page tables, the entries can't be in the TLB cache anyway.
+2. **Cached page table levels**: For consecutive pages within the same 2MB region, the L4/L3/L2 entries are identical. The mapper caches the L1 page table pointer and only re-walks the hierarchy when crossing a 2MB boundary. This reduces page table walks from 2N to ~N/512.
+3. **Pre-allocated frames**: All physical frames are allocated before mapping begins, separating allocation from page table manipulation for better cache locality.
+4. **Pre-allocated Vec capacity**: The frame list is allocated with exact capacity upfront, avoiding repeated reallocation.
+
+### 2MB huge page support
+
+For regions >= 2MB, `allocate_and_map` uses 2MB huge pages via L2 page table entries with the `HUGE_PAGE` flag. This reduces page table entries by 512× for the huge-page portion and improves TLB coverage.
+
+The mapping is split into three parts:
+- **Head**: 4KB pages from the start up to the first 2MB boundary
+- **Body**: 2MB huge pages for each complete 2MB-aligned region
+- **Tail**: 4KB pages for the remainder after the last 2MB boundary
+
+The `Mapping::write_at` method handles variable-sized frames (4KB and 2MB) transparently. The unmap path already handled huge pages prior to this optimisation.
+
 ## Memory management
 
 Each process has a `Context` holding its page table physical address. Memory mappings track virtual address ranges and their backing: pre-allocated frames for code/data loaded from the ELF, MMIO for device memory, or demand-paged for stack and heap.
@@ -158,3 +184,5 @@ Kernel tasks are scheduled alongside userspace processes as `SchedulableEntity::
 | `handle.rs` | Handle table |
 | `resource/mod.rs` | Resource trait and interfaces |
 | `memory/mapping.rs` | Memory mappings |
+| `memory/paging.rs` | Page table operations, huge page support |
+| `process/elf.rs` | Minimal ELF parser and segment loading |

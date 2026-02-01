@@ -16,7 +16,7 @@ use libpanda::{
     buffer::Buffer,
     channel, environment,
     mailbox::{ChannelEvent, Event, InputEvent, Mailbox, ProcessEvent},
-    sys::send,
+    sys::{self, send},
     Handle,
 };
 use panda_abi::{
@@ -25,7 +25,7 @@ use panda_abi::{
         TerminalCapabilities, TerminalQuery,
     },
     value::Value,
-    BlitParams, UpdateParamsIn, OP_SURFACE_BLIT, OP_SURFACE_FLUSH, OP_SURFACE_UPDATE_PARAMS,
+    BlitParams, UpdateParamsIn, OP_SURFACE_UPDATE_PARAMS,
 };
 
 use crate::input::PendingInput;
@@ -522,27 +522,23 @@ impl Terminal {
     /// Blits the framebuffer to the window surface (if dirty), then
     /// asks the compositor to present the frame.
     pub fn flush(&mut self) {
-        if self.dirty.is_some() {
-            // Blit the full framebuffer to the window surface.
-            // All pixels are fully opaque so the kernel uses the fast copy path.
+        if let Some(dirty) = self.dirty {
+            let w = dirty.x1 - dirty.x0;
+            let h = dirty.y1 - dirty.y0;
             let blit_params = BlitParams {
-                x: 0,
-                y: 0,
-                width: self.width,
-                height: self.height,
+                x: dirty.x0,
+                y: dirty.y0,
+                width: w,
+                height: h,
                 buffer_handle: self.framebuffer.handle().as_raw(),
+                src_x: dirty.x0,
+                src_y: dirty.y0,
+                src_stride: self.width,
             };
-            send(
-                self.surface,
-                OP_SURFACE_BLIT,
-                &blit_params as *const BlitParams as usize,
-                0,
-                0,
-                0,
-            );
+            sys::surface::blit(self.surface, &blit_params);
             self.dirty = None;
         }
-        send(self.surface, OP_SURFACE_FLUSH, 0, 0, 0, 0);
+        sys::surface::flush(self.surface, None);
     }
 
     /// Handle a typed character (when not in input mode from child)

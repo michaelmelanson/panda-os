@@ -61,6 +61,7 @@ pub fn init() {
 extern "C" fn syscall_entry() {
     naked_asm!(
         "swapgs",
+        "cld",                       // Clear DF — QEMU TCG does not honour SFMASK
         "mov gs:[0x0], rsp",        // Save user RSP
         // Load kernel stack address from a 64-bit memory location.
         // Use RIP-relative addressing which gets properly relocated.

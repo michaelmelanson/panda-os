@@ -431,6 +431,10 @@ name = "panda-abi"
 version = "0.1.0"
 
 [[package]]
+name = "panda-elf"
+version = "0.1.0"
+
+[[package]]
 name = "panda-kernel"
 version = "0.1.0"
 dependencies = [
@@ -440,6 +444,7 @@ dependencies = [
  "linked_list_allocator",
  "log",
  "panda-abi",
+ "panda-elf",
  "spinning_top 0.3.0",
  "tar-no-std",
  "uefi",

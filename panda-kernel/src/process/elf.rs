@@ -1,5 +1,8 @@
 //! ELF binary loading.
 //!
+//! Uses the `panda-elf` crate for minimal ELF64 parsing (only ELF header and
+//! program headers), then maps PT_LOAD segments into the current address space.
+//!
 //! ## Segment Overlap Handling
 //!
 //! When ELF segments share pages (due to sub-page alignment), we must handle
@@ -24,15 +27,28 @@
 
 use alloc::vec::Vec;
 
-use goblin::elf::{
-    Elf,
-    program_header::{PT_LOAD, pt_to_str},
-};
 use log::{debug, trace, warn};
+use panda_elf::{Elf64Phdr, ElfError};
 use x86_64::VirtAddr;
 
 use crate::memory::{self, Mapping, MemoryMappingOptions, USER_ADDR_MAX};
 use crate::process::ProcessError;
+
+/// Convert a `panda_elf::ElfError` into a `ProcessError`.
+impl From<ElfError> for ProcessError {
+    fn from(e: ElfError) -> Self {
+        match e {
+            ElfError::Not64Bit => ProcessError::Not64Bit,
+            ElfError::FileTooSmall => ProcessError::InvalidElf("file too small for ELF header"),
+            ElfError::InvalidMagic => ProcessError::InvalidElf("invalid ELF magic number"),
+            ElfError::UnsupportedEndianness => {
+                ProcessError::InvalidElf("unsupported ELF endianness (not little-endian)")
+            }
+            ElfError::Overflow(msg) => ProcessError::InvalidElf(msg),
+            ElfError::OutOfBounds(msg) => ProcessError::InvalidElf(msg),
+        }
+    }
+}
 
 /// Validate ELF segment security constraints.
 ///
@@ -45,7 +61,7 @@ use crate::process::ProcessError;
 ///
 /// Returns Ok(segment_end) on success, or Err with a descriptive message on failure.
 fn validate_segment_security(
-    header: &goblin::elf::ProgramHeader,
+    header: &Elf64Phdr,
     file_size: usize,
 ) -> Result<u64, ProcessError> {
     // Validate p_vaddr is in userspace
@@ -58,14 +74,13 @@ fn validate_segment_security(
     }
 
     // Check for p_vaddr + p_memsz overflow and ensure it doesn't extend into kernel space
-    let segment_end = header.p_vaddr.checked_add(header.p_memsz)
-        .ok_or_else(|| {
-            warn!(
-                "ELF security: p_vaddr {:#x} + p_memsz {:#x} overflows",
-                header.p_vaddr, header.p_memsz
-            );
-            ProcessError::InvalidElf("ELF segment address + size overflows")
-        })?;
+    let segment_end = header.p_vaddr.checked_add(header.p_memsz).ok_or_else(|| {
+        warn!(
+            "ELF security: p_vaddr {:#x} + p_memsz {:#x} overflows",
+            header.p_vaddr, header.p_memsz
+        );
+        ProcessError::InvalidElf("ELF segment address + size overflows")
+    })?;
 
     if segment_end > USER_ADDR_MAX {
         warn!(
@@ -76,14 +91,13 @@ fn validate_segment_security(
     }
 
     // Check for p_offset + p_filesz overflow
-    let file_end = header.p_offset.checked_add(header.p_filesz)
-        .ok_or_else(|| {
-            warn!(
-                "ELF security: p_offset {:#x} + p_filesz {:#x} overflows",
-                header.p_offset, header.p_filesz
-            );
-            ProcessError::InvalidElf("ELF file offset + size overflows")
-        })?;
+    let file_end = header.p_offset.checked_add(header.p_filesz).ok_or_else(|| {
+        warn!(
+            "ELF security: p_offset {:#x} + p_filesz {:#x} overflows",
+            header.p_offset, header.p_filesz
+        );
+        ProcessError::InvalidElf("ELF file offset + size overflows")
+    })?;
 
     // Ensure p_offset + p_filesz is within file bounds
     if file_end as usize > file_size {
@@ -98,18 +112,33 @@ fn validate_segment_security(
 }
 
 /// Load an ELF binary into the current address space.
-/// Returns the list of mappings created, or an error if the ELF is invalid.
-pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Result<Vec<Mapping>, ProcessError> {
+///
+/// Uses the `panda-elf` crate to parse only the ELF header and program headers,
+/// then maps PT_LOAD segments into the address space. Returns the entry point
+/// and the list of mappings created.
+pub fn load_elf(data: &[u8]) -> Result<(u64, Vec<Mapping>), ProcessError> {
+    let phdr_count = panda_elf::program_headers_count(data).unwrap_or(0);
+    let mut phdr_buf = Vec::with_capacity(phdr_count);
+    phdr_buf.resize_with(phdr_count, || panda_elf::Elf64Phdr {
+        p_type: 0,
+        p_flags: 0,
+        p_offset: 0,
+        p_vaddr: 0,
+        p_filesz: 0,
+        p_memsz: 0,
+    });
+
+    let elf = panda_elf::parse_elf(data, &mut phdr_buf)?;
     let mut mappings = Vec::new();
     let mut last_segment_end: u64 = 0;
     let mut last_segment_executable = false;
 
-    // Get the actual ELF file size for offset validation
-    let file_size = unsafe { (&(*file_ptr)).len() };
+    let file_size = data.len();
+    let file_ptr = data.as_ptr();
 
-    for header in &elf.program_headers {
+    for header in elf.program_headers {
         match header.p_type {
-            PT_LOAD => {
+            panda_elf::PT_LOAD => {
                 // Validate segment security constraints
                 validate_segment_security(header, file_size)?;
 
@@ -184,7 +213,7 @@ pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Result<Vec<Mapping>, Pr
                     // The offset within the mapping accounts for page alignment.
                     let src_data = unsafe {
                         core::slice::from_raw_parts(
-                            file_ptr.byte_add(header.p_offset as usize) as *const u8,
+                            file_ptr.add(header.p_offset as usize),
                             header.p_filesz as usize,
                         )
                     };
@@ -204,9 +233,9 @@ pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Result<Vec<Mapping>, Pr
                 last_segment_executable = header.is_executable();
             }
 
-            _ => trace!("Ignoring {} program header", pt_to_str(header.p_type)),
+            other => trace!("Ignoring program header type {}", other),
         }
     }
 
-    Ok(mappings)
+    Ok((elf.header.entry, mappings))
 }

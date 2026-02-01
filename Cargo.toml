@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/panda-elf",
   "panda-abi",
   "panda-kernel",
   "userspace/init",
@@ -67,7 +68,7 @@ uefi = { version = "0.36" }
 virtio-drivers = { path = "vendor/virtio-drivers" }
 x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
 zerocopy = { version = "0.8.24", features = ["derive"] }
-goblin = { version = "0.10", default-features = false, features = ["alloc", "elf32", "elf64", "pe64", "endian_fd"] }
+goblin = { version = "0.10", default-features = false, features = ["alloc", "pe64", "endian_fd"] }
 tar-no-std = { version = "0.4", default-features = false }
 async-trait = "0.1"
 ring-buffer = { path = "crates/ring-buffer" }
