@@ -9,11 +9,6 @@
 extern crate alloc;
 
 use alloc::vec;
-use goblin::elf::Elf;
-use goblin::elf::header::{ELFMAG, SELFMAG, EI_CLASS, EI_DATA, EI_VERSION, ELFCLASS64, ELFDATA2LSB, EV_CURRENT, ET_EXEC, EM_X86_64};
-use goblin::elf::program_header::{PT_LOAD, PF_R, PF_X};
-use goblin::elf64::header::SIZEOF_EHDR;
-use goblin::elf64::program_header::SIZEOF_PHDR;
 use panda_kernel::process::ProcessError;
 
 panda_kernel::test_harness!(
@@ -25,24 +20,31 @@ panda_kernel::test_harness!(
     test_accept_valid_elf,
 );
 
-/// Helper to create a minimal ELF header using goblin constants.
+// ELF constants for crafting test binaries.
+const SIZEOF_EHDR: usize = 64;
+const SIZEOF_PHDR: usize = 56;
+const PT_LOAD: u32 = 1;
+const PF_R: u32 = 4;
+const PF_X: u32 = 1;
+
+/// Helper to create a minimal ELF64 header.
 fn create_elf_header() -> [u8; SIZEOF_EHDR] {
     let mut header = [0u8; SIZEOF_EHDR];
 
     // ELF magic number
-    header[0..SELFMAG].copy_from_slice(ELFMAG);
-    header[EI_CLASS] = ELFCLASS64;
-    header[EI_DATA] = ELFDATA2LSB;
-    header[EI_VERSION] = EV_CURRENT;
+    header[0..4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+    header[4] = 2; // ELFCLASS64
+    header[5] = 1; // ELFDATA2LSB
+    header[6] = 1; // EV_CURRENT
 
-    // e_type: ET_EXEC (executable)
-    header[16..18].copy_from_slice(&ET_EXEC.to_le_bytes());
+    // e_type: ET_EXEC (2)
+    header[16..18].copy_from_slice(&2u16.to_le_bytes());
 
-    // e_machine: EM_X86_64
-    header[18..20].copy_from_slice(&EM_X86_64.to_le_bytes());
+    // e_machine: EM_X86_64 (0x3E)
+    header[18..20].copy_from_slice(&0x3Eu16.to_le_bytes());
 
     // e_version
-    header[20..24].copy_from_slice(&(EV_CURRENT as u32).to_le_bytes());
+    header[20..24].copy_from_slice(&1u32.to_le_bytes());
 
     // e_entry
     header[24..32].copy_from_slice(&0x400000u64.to_le_bytes());
@@ -68,7 +70,7 @@ fn create_elf_header() -> [u8; SIZEOF_EHDR] {
     header
 }
 
-/// Helper to create a PT_LOAD program header using goblin constants.
+/// Helper to create a PT_LOAD program header.
 fn create_program_header(p_vaddr: u64, p_memsz: u64, p_offset: u64, p_filesz: u64) -> [u8; SIZEOF_PHDR] {
     let mut phdr = [0u8; SIZEOF_PHDR];
 
@@ -114,9 +116,7 @@ fn test_reject_kernel_space_vaddr() {
     );
     elf_data[SIZEOF_EHDR..SIZEOF_EHDR + SIZEOF_PHDR].copy_from_slice(&phdr);
 
-    let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
-
-    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_slice() as *const [u8]);
+    let result = panda_kernel::process::elf::load_elf(&elf_data);
 
     match result {
         Err(ProcessError::InvalidElf(msg)) => {
@@ -141,9 +141,7 @@ fn test_reject_vaddr_memsz_overflow() {
     );
     elf_data[SIZEOF_EHDR..SIZEOF_EHDR + SIZEOF_PHDR].copy_from_slice(&phdr);
 
-    let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
-
-    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_slice() as *const [u8]);
+    let result = panda_kernel::process::elf::load_elf(&elf_data);
 
     match result {
         Err(ProcessError::InvalidElf(msg)) => {
@@ -168,9 +166,7 @@ fn test_reject_vaddr_memsz_kernel_space() {
     );
     elf_data[SIZEOF_EHDR..SIZEOF_EHDR + SIZEOF_PHDR].copy_from_slice(&phdr);
 
-    let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
-
-    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_slice() as *const [u8]);
+    let result = panda_kernel::process::elf::load_elf(&elf_data);
 
     match result {
         Err(ProcessError::InvalidElf(msg)) => {
@@ -195,9 +191,7 @@ fn test_reject_offset_filesz_overflow() {
     );
     elf_data[SIZEOF_EHDR..SIZEOF_EHDR + SIZEOF_PHDR].copy_from_slice(&phdr);
 
-    let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
-
-    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_slice() as *const [u8]);
+    let result = panda_kernel::process::elf::load_elf(&elf_data);
 
     match result {
         Err(ProcessError::InvalidElf(msg)) => {
@@ -222,9 +216,7 @@ fn test_reject_offset_exceeds_file_size() {
     );
     elf_data[SIZEOF_EHDR..SIZEOF_EHDR + SIZEOF_PHDR].copy_from_slice(&phdr);
 
-    let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
-
-    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_slice() as *const [u8]);
+    let result = panda_kernel::process::elf::load_elf(&elf_data);
 
     match result {
         Err(ProcessError::InvalidElf(msg)) => {
@@ -254,12 +246,10 @@ fn test_accept_valid_elf() {
         elf_data[128 + i] = (i % 256) as u8;
     }
 
-    let elf = Elf::parse(&elf_data).expect("Failed to parse crafted ELF");
-
-    let result = panda_kernel::process::elf::load_elf(&elf, elf_data.as_slice() as *const [u8]);
+    let result = panda_kernel::process::elf::load_elf(&elf_data);
 
     match result {
-        Ok(mappings) => {
+        Ok((_entry, mappings)) => {
             assert_eq!(mappings.len(), 1, "Expected 1 mapping for valid ELF");
         }
         Err(e) => panic!("Valid ELF should be accepted, got error: {:?}", e),

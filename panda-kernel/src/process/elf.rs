@@ -1,4 +1,9 @@
-//! ELF binary loading.
+//! ELF binary loading with minimal parsing.
+//!
+//! Uses a custom minimal ELF parser that reads only the ELF header and program
+//! headers, skipping section headers, symbol tables, and relocations. This is
+//! significantly faster than a full ELF parse (e.g., goblin), especially in
+//! debug mode.
 //!
 //! ## Segment Overlap Handling
 //!
@@ -24,15 +29,173 @@
 
 use alloc::vec::Vec;
 
-use goblin::elf::{
-    Elf,
-    program_header::{PT_LOAD, pt_to_str},
-};
 use log::{debug, trace, warn};
 use x86_64::VirtAddr;
 
 use crate::memory::{self, Mapping, MemoryMappingOptions, USER_ADDR_MAX};
 use crate::process::ProcessError;
+
+// ELF constants — only the subset we actually need.
+const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
+const ELFCLASS64: u8 = 2;
+const ELFDATA2LSB: u8 = 1;
+const PT_LOAD: u32 = 1;
+const PF_X: u32 = 1;
+const PF_W: u32 = 2;
+const PF_R: u32 = 4;
+
+/// Minimal ELF64 header — only the fields we use.
+#[derive(Debug)]
+pub struct Elf64Header {
+    pub entry: u64,
+    pub phoff: u64,
+    pub phentsize: u16,
+    pub phnum: u16,
+}
+
+/// Minimal ELF64 program header — only the fields we use.
+#[derive(Debug)]
+pub struct Elf64Phdr {
+    pub p_type: u32,
+    pub p_flags: u32,
+    pub p_offset: u64,
+    pub p_vaddr: u64,
+    pub p_filesz: u64,
+    pub p_memsz: u64,
+}
+
+impl Elf64Phdr {
+    pub fn is_read(&self) -> bool {
+        self.p_flags & PF_R != 0
+    }
+    pub fn is_write(&self) -> bool {
+        self.p_flags & PF_W != 0
+    }
+    pub fn is_executable(&self) -> bool {
+        self.p_flags & PF_X != 0
+    }
+}
+
+/// Result of minimal ELF parsing.
+pub struct ParsedElf<'a> {
+    pub header: Elf64Header,
+    pub program_headers: Vec<Elf64Phdr>,
+    pub data: &'a [u8],
+}
+
+/// Read a little-endian u16 from a byte slice.
+fn read_u16_le(data: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([data[offset], data[offset + 1]])
+}
+
+/// Read a little-endian u32 from a byte slice.
+fn read_u32_le(data: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+    ])
+}
+
+/// Read a little-endian u64 from a byte slice.
+fn read_u64_le(data: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes([
+        data[offset],
+        data[offset + 1],
+        data[offset + 2],
+        data[offset + 3],
+        data[offset + 4],
+        data[offset + 5],
+        data[offset + 6],
+        data[offset + 7],
+    ])
+}
+
+/// Parse an ELF64 binary, reading only the ELF header and program headers.
+///
+/// Validates:
+/// - ELF magic number
+/// - 64-bit class
+/// - Little-endian encoding
+/// - Program header table is within file bounds
+///
+/// Does NOT parse: section headers, symbol tables, string tables, relocations,
+/// dynamic linking info, or any other ELF structures.
+pub fn parse_elf(data: &[u8]) -> Result<ParsedElf<'_>, ProcessError> {
+    // ELF header is 64 bytes for ELF64
+    const EHDR_SIZE: usize = 64;
+
+    if data.len() < EHDR_SIZE {
+        return Err(ProcessError::InvalidElf("file too small for ELF header"));
+    }
+
+    // Validate magic
+    if data[0..4] != ELF_MAGIC {
+        return Err(ProcessError::InvalidElf("invalid ELF magic number"));
+    }
+
+    // Validate class (must be ELF64)
+    if data[4] != ELFCLASS64 {
+        return Err(ProcessError::Not64Bit);
+    }
+
+    // Validate endianness (must be little-endian)
+    if data[5] != ELFDATA2LSB {
+        return Err(ProcessError::InvalidElf("unsupported ELF endianness (not little-endian)"));
+    }
+
+    let entry = read_u64_le(data, 24);    // e_entry
+    let phoff = read_u64_le(data, 32);     // e_phoff
+    let phentsize = read_u16_le(data, 54); // e_phentsize
+    let phnum = read_u16_le(data, 56);     // e_phnum
+
+    // Validate program header table bounds
+    let phdr_end = (phoff as usize)
+        .checked_add((phentsize as usize).checked_mul(phnum as usize).ok_or(
+            ProcessError::InvalidElf("program header table size overflows"),
+        )?)
+        .ok_or(ProcessError::InvalidElf(
+            "program header table offset + size overflows",
+        ))?;
+
+    if phdr_end > data.len() {
+        return Err(ProcessError::InvalidElf(
+            "program header table extends beyond file",
+        ));
+    }
+
+    // Parse program headers (each is 56 bytes for ELF64, but use phentsize)
+    let mut program_headers = Vec::with_capacity(phnum as usize);
+    for i in 0..phnum as usize {
+        let base = phoff as usize + i * phentsize as usize;
+        if base + 56 > data.len() {
+            return Err(ProcessError::InvalidElf(
+                "program header extends beyond file",
+            ));
+        }
+
+        program_headers.push(Elf64Phdr {
+            p_type: read_u32_le(data, base),
+            p_flags: read_u32_le(data, base + 4),
+            p_offset: read_u64_le(data, base + 8),
+            p_vaddr: read_u64_le(data, base + 16),
+            p_filesz: read_u64_le(data, base + 32),
+            p_memsz: read_u64_le(data, base + 40),
+        });
+    }
+
+    Ok(ParsedElf {
+        header: Elf64Header {
+            entry,
+            phoff,
+            phentsize,
+            phnum,
+        },
+        program_headers,
+        data,
+    })
+}
 
 /// Validate ELF segment security constraints.
 ///
@@ -45,7 +208,7 @@ use crate::process::ProcessError;
 ///
 /// Returns Ok(segment_end) on success, or Err with a descriptive message on failure.
 fn validate_segment_security(
-    header: &goblin::elf::ProgramHeader,
+    header: &Elf64Phdr,
     file_size: usize,
 ) -> Result<u64, ProcessError> {
     // Validate p_vaddr is in userspace
@@ -58,14 +221,13 @@ fn validate_segment_security(
     }
 
     // Check for p_vaddr + p_memsz overflow and ensure it doesn't extend into kernel space
-    let segment_end = header.p_vaddr.checked_add(header.p_memsz)
-        .ok_or_else(|| {
-            warn!(
-                "ELF security: p_vaddr {:#x} + p_memsz {:#x} overflows",
-                header.p_vaddr, header.p_memsz
-            );
-            ProcessError::InvalidElf("ELF segment address + size overflows")
-        })?;
+    let segment_end = header.p_vaddr.checked_add(header.p_memsz).ok_or_else(|| {
+        warn!(
+            "ELF security: p_vaddr {:#x} + p_memsz {:#x} overflows",
+            header.p_vaddr, header.p_memsz
+        );
+        ProcessError::InvalidElf("ELF segment address + size overflows")
+    })?;
 
     if segment_end > USER_ADDR_MAX {
         warn!(
@@ -76,14 +238,13 @@ fn validate_segment_security(
     }
 
     // Check for p_offset + p_filesz overflow
-    let file_end = header.p_offset.checked_add(header.p_filesz)
-        .ok_or_else(|| {
-            warn!(
-                "ELF security: p_offset {:#x} + p_filesz {:#x} overflows",
-                header.p_offset, header.p_filesz
-            );
-            ProcessError::InvalidElf("ELF file offset + size overflows")
-        })?;
+    let file_end = header.p_offset.checked_add(header.p_filesz).ok_or_else(|| {
+        warn!(
+            "ELF security: p_offset {:#x} + p_filesz {:#x} overflows",
+            header.p_offset, header.p_filesz
+        );
+        ProcessError::InvalidElf("ELF file offset + size overflows")
+    })?;
 
     // Ensure p_offset + p_filesz is within file bounds
     if file_end as usize > file_size {
@@ -98,14 +259,18 @@ fn validate_segment_security(
 }
 
 /// Load an ELF binary into the current address space.
-/// Returns the list of mappings created, or an error if the ELF is invalid.
-pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Result<Vec<Mapping>, ProcessError> {
+///
+/// Uses the minimal ELF parser to read only the ELF header and program headers,
+/// then maps PT_LOAD segments into the address space. Returns the entry point
+/// and the list of mappings created.
+pub fn load_elf(data: &[u8]) -> Result<(u64, Vec<Mapping>), ProcessError> {
+    let elf = parse_elf(data)?;
     let mut mappings = Vec::new();
     let mut last_segment_end: u64 = 0;
     let mut last_segment_executable = false;
 
-    // Get the actual ELF file size for offset validation
-    let file_size = unsafe { (&(*file_ptr)).len() };
+    let file_size = data.len();
+    let file_ptr = data.as_ptr();
 
     for header in &elf.program_headers {
         match header.p_type {
@@ -184,7 +349,7 @@ pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Result<Vec<Mapping>, Pr
                     // The offset within the mapping accounts for page alignment.
                     let src_data = unsafe {
                         core::slice::from_raw_parts(
-                            file_ptr.byte_add(header.p_offset as usize) as *const u8,
+                            file_ptr.add(header.p_offset as usize),
                             header.p_filesz as usize,
                         )
                     };
@@ -204,9 +369,9 @@ pub fn load_elf(elf: &Elf<'_>, file_ptr: *const [u8]) -> Result<Vec<Mapping>, Pr
                 last_segment_executable = header.is_executable();
             }
 
-            _ => trace!("Ignoring {} program header", pt_to_str(header.p_type)),
+            other => trace!("Ignoring program header type {}", other),
         }
     }
 
-    Ok(mappings)
+    Ok((elf.header.entry, mappings))
 }

@@ -14,7 +14,10 @@ use x86_64::{
 use super::mapping::{Mapping, MappingBacking};
 use super::recursive;
 use super::write_protection::without_write_protection;
-use super::{MemoryMappingOptions, allocate_frame, allocate_frame_raw, deallocate_frame_raw};
+use super::{
+    MemoryMappingOptions, allocate_frame, allocate_frame_raw, allocate_physical,
+    deallocate_frame_raw,
+};
 
 /// Get the current page table pointer via recursive mapping.
 pub fn current_page_table() -> *mut PageTable {
@@ -100,25 +103,27 @@ pub fn update_permissions(
         "virtual address must be page-aligned"
     );
 
+    let mut flags = PageTableFlags::PRESENT;
+    if options.user {
+        flags |= PageTableFlags::USER_ACCESSIBLE;
+    }
+    if options.writable {
+        flags |= PageTableFlags::WRITABLE;
+    }
+    if !options.executable {
+        flags |= PageTableFlags::NO_EXECUTE;
+    }
+
     for i in (0..size_bytes).step_by(4096) {
         let virt_addr = base_virt_addr + i as u64;
-
-        let mut flags = PageTableFlags::PRESENT;
-        if options.user {
-            flags |= PageTableFlags::USER_ACCESSIBLE;
-        }
-        if options.writable {
-            flags |= PageTableFlags::WRITABLE;
-        }
-        if !options.executable {
-            flags |= PageTableFlags::NO_EXECUTE;
-        }
 
         let (entry, _level) = l1_page_table_entry(virt_addr, flags);
         let entry = unsafe { &mut *entry };
         without_write_protection(|| entry.set_flags(flags));
-        tlb::flush(virt_addr);
     }
+
+    // Single TLB flush after all permission updates
+    tlb::flush_all();
 }
 
 /// Check if a virtual address is already mapped (including via huge pages).
@@ -151,11 +156,16 @@ fn is_mapped(addr: VirtAddr) -> bool {
 }
 
 /// Map physical memory to virtual address (internal implementation).
+///
+/// When `flush_tlb` is false, the caller is responsible for issuing a TLB flush
+/// after all mappings are complete. This is an optimisation for batch mapping where
+/// a single `tlb::flush_all()` replaces N individual `tlb::flush()` calls.
 fn map_inner(
     base_phys_addr: PhysAddr,
     base_virt_addr: VirtAddr,
     size_bytes: usize,
     options: &MemoryMappingOptions,
+    flush_tlb: bool,
 ) {
     assert!(
         base_phys_addr.is_aligned(4096u64),
@@ -189,18 +199,29 @@ fn map_inner(
         let (entry, _level) = l1_page_table_entry(virt_addr, flags);
         let entry = unsafe { &mut *entry };
         without_write_protection(|| entry.set_addr(phys_addr, flags));
-        tlb::flush(virt_addr);
+        if flush_tlb {
+            tlb::flush(virt_addr);
+        }
     }
 }
 
+/// Size of a 2MB huge page.
+const HUGE_PAGE_SIZE: usize = 2 * 1024 * 1024;
+
 /// Allocate frames and map them to a virtual address with RAII guard.
 /// Returns a mapping that owns the backing frames.
+///
+/// Optimisations applied:
+/// - Caches intermediate page table levels within 2MB regions
+/// - Pre-allocates all frames before mapping for better cache locality
+/// - Uses 2MB huge pages for aligned regions >= 2MB (512x fewer page table entries)
 pub fn allocate_and_map(
     base_virt_addr: VirtAddr,
     size_bytes: usize,
     options: MemoryMappingOptions,
 ) -> Mapping {
     use alloc::vec::Vec;
+    use core::alloc::Layout;
 
     assert!(
         base_virt_addr.is_aligned(4096u64),
@@ -208,16 +229,136 @@ pub fn allocate_and_map(
     );
 
     let aligned_size = (size_bytes + 4095) & !4095;
-    let mut frames = Vec::new();
 
-    for offset in (0..aligned_size).step_by(4096) {
-        let frame = allocate_frame();
-        let phys_addr = frame.start_address();
-        let virt_addr = base_virt_addr + offset as u64;
-
-        map_inner(phys_addr, virt_addr, 4096, &options);
-        frames.push(frame);
+    let mut flags = PageTableFlags::PRESENT;
+    if options.user {
+        flags |= PageTableFlags::USER_ACCESSIBLE;
     }
+    if options.writable {
+        flags |= PageTableFlags::WRITABLE;
+    }
+    if !options.executable {
+        flags |= PageTableFlags::NO_EXECUTE;
+    }
+
+    // Calculate the 2MB-aligned regions for huge page usage.
+    // Layout: [head 4KB pages] [2MB huge pages] [tail 4KB pages]
+    let start = base_virt_addr.as_u64() as usize;
+    let end = start + aligned_size;
+    let first_huge_boundary = (start + HUGE_PAGE_SIZE - 1) & !(HUGE_PAGE_SIZE - 1);
+    let last_huge_boundary = end & !(HUGE_PAGE_SIZE - 1);
+
+    let head_size = if first_huge_boundary <= end && last_huge_boundary > first_huge_boundary {
+        first_huge_boundary - start
+    } else {
+        aligned_size // No huge pages possible, everything is head
+    };
+    let huge_size = if head_size < aligned_size {
+        last_huge_boundary - first_huge_boundary
+    } else {
+        0
+    };
+    let tail_size = aligned_size - head_size - huge_size;
+
+    let head_pages = head_size / 4096;
+    let huge_count = huge_size / HUGE_PAGE_SIZE;
+    let tail_pages = tail_size / 4096;
+
+    // Pre-allocate all frames
+    let total_frame_count = head_pages + huge_count + tail_pages;
+    let mut frames = Vec::with_capacity(total_frame_count);
+
+    // Allocate head (4KB pages)
+    for _ in 0..head_pages {
+        frames.push(allocate_frame());
+    }
+
+    // Allocate huge pages (2MB each, 2MB-aligned)
+    for _ in 0..huge_count {
+        let layout = Layout::from_size_align(HUGE_PAGE_SIZE, HUGE_PAGE_SIZE).unwrap();
+        frames.push(allocate_physical(layout));
+    }
+
+    // Allocate tail (4KB pages)
+    for _ in 0..tail_pages {
+        frames.push(allocate_frame());
+    }
+
+    // Map head pages (4KB) with cached L1 table
+    let mut cached_l1_table: Option<(*mut PageTable, u64)> = None;
+    for i in 0..head_pages {
+        let frame = &frames[i];
+        let phys_addr = frame.start_address();
+        let virt_addr = base_virt_addr + (i * 4096) as u64;
+        let region_2mb = virt_addr.as_u64() & !0x1F_FFFF;
+
+        let l1_table = match cached_l1_table {
+            Some((table_ptr, cached_region)) if cached_region == region_2mb => table_ptr,
+            _ => {
+                let _ = l1_page_table_entry(virt_addr, flags);
+                let table_ptr =
+                    unsafe { recursive::table_for_addr_mut(virt_addr, PageTableLevel::One) }
+                        as *mut PageTable;
+                cached_l1_table = Some((table_ptr, region_2mb));
+                table_ptr
+            }
+        };
+
+        let l1_index = virt_addr.page_table_index(PageTableLevel::One);
+        let l1_table_ref = unsafe { &mut *l1_table };
+        let entry = &mut l1_table_ref[l1_index];
+        without_write_protection(|| entry.set_addr(phys_addr, flags));
+    }
+
+    // Map huge pages (2MB) via L2 entries
+    let huge_flags = flags | PageTableFlags::HUGE_PAGE;
+    for i in 0..huge_count {
+        let frame = &frames[head_pages + i];
+        let phys_addr = frame.start_address();
+        let virt_addr = VirtAddr::new(first_huge_boundary as u64 + (i * HUGE_PAGE_SIZE) as u64);
+
+        let l2_entry = l2_page_table_entry(virt_addr, flags);
+        let l2_entry = unsafe { &mut *l2_entry };
+        without_write_protection(|| l2_entry.set_addr(phys_addr, huge_flags));
+    }
+
+    if huge_count > 0 {
+        debug!(
+            "Mapped {} x 2MB huge pages at {:#x}..{:#x}",
+            huge_count,
+            first_huge_boundary,
+            last_huge_boundary
+        );
+    }
+
+    // Map tail pages (4KB) with cached L1 table
+    cached_l1_table = None;
+    for i in 0..tail_pages {
+        let frame = &frames[head_pages + huge_count + i];
+        let phys_addr = frame.start_address();
+        let virt_addr = VirtAddr::new(last_huge_boundary as u64 + (i * 4096) as u64);
+        let region_2mb = virt_addr.as_u64() & !0x1F_FFFF;
+
+        let l1_table = match cached_l1_table {
+            Some((table_ptr, cached_region)) if cached_region == region_2mb => table_ptr,
+            _ => {
+                let _ = l1_page_table_entry(virt_addr, flags);
+                let table_ptr =
+                    unsafe { recursive::table_for_addr_mut(virt_addr, PageTableLevel::One) }
+                        as *mut PageTable;
+                cached_l1_table = Some((table_ptr, region_2mb));
+                table_ptr
+            }
+        };
+
+        let l1_index = virt_addr.page_table_index(PageTableLevel::One);
+        let l1_table_ref = unsafe { &mut *l1_table };
+        let entry = &mut l1_table_ref[l1_index];
+        without_write_protection(|| entry.set_addr(phys_addr, flags));
+    }
+
+    // Single TLB flush for all pages mapped above
+    tlb::flush_all();
 
     Mapping::new(base_virt_addr, aligned_size, MappingBacking::Frames(frames))
 }
@@ -230,7 +371,7 @@ pub fn map_external(
     size_bytes: usize,
     options: MemoryMappingOptions,
 ) -> Mapping {
-    map_inner(base_phys_addr, base_virt_addr, size_bytes, &options);
+    map_inner(base_phys_addr, base_virt_addr, size_bytes, &options, true);
     Mapping::new(base_virt_addr, size_bytes, MappingBacking::Mmio)
 }
 
@@ -294,6 +435,47 @@ fn l1_page_table_entry(
             without_write_protection(|| entry.set_flags(entry_flags));
         }
     }
+}
+
+/// Get or create the L2 page table entry for a virtual address.
+///
+/// Used for setting up 2MB huge page entries. Ensures L4 and L3 intermediate
+/// tables exist, then returns a pointer to the L2 entry.
+fn l2_page_table_entry(
+    addr: VirtAddr,
+    flags: PageTableFlags,
+) -> *mut PageTableEntry {
+    // Ensure L4 → L3 → L2 path exists
+    let intermediate_flags =
+        (flags | PageTableFlags::PRESENT) & !PageTableFlags::NO_EXECUTE;
+
+    // Walk L4
+    let pml4 = unsafe { recursive::table_for_addr_mut(addr, PageTableLevel::Four) };
+    let l4_entry = &mut pml4[addr.page_table_index(PageTableLevel::Four)];
+    if l4_entry.addr() == PhysAddr::zero() {
+        let frame = allocate_frame_raw();
+        without_write_protection(|| l4_entry.set_addr(frame.start_address(), intermediate_flags));
+        tlb::flush(VirtAddr::new(l4_entry as *const _ as u64));
+    } else if !l4_entry.flags().contains(intermediate_flags & !PageTableFlags::NO_EXECUTE) {
+        let new_flags = l4_entry.flags() | intermediate_flags;
+        without_write_protection(|| l4_entry.set_flags(new_flags));
+    }
+
+    // Walk L3
+    let pdpt = unsafe { recursive::table_for_addr_mut(addr, PageTableLevel::Three) };
+    let l3_entry = &mut pdpt[addr.page_table_index(PageTableLevel::Three)];
+    if l3_entry.addr() == PhysAddr::zero() {
+        let frame = allocate_frame_raw();
+        without_write_protection(|| l3_entry.set_addr(frame.start_address(), intermediate_flags));
+        tlb::flush(VirtAddr::new(l3_entry as *const _ as u64));
+    } else if !l3_entry.flags().contains(intermediate_flags & !PageTableFlags::NO_EXECUTE) {
+        let new_flags = l3_entry.flags() | intermediate_flags;
+        without_write_protection(|| l3_entry.set_flags(new_flags));
+    }
+
+    // Return the L2 entry
+    let pd = unsafe { recursive::table_for_addr_mut(addr, PageTableLevel::Two) };
+    &mut pd[addr.page_table_index(PageTableLevel::Two)] as *mut PageTableEntry
 }
 
 /// Unmap a virtual address region, clearing page table entries.
