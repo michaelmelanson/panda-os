@@ -49,8 +49,8 @@ pub fn handle_open(
         match resource::open(&uri).await {
             Some(resource) => {
                 debug!("handle_open future: opened {} successfully", uri);
-                let handle_id = scheduler::with_current_process(|proc| {
-                    let handle_id = proc.handles_mut().insert(Arc::from(resource));
+                let result = scheduler::with_current_process(|proc| {
+                    let handle_id = proc.handles_mut().insert(Arc::from(resource)).ok()?;
 
                     // Attach to mailbox if requested
                     if mailbox_handle != 0 && event_mask != 0 {
@@ -69,10 +69,18 @@ pub fn handle_open(
                         }
                     }
 
-                    handle_id as isize
+                    Some(handle_id as isize)
                 });
-                info!("handle_open future: returning handle_id={}", handle_id);
-                SyscallResult::ok(handle_id)
+                match result {
+                    Some(handle_id) => {
+                        info!("handle_open future: returning handle_id={}", handle_id);
+                        SyscallResult::ok(handle_id)
+                    }
+                    None => {
+                        info!("handle_open future: handle limit reached for {}", uri);
+                        SyscallResult::err(-1)
+                    }
+                }
             }
             None => {
                 info!("handle_open future: failed to open {}", uri);
@@ -265,8 +273,8 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
         // Create SpawnHandle combining channel and process info
         let spawn_handle = resource::SpawnHandle::new(parent_endpoint, process_info);
 
-        let handle_id = scheduler::with_current_process(|proc| {
-            let handle_id = proc.handles_mut().insert(Arc::new(spawn_handle));
+        let result = scheduler::with_current_process(|proc| {
+            let handle_id = proc.handles_mut().insert(Arc::new(spawn_handle)).ok()?;
 
             // Attach to mailbox if requested
             if mailbox_handle != 0 && event_mask != 0 {
@@ -282,9 +290,12 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
                 }
             }
 
-            handle_id
+            Some(handle_id)
         });
-        SyscallResult::ok(handle_id as isize)
+        match result {
+            Some(handle_id) => SyscallResult::ok(handle_id as isize),
+            None => SyscallResult::err(-1),
+        }
     })
 }
 
@@ -319,9 +330,12 @@ pub fn handle_opendir(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> Syscal
         };
 
         let dir_resource = resource::DirectoryResource::new(entries);
-        let handle_id = scheduler::with_current_process(|proc| {
-            proc.handles_mut().insert(Arc::new(dir_resource))
+        let result = scheduler::with_current_process(|proc| {
+            proc.handles_mut().insert(Arc::new(dir_resource)).ok()
         });
-        SyscallResult::ok(handle_id as isize)
+        match result {
+            Some(handle_id) => SyscallResult::ok(handle_id as isize),
+            None => SyscallResult::err(-1),
+        }
     })
 }

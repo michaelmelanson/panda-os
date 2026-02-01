@@ -55,6 +55,7 @@ members = [
   "userspace/tests/fault_recovery_test",
   "userspace/tests/fault_child",
   "userspace/tests/fmask_test",
+  "userspace/tests/handle_limit_test",
   "crates/ring-buffer",
 ]
 

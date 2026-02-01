@@ -8,6 +8,7 @@
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use core::fmt;
 
 use panda_abi::HandleType;
 
@@ -15,6 +16,37 @@ use crate::process::waker::Waker;
 use crate::resource::{
     Buffer, CharacterOutput, Directory, EventSource, ProcessInterface, Resource, Surface, VfsFile,
 };
+
+/// Maximum number of open handles per process.
+///
+/// This limit prevents a single process from exhausting kernel memory by
+/// creating handles in a tight loop. Each handle holds an `Arc<dyn Resource>`,
+/// so unbounded handle creation would eventually exhaust the kernel heap.
+/// 4096 is generous enough for any reasonable workload while still providing
+/// protection against resource exhaustion attacks.
+pub const MAX_HANDLES_PER_PROCESS: usize = 4096;
+
+/// Errors that can occur when inserting a handle into the handle table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandleError {
+    /// The 56-bit handle ID space has been exhausted.
+    IdSpaceExhausted,
+    /// The per-process handle limit has been reached.
+    TooManyHandles,
+}
+
+impl fmt::Display for HandleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HandleError::IdSpaceExhausted => write!(f, "handle ID space exhausted (56-bit limit)"),
+            HandleError::TooManyHandles => write!(
+                f,
+                "per-process handle limit reached ({})",
+                MAX_HANDLES_PER_PROCESS
+            ),
+        }
+    }
+}
 
 /// Handle identifier (similar to file descriptor but for any resource).
 /// Includes type tag in high 8 bits, handle ID in low 56 bits.
@@ -157,24 +189,33 @@ impl HandleTable {
     }
 
     /// Insert a resource with the specified type tag and return its tagged handle ID.
+    ///
+    /// Returns `Err(HandleError::TooManyHandles)` if the process already has
+    /// [`MAX_HANDLES_PER_PROCESS`] open handles, or `Err(HandleError::IdSpaceExhausted)`
+    /// if the 56-bit handle ID counter has wrapped around.
     pub fn insert_typed(
         &mut self,
         handle_type: HandleType,
         resource: Arc<dyn Resource>,
-    ) -> HandleId {
+    ) -> Result<HandleId, HandleError> {
+        if self.handles.len() >= MAX_HANDLES_PER_PROCESS {
+            return Err(HandleError::TooManyHandles);
+        }
         let id = self.next_id;
-        assert!(
-            id <= HandleType::MAX_ID,
-            "handle ID space exhausted (56-bit wraparound)"
-        );
+        if id > HandleType::MAX_ID {
+            return Err(HandleError::IdSpaceExhausted);
+        }
         self.next_id += 1;
         let tagged_id = handle_type.make_handle(id);
         self.handles.insert(tagged_id, Handle::new(resource));
-        tagged_id
+        Ok(tagged_id)
     }
 
     /// Insert a resource using its self-reported type and return its tagged handle ID.
-    pub fn insert(&mut self, resource: Arc<dyn Resource>) -> HandleId {
+    ///
+    /// Returns an error if the per-process handle limit is reached or the ID space
+    /// is exhausted. See [`insert_typed`](Self::insert_typed) for details.
+    pub fn insert(&mut self, resource: Arc<dyn Resource>) -> Result<HandleId, HandleError> {
         let handle_type = resource.handle_type();
         self.insert_typed(handle_type, resource)
     }

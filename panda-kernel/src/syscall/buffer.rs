@@ -28,7 +28,10 @@ pub fn handle_alloc(ua: &UserAccess, size: usize, info_ptr: usize) -> SyscallFut
         match SharedBuffer::alloc(proc, size) {
             Ok((buffer, mapped_addr)) => {
                 let buffer_size = Buffer::size(&*buffer);
-                let handle_id = proc.handles_mut().insert_typed(HandleType::Buffer, buffer);
+                let handle_id = match proc.handles_mut().insert_typed(HandleType::Buffer, buffer) {
+                    Ok(id) => id,
+                    Err(_) => return None,
+                };
 
                 // Write full info to userspace if pointer provided
                 if info_out.is_some() {

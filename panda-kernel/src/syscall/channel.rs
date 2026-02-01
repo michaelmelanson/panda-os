@@ -32,15 +32,21 @@ pub fn handle_create(ua: &UserAccess, out_handles_ptr: usize) -> SyscallFuture {
     let (endpoint_a, endpoint_b) = ChannelEndpoint::create_pair();
 
     // Insert both endpoints into the current process's handle table
-    let (handle_a, handle_b) = scheduler::with_current_process(|proc| {
+    let result = scheduler::with_current_process(|proc| {
         let handle_a = proc
             .handles_mut()
-            .insert_typed(HandleType::Channel, Arc::new(endpoint_a));
+            .insert_typed(HandleType::Channel, Arc::new(endpoint_a))
+            .ok()?;
         let handle_b = proc
             .handles_mut()
-            .insert_typed(HandleType::Channel, Arc::new(endpoint_b));
-        (handle_a, handle_b)
+            .insert_typed(HandleType::Channel, Arc::new(endpoint_b))
+            .ok()?;
+        Some((handle_a, handle_b))
     });
+
+    let Some((handle_a, handle_b)) = result else {
+        return Box::pin(core::future::ready(SyscallResult::err(-1)));
+    };
 
     // Write the handle IDs to userspace
     let result = ua.write_user(UserPtr::<[u64; 2]>::new(out_handles_ptr), &[handle_a, handle_b]);

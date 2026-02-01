@@ -14,14 +14,18 @@ use super::poll_fn;
 use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr};
 
 /// Handle mailbox create operation.
-/// Returns a new mailbox handle.
+/// Returns a new mailbox handle, or -1 if the per-process handle limit is reached.
 pub fn handle_create() -> SyscallFuture {
-    let handle_id = scheduler::with_current_process(|proc| {
+    let result = scheduler::with_current_process(|proc| {
         let mailbox = Mailbox::new();
         proc.handles_mut()
             .insert_typed(HandleType::Mailbox, mailbox)
+            .ok()
     });
-    Box::pin(core::future::ready(SyscallResult::ok(handle_id as isize)))
+    match result {
+        Some(handle_id) => Box::pin(core::future::ready(SyscallResult::ok(handle_id as isize))),
+        None => Box::pin(core::future::ready(SyscallResult::err(-1))),
+    }
 }
 
 /// Handle mailbox wait operation (blocking).
