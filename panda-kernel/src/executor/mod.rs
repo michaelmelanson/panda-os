@@ -4,6 +4,8 @@
 //! using Rust's async/await. Tasks share the kernel stack and are polled
 //! by the executor when ready.
 
+pub mod async_mutex;
+pub mod join;
 pub mod sleep;
 pub mod waker;
 
