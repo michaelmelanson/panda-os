@@ -226,8 +226,8 @@ fn build_future(
         OP_ENVIRONMENT_MOUNT => Ok(environment::handle_mount(ua, arg0, arg1, arg2, arg3)),
 
         // Directory operations
-        OP_DIRECTORY_CREATE => Ok(directory::handle_create(ua, handle, arg0, arg1, arg2, arg3)),
-        OP_DIRECTORY_UNLINK => Ok(directory::handle_unlink(ua, handle, arg0, arg1)),
+        OP_DIRECTORY_CREATE_FILE => Ok(directory::handle_create(ua, handle, arg0, arg1, arg2, arg3)),
+        OP_DIRECTORY_UNLINK_FILE => Ok(directory::handle_unlink(ua, handle, arg0, arg1)),
 
         // Buffer operations
         OP_BUFFER_ALLOC => Ok(buffer::handle_alloc(ua, arg0, arg1)),

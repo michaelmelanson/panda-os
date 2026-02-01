@@ -63,7 +63,7 @@ impl Ext2Fs {
     /// - `IoError` on disk I/O failure.
     pub async fn add_dir_entry(
         &self,
-        dir_ino: u32,
+        _dir_ino: u32,
         mut dir_inode: Inode,
         name: &str,
         target_ino: u32,
@@ -200,7 +200,7 @@ impl Ext2Fs {
     /// - `IoError` on disk I/O failure.
     pub async fn remove_dir_entry(
         &self,
-        dir_ino: u32,
+        _dir_ino: u32,
         dir_inode: Inode,
         name: &str,
     ) -> Result<(u32, Inode), FsError> {

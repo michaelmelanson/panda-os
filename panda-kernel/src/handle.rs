@@ -144,6 +144,11 @@ impl Handle {
         self.resource.as_mailbox()
     }
 
+    /// Get the absolute VFS path for this directory resource.
+    pub fn as_vfs_directory_path(&self) -> Option<alloc::string::String> {
+        self.resource.as_vfs_directory_path()
+    }
+
     /// Get this handle's resource as a Keyboard (for keyboard devices).
     pub fn as_keyboard(&self) -> Option<&crate::resource::KeyboardResource> {
         self.resource.as_keyboard()

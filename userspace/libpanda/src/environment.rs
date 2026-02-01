@@ -128,7 +128,7 @@ pub fn mount(fstype: &str, mountpoint: &str) -> Result<()> {
 /// * `mailbox` - Mailbox handle for event notifications (0 = none)
 #[inline(always)]
 pub fn create(dir_handle: Handle, name: &str, mode: u16, mailbox: u64) -> Result<Handle> {
-    error::from_syscall_handle(sys::env::dir_create(dir_handle.as_raw(), name, mode, mailbox))
+    error::from_syscall_handle(sys::env::dir_create(dir_handle, name, mode, mailbox))
 }
 
 /// Unlink (delete) a file from a directory.
@@ -141,7 +141,7 @@ pub fn create(dir_handle: Handle, name: &str, mode: u16, mailbox: u64) -> Result
 /// * `name` - Filename to unlink (just the name, not a full path)
 #[inline(always)]
 pub fn unlink(dir_handle: Handle, name: &str) -> Result<()> {
-    error::from_syscall_unit(sys::env::dir_unlink(dir_handle.as_raw(), name))
+    error::from_syscall_unit(sys::env::dir_unlink(dir_handle, name))
 }
 
 /// Check if a file or directory exists at the given path.

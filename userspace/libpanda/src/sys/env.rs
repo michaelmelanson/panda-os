@@ -114,10 +114,10 @@ pub fn mount(fstype: &str, mountpoint: &str) -> isize {
 /// The `dir_handle` must be a directory handle opened via `opendir`.
 /// `name` is just the filename (not a full path).
 #[inline(always)]
-pub fn dir_create(dir_handle: u64, name: &str, mode: u16, mailbox: u64) -> isize {
+pub fn dir_create(dir_handle: Handle, name: &str, mode: u16, mailbox: u64) -> isize {
     send(
         dir_handle,
-        OP_DIRECTORY_CREATE,
+        OP_DIRECTORY_CREATE_FILE,
         name.as_ptr() as usize,
         name.len(),
         mode as usize,
@@ -131,10 +131,10 @@ pub fn dir_create(dir_handle: u64, name: &str, mode: u16, mailbox: u64) -> isize
 /// The `dir_handle` must be a directory handle opened via `opendir`.
 /// `name` is just the filename (not a full path).
 #[inline(always)]
-pub fn dir_unlink(dir_handle: u64, name: &str) -> isize {
+pub fn dir_unlink(dir_handle: Handle, name: &str) -> isize {
     send(
         dir_handle,
-        OP_DIRECTORY_UNLINK,
+        OP_DIRECTORY_UNLINK_FILE,
         name.as_ptr() as usize,
         name.len(),
         0,

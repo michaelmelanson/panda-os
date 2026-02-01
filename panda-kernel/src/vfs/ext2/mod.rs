@@ -733,32 +733,34 @@ impl Ext2Fs {
     /// At depth 1, the block contains data block pointers which are freed.
     /// At depth > 1, each pointer leads to another level of indirection.
     /// The indirect block itself is freed after all its children.
-    async fn free_indirect_block(
-        &self,
+    fn free_indirect_block<'a>(
+        &'a self,
         block_num: u32,
         block_size: usize,
         ptrs_per_block: u32,
         depth: u32,
-    ) -> Result<(), FsError> {
-        let mut buf = alloc::vec![0u8; block_size];
-        self.read_block(block_num, &mut buf).await?;
+    ) -> core::pin::Pin<alloc::boxed::Box<dyn core::future::Future<Output = Result<(), FsError>> + Send + 'a>> {
+        alloc::boxed::Box::pin(async move {
+            let mut buf = alloc::vec![0u8; block_size];
+            self.read_block(block_num, &mut buf).await?;
 
-        for i in 0..ptrs_per_block as usize {
-            let ptr = read_block_ptr_from_buf(&buf, i);
-            if ptr == 0 {
-                continue;
+            for i in 0..ptrs_per_block as usize {
+                let ptr = read_block_ptr_from_buf(&buf, i);
+                if ptr == 0 {
+                    continue;
+                }
+                if depth == 1 {
+                    self.free_block(ptr).await?;
+                } else {
+                    self.free_indirect_block(ptr, block_size, ptrs_per_block, depth - 1)
+                        .await?;
+                }
             }
-            if depth == 1 {
-                self.free_block(ptr).await?;
-            } else {
-                self.free_indirect_block(ptr, block_size, ptrs_per_block, depth - 1)
-                    .await?;
-            }
-        }
 
-        // Free the indirect block itself
-        self.free_block(block_num).await?;
-        Ok(())
+            // Free the indirect block itself
+            self.free_block(block_num).await?;
+            Ok(())
+        })
     }
 }
 
