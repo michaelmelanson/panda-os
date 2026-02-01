@@ -45,7 +45,7 @@ QEMU_CMD=(
 )
 
 # Add virtio-blk drive for block tests and ext2 tests
-if [ "$TEST_NAME" = "block" ] || [ "$TEST_NAME" = "block_test" ] || [ "$TEST_NAME" = "ext2_test" ]; then
+if [ "$TEST_NAME" = "block" ] || [ "$TEST_NAME" = "block_test" ] || [ "$TEST_NAME" = "ext2_test" ] || [ "$TEST_NAME" = "ext2_write_test" ]; then
     # Use explicit virtio-blk-pci device with MSI-X enabled (default vectors=3)
     QEMU_CMD+=(-drive "file=$BUILD_DIR/test-disk.img,if=none,format=raw,id=blk0")
     QEMU_CMD+=(-device "virtio-blk-pci,drive=blk0")
@@ -419,6 +419,50 @@ if [ -n "$EXPECTED_FILE" ]; then
             # Remove all lines up to and including the match
             FAULT_MESSAGES=$(echo "$FAULT_MESSAGES" | tail -n +$((MATCH_LINE + 1)))
         done <<< "$EXPECTED_FAULT_PATTERNS"
+    fi
+fi
+
+# Check expected debugfs patterns (filesystem state after test) if specified
+if [ -n "$EXPECTED_FILE" ]; then
+    EXPECTED_DEBUGFS_FILE="${EXPECTED_FILE%.txt}_debugfs.txt"
+    if [ -f "$EXPECTED_DEBUGFS_FILE" ]; then
+        DISK_IMAGE="$BUILD_DIR/test-disk.img"
+        if [ ! -f "$DISK_IMAGE" ]; then
+            echo "expected_debugfs.txt found but no test-disk.img in $BUILD_DIR" >&2
+            exit 1
+        fi
+
+        # Run debugfs commands from the expected file and capture output.
+        # Lines starting with '>' are debugfs commands; all other non-comment
+        # lines are expected output patterns matched in order.
+        DEBUGFS_CMDS=""
+        while IFS= read -r line; do
+            [[ -z "${line// }" ]] && continue
+            [[ "$line" =~ ^# ]] && continue
+            if [[ "$line" =~ ^\> ]]; then
+                DEBUGFS_CMDS="${DEBUGFS_CMDS}${line#>}"$'\n'
+            fi
+        done < "$EXPECTED_DEBUGFS_FILE"
+
+        DEBUGFS_OUTPUT=$(echo "$DEBUGFS_CMDS" | debugfs "$DISK_IMAGE" 2>/dev/null)
+
+        # Now verify expected patterns appear in the debugfs output (in order)
+        DEBUGFS_REMAINING="$DEBUGFS_OUTPUT"
+        DEBUGFS_LINE_NUM=0
+        while IFS= read -r line; do
+            [[ -z "${line// }" ]] && continue
+            [[ "$line" =~ ^# ]] && continue
+            [[ "$line" =~ ^\> ]] && continue
+            DEBUGFS_LINE_NUM=$((DEBUGFS_LINE_NUM + 1))
+            MATCH_LINE=$(echo "$DEBUGFS_REMAINING" | grep -n -F "$line" | head -1 | cut -d: -f1)
+            if [ -z "$MATCH_LINE" ]; then
+                echo "Expected debugfs pattern not found: '$line' (expected_debugfs.txt line $DEBUGFS_LINE_NUM)" >&2
+                echo "debugfs output:" >&2
+                echo "$DEBUGFS_OUTPUT" >&2
+                exit 1
+            fi
+            DEBUGFS_REMAINING=$(echo "$DEBUGFS_REMAINING" | tail -n +$((MATCH_LINE + 1)))
+        done < "$EXPECTED_DEBUGFS_FILE"
     fi
 fi
 

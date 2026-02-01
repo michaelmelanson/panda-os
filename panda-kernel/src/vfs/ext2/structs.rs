@@ -358,6 +358,12 @@ impl Inode {
         self.size as u64 | ((self.size_high as u64) << 32)
     }
 
+    /// Set 64-bit file size, updating both `size` and `size_high` fields.
+    pub fn set_size(&mut self, new_size: u64) {
+        self.size = new_size as u32;
+        self.size_high = (new_size >> 32) as u32;
+    }
+
     /// Check if this inode is a directory.
     pub fn is_dir(&self) -> bool {
         (self.mode & S_IFMT) == S_IFDIR

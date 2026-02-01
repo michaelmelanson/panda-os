@@ -1,0 +1,13 @@
+# Expected log output for ext2_write_test
+ext2_write_test: Starting
+ext2_write_test: Mounting ext2 filesystem
+ext2_write_test: ext2 mounted at /mnt
+ext2_write_test: Test 1 - Write to existing file
+ext2_write_test: Test 1 passed
+ext2_write_test: Test 2 - Write extends file size
+ext2_write_test: Test 2 passed
+ext2_write_test: Test 3 - Multi-block write
+ext2_write_test: Test 3 passed
+ext2_write_test: Test 4 - Partial block write
+ext2_write_test: Test 4 passed
+ext2_write_test: All tests passed!
