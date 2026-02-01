@@ -54,7 +54,8 @@ members = [
   "userspace/tests/size_cap_test",
   "userspace/tests/fault_recovery_test",
   "userspace/tests/fault_child",
-  "userspace/tests/fmask_test"
+  "userspace/tests/fmask_test",
+  "crates/ring-buffer",
 ]
 
 [workspace.dependencies]
@@ -70,6 +71,7 @@ zerocopy = { version = "0.8.24", features = ["derive"] }
 goblin = { version = "0.10", default-features = false, features = ["alloc", "pe64", "endian_fd"] }
 tar-no-std = { version = "0.4", default-features = false }
 async-trait = "0.1"
+ring-buffer = { path = "crates/ring-buffer" }
 
 # Required for no_std with -Zbuild-std: ensures core/alloc are built with
 # abort-on-panic since we have no unwinding runtime support.
