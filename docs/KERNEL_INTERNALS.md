@@ -129,7 +129,7 @@ Resources can also provide a waker for blocking, report supported events for mai
 
 ## ELF loading and process startup
 
-Process creation uses a minimal ELF parser in `panda-kernel/src/process/elf.rs` that reads only the ELF header (64 bytes) and program header table (N × 56 bytes). Section headers, symbol tables, string tables, relocations, and dynamic linking info are not parsed. This avoids the overhead of a full ELF parse library (e.g., goblin), which is significant in debug mode.
+Process creation uses the `panda-elf` crate (`crates/panda-elf`), a minimal `no_std` ELF64 parser that reads only the ELF header (64 bytes) and program header table (N × 56 bytes). Section headers, symbol tables, string tables, relocations, and dynamic linking info are not parsed. This avoids the overhead of a full ELF parse library, which is significant in debug mode.
 
 The parser validates: ELF magic, 64-bit class, little-endian encoding, and program header table bounds. For each PT_LOAD segment, security validation checks that virtual addresses and file offsets are within bounds and don't extend into kernel space.
 

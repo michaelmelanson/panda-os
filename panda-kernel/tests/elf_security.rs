@@ -9,6 +9,7 @@
 extern crate alloc;
 
 use alloc::vec;
+use panda_elf::{SIZEOF_EHDR, SIZEOF_PHDR, PT_LOAD, PF_R, PF_X};
 use panda_kernel::process::ProcessError;
 
 panda_kernel::test_harness!(
@@ -19,13 +20,6 @@ panda_kernel::test_harness!(
     test_reject_offset_exceeds_file_size,
     test_accept_valid_elf,
 );
-
-// ELF constants for crafting test binaries.
-const SIZEOF_EHDR: usize = 64;
-const SIZEOF_PHDR: usize = 56;
-const PT_LOAD: u32 = 1;
-const PF_R: u32 = 4;
-const PF_X: u32 = 1;
 
 /// Helper to create a minimal ELF64 header.
 fn create_elf_header() -> [u8; SIZEOF_EHDR] {

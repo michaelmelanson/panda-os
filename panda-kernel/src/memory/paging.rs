@@ -117,7 +117,7 @@ pub fn update_permissions(
     for i in (0..size_bytes).step_by(4096) {
         let virt_addr = base_virt_addr + i as u64;
 
-        let (entry, _level) = l1_page_table_entry(virt_addr, flags);
+        let (entry, _level) = page_table_entry(PageTableLevel::One, virt_addr, flags);
         let entry = unsafe { &mut *entry };
         without_write_protection(|| entry.set_flags(flags));
     }
@@ -196,7 +196,7 @@ fn map_inner(
             flags |= PageTableFlags::NO_EXECUTE;
         }
 
-        let (entry, _level) = l1_page_table_entry(virt_addr, flags);
+        let (entry, _level) = page_table_entry(PageTableLevel::One, virt_addr, flags);
         let entry = unsafe { &mut *entry };
         without_write_protection(|| entry.set_addr(phys_addr, flags));
         if flush_tlb {
@@ -295,7 +295,7 @@ pub fn allocate_and_map(
         let l1_table = match cached_l1_table {
             Some((table_ptr, cached_region)) if cached_region == region_2mb => table_ptr,
             _ => {
-                let _ = l1_page_table_entry(virt_addr, flags);
+                let _ = page_table_entry(PageTableLevel::One, virt_addr, flags);
                 let table_ptr =
                     unsafe { recursive::table_for_addr_mut(virt_addr, PageTableLevel::One) }
                         as *mut PageTable;
@@ -317,7 +317,7 @@ pub fn allocate_and_map(
         let phys_addr = frame.start_address();
         let virt_addr = VirtAddr::new(first_huge_boundary as u64 + (i * HUGE_PAGE_SIZE) as u64);
 
-        let l2_entry = l2_page_table_entry(virt_addr, flags);
+        let (l2_entry, _level) = page_table_entry(PageTableLevel::Two, virt_addr, flags);
         let l2_entry = unsafe { &mut *l2_entry };
         without_write_protection(|| l2_entry.set_addr(phys_addr, huge_flags));
     }
@@ -342,7 +342,7 @@ pub fn allocate_and_map(
         let l1_table = match cached_l1_table {
             Some((table_ptr, cached_region)) if cached_region == region_2mb => table_ptr,
             _ => {
-                let _ = l1_page_table_entry(virt_addr, flags);
+                let _ = page_table_entry(PageTableLevel::One, virt_addr, flags);
                 let table_ptr =
                     unsafe { recursive::table_for_addr_mut(virt_addr, PageTableLevel::One) }
                         as *mut PageTable;
@@ -407,11 +407,18 @@ fn leaf_page_table_entry(
     }
 }
 
-/// Get or create the L1 page table entry for a virtual address.
+/// Get or create the page table entry at the given target level for a virtual address.
 ///
-/// Note: This function assumes the address is NOT covered by a huge page.
-/// Call `is_mapped()` first to check if the address is already accessible.
-fn l1_page_table_entry(
+/// Walks from L4 down to `target_level`, creating intermediate page tables as
+/// needed. For `PageTableLevel::One` this returns the L1 entry for 4KB page
+/// mapping. For `PageTableLevel::Two` this returns the L2 entry for 2MB huge
+/// page mapping.
+///
+/// Note: When targeting L1, this function assumes the address is NOT covered by
+/// a huge page. Call `is_mapped()` first to check if the address is already
+/// accessible.
+fn page_table_entry(
+    target_level: PageTableLevel,
     addr: VirtAddr,
     flags: PageTableFlags,
 ) -> (*mut PageTableEntry, PageTableLevel) {
@@ -419,7 +426,7 @@ fn l1_page_table_entry(
         let (entry, level) = leaf_page_table_entry(addr, flags);
         let entry = unsafe { &mut *entry };
 
-        if level == PageTableLevel::One {
+        if level == target_level {
             return (entry, level);
         }
 
@@ -435,47 +442,6 @@ fn l1_page_table_entry(
             without_write_protection(|| entry.set_flags(entry_flags));
         }
     }
-}
-
-/// Get or create the L2 page table entry for a virtual address.
-///
-/// Used for setting up 2MB huge page entries. Ensures L4 and L3 intermediate
-/// tables exist, then returns a pointer to the L2 entry.
-fn l2_page_table_entry(
-    addr: VirtAddr,
-    flags: PageTableFlags,
-) -> *mut PageTableEntry {
-    // Ensure L4 → L3 → L2 path exists
-    let intermediate_flags =
-        (flags | PageTableFlags::PRESENT) & !PageTableFlags::NO_EXECUTE;
-
-    // Walk L4
-    let pml4 = unsafe { recursive::table_for_addr_mut(addr, PageTableLevel::Four) };
-    let l4_entry = &mut pml4[addr.page_table_index(PageTableLevel::Four)];
-    if l4_entry.addr() == PhysAddr::zero() {
-        let frame = allocate_frame_raw();
-        without_write_protection(|| l4_entry.set_addr(frame.start_address(), intermediate_flags));
-        tlb::flush(VirtAddr::new(l4_entry as *const _ as u64));
-    } else if !l4_entry.flags().contains(intermediate_flags & !PageTableFlags::NO_EXECUTE) {
-        let new_flags = l4_entry.flags() | intermediate_flags;
-        without_write_protection(|| l4_entry.set_flags(new_flags));
-    }
-
-    // Walk L3
-    let pdpt = unsafe { recursive::table_for_addr_mut(addr, PageTableLevel::Three) };
-    let l3_entry = &mut pdpt[addr.page_table_index(PageTableLevel::Three)];
-    if l3_entry.addr() == PhysAddr::zero() {
-        let frame = allocate_frame_raw();
-        without_write_protection(|| l3_entry.set_addr(frame.start_address(), intermediate_flags));
-        tlb::flush(VirtAddr::new(l3_entry as *const _ as u64));
-    } else if !l3_entry.flags().contains(intermediate_flags & !PageTableFlags::NO_EXECUTE) {
-        let new_flags = l3_entry.flags() | intermediate_flags;
-        without_write_protection(|| l3_entry.set_flags(new_flags));
-    }
-
-    // Return the L2 entry
-    let pd = unsafe { recursive::table_for_addr_mut(addr, PageTableLevel::Two) };
-    &mut pd[addr.page_table_index(PageTableLevel::Two)] as *mut PageTableEntry
 }
 
 /// Unmap a virtual address region, clearing page table entries.

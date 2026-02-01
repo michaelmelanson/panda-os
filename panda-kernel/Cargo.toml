@@ -19,6 +19,7 @@ zerocopy = { workspace = true }
 goblin = { workspace = true }
 tar-no-std = { workspace = true }
 panda-abi = { path = "../panda-abi" }
+panda-elf = { path = "../crates/panda-elf" }
 async-trait = { workspace = true }
 
 [lib]

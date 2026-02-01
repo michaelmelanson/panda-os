@@ -1,9 +1,7 @@
-//! ELF binary loading with minimal parsing.
+//! ELF binary loading.
 //!
-//! Uses a custom minimal ELF parser that reads only the ELF header and program
-//! headers, skipping section headers, symbol tables, and relocations. This is
-//! significantly faster than a full ELF parse (e.g., goblin), especially in
-//! debug mode.
+//! Uses the `panda-elf` crate for minimal ELF64 parsing (only ELF header and
+//! program headers), then maps PT_LOAD segments into the current address space.
 //!
 //! ## Segment Overlap Handling
 //!
@@ -30,171 +28,26 @@
 use alloc::vec::Vec;
 
 use log::{debug, trace, warn};
+use panda_elf::{Elf64Phdr, ElfError};
 use x86_64::VirtAddr;
 
 use crate::memory::{self, Mapping, MemoryMappingOptions, USER_ADDR_MAX};
 use crate::process::ProcessError;
 
-// ELF constants — only the subset we actually need.
-const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
-const ELFCLASS64: u8 = 2;
-const ELFDATA2LSB: u8 = 1;
-const PT_LOAD: u32 = 1;
-const PF_X: u32 = 1;
-const PF_W: u32 = 2;
-const PF_R: u32 = 4;
-
-/// Minimal ELF64 header — only the fields we use.
-#[derive(Debug)]
-pub struct Elf64Header {
-    pub entry: u64,
-    pub phoff: u64,
-    pub phentsize: u16,
-    pub phnum: u16,
-}
-
-/// Minimal ELF64 program header — only the fields we use.
-#[derive(Debug)]
-pub struct Elf64Phdr {
-    pub p_type: u32,
-    pub p_flags: u32,
-    pub p_offset: u64,
-    pub p_vaddr: u64,
-    pub p_filesz: u64,
-    pub p_memsz: u64,
-}
-
-impl Elf64Phdr {
-    pub fn is_read(&self) -> bool {
-        self.p_flags & PF_R != 0
-    }
-    pub fn is_write(&self) -> bool {
-        self.p_flags & PF_W != 0
-    }
-    pub fn is_executable(&self) -> bool {
-        self.p_flags & PF_X != 0
-    }
-}
-
-/// Result of minimal ELF parsing.
-pub struct ParsedElf<'a> {
-    pub header: Elf64Header,
-    pub program_headers: Vec<Elf64Phdr>,
-    pub data: &'a [u8],
-}
-
-/// Read a little-endian u16 from a byte slice.
-fn read_u16_le(data: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([data[offset], data[offset + 1]])
-}
-
-/// Read a little-endian u32 from a byte slice.
-fn read_u32_le(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ])
-}
-
-/// Read a little-endian u64 from a byte slice.
-fn read_u64_le(data: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-        data[offset + 4],
-        data[offset + 5],
-        data[offset + 6],
-        data[offset + 7],
-    ])
-}
-
-/// Parse an ELF64 binary, reading only the ELF header and program headers.
-///
-/// Validates:
-/// - ELF magic number
-/// - 64-bit class
-/// - Little-endian encoding
-/// - Program header table is within file bounds
-///
-/// Does NOT parse: section headers, symbol tables, string tables, relocations,
-/// dynamic linking info, or any other ELF structures.
-pub fn parse_elf(data: &[u8]) -> Result<ParsedElf<'_>, ProcessError> {
-    // ELF header is 64 bytes for ELF64
-    const EHDR_SIZE: usize = 64;
-
-    if data.len() < EHDR_SIZE {
-        return Err(ProcessError::InvalidElf("file too small for ELF header"));
-    }
-
-    // Validate magic
-    if data[0..4] != ELF_MAGIC {
-        return Err(ProcessError::InvalidElf("invalid ELF magic number"));
-    }
-
-    // Validate class (must be ELF64)
-    if data[4] != ELFCLASS64 {
-        return Err(ProcessError::Not64Bit);
-    }
-
-    // Validate endianness (must be little-endian)
-    if data[5] != ELFDATA2LSB {
-        return Err(ProcessError::InvalidElf("unsupported ELF endianness (not little-endian)"));
-    }
-
-    let entry = read_u64_le(data, 24);    // e_entry
-    let phoff = read_u64_le(data, 32);     // e_phoff
-    let phentsize = read_u16_le(data, 54); // e_phentsize
-    let phnum = read_u16_le(data, 56);     // e_phnum
-
-    // Validate program header table bounds
-    let phdr_end = (phoff as usize)
-        .checked_add((phentsize as usize).checked_mul(phnum as usize).ok_or(
-            ProcessError::InvalidElf("program header table size overflows"),
-        )?)
-        .ok_or(ProcessError::InvalidElf(
-            "program header table offset + size overflows",
-        ))?;
-
-    if phdr_end > data.len() {
-        return Err(ProcessError::InvalidElf(
-            "program header table extends beyond file",
-        ));
-    }
-
-    // Parse program headers (each is 56 bytes for ELF64, but use phentsize)
-    let mut program_headers = Vec::with_capacity(phnum as usize);
-    for i in 0..phnum as usize {
-        let base = phoff as usize + i * phentsize as usize;
-        if base + 56 > data.len() {
-            return Err(ProcessError::InvalidElf(
-                "program header extends beyond file",
-            ));
+/// Convert a `panda_elf::ElfError` into a `ProcessError`.
+impl From<ElfError> for ProcessError {
+    fn from(e: ElfError) -> Self {
+        match e {
+            ElfError::Not64Bit => ProcessError::Not64Bit,
+            ElfError::FileTooSmall => ProcessError::InvalidElf("file too small for ELF header"),
+            ElfError::InvalidMagic => ProcessError::InvalidElf("invalid ELF magic number"),
+            ElfError::UnsupportedEndianness => {
+                ProcessError::InvalidElf("unsupported ELF endianness (not little-endian)")
+            }
+            ElfError::Overflow(msg) => ProcessError::InvalidElf(msg),
+            ElfError::OutOfBounds(msg) => ProcessError::InvalidElf(msg),
         }
-
-        program_headers.push(Elf64Phdr {
-            p_type: read_u32_le(data, base),
-            p_flags: read_u32_le(data, base + 4),
-            p_offset: read_u64_le(data, base + 8),
-            p_vaddr: read_u64_le(data, base + 16),
-            p_filesz: read_u64_le(data, base + 32),
-            p_memsz: read_u64_le(data, base + 40),
-        });
     }
-
-    Ok(ParsedElf {
-        header: Elf64Header {
-            entry,
-            phoff,
-            phentsize,
-            phnum,
-        },
-        program_headers,
-        data,
-    })
 }
 
 /// Validate ELF segment security constraints.
@@ -260,11 +113,22 @@ fn validate_segment_security(
 
 /// Load an ELF binary into the current address space.
 ///
-/// Uses the minimal ELF parser to read only the ELF header and program headers,
+/// Uses the `panda-elf` crate to parse only the ELF header and program headers,
 /// then maps PT_LOAD segments into the address space. Returns the entry point
 /// and the list of mappings created.
 pub fn load_elf(data: &[u8]) -> Result<(u64, Vec<Mapping>), ProcessError> {
-    let elf = parse_elf(data)?;
+    let phdr_count = panda_elf::program_headers_count(data).unwrap_or(0);
+    let mut phdr_buf = Vec::with_capacity(phdr_count);
+    phdr_buf.resize_with(phdr_count, || panda_elf::Elf64Phdr {
+        p_type: 0,
+        p_flags: 0,
+        p_offset: 0,
+        p_vaddr: 0,
+        p_filesz: 0,
+        p_memsz: 0,
+    });
+
+    let elf = panda_elf::parse_elf(data, &mut phdr_buf)?;
     let mut mappings = Vec::new();
     let mut last_segment_end: u64 = 0;
     let mut last_segment_executable = false;
@@ -272,9 +136,9 @@ pub fn load_elf(data: &[u8]) -> Result<(u64, Vec<Mapping>), ProcessError> {
     let file_size = data.len();
     let file_ptr = data.as_ptr();
 
-    for header in &elf.program_headers {
+    for header in elf.program_headers {
         match header.p_type {
-            PT_LOAD => {
+            panda_elf::PT_LOAD => {
                 // Validate segment security constraints
                 validate_segment_security(header, file_size)?;
 
