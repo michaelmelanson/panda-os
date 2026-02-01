@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use libpanda::{environment, file};
+use libpanda::{ErrorCode, environment, file};
 
 libpanda::main! {
     environment::log("Handle limit test: starting");
@@ -16,6 +16,11 @@ libpanda::main! {
         let mut pair: [u64; 2] = [0, 0];
         let result = libpanda::sys::channel::create_raw(&mut pair);
         if result < 0 {
+            let err = libpanda::error::from_code(result);
+            if err != ErrorCode::TooManyHandles {
+                environment::log("FAIL: expected TooManyHandles at limit");
+                return 1;
+            }
             hit_limit = true;
             break;
         }

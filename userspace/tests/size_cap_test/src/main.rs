@@ -114,11 +114,19 @@ libpanda::main! {
     // We cannot create a stack array larger than MAX_MESSAGE_SIZE easily in no_std,
     // so we use the heap via libpanda's allocator.
     let oversized_msg = libpanda::vec![0xEFu8; panda_abi::MAX_MESSAGE_SIZE + 1];
-    if chan_a.send(&oversized_msg).is_ok() {
-        environment::log("FAIL: oversized channel send should have failed");
-        return 1;
+    match chan_a.send(&oversized_msg) {
+        Ok(_) => {
+            environment::log("FAIL: oversized channel send should have failed");
+            return 1;
+        }
+        Err(e) => {
+            if e != libpanda::ErrorCode::MessageTooLarge {
+                environment::log("FAIL: expected MessageTooLarge for oversized send");
+                return 1;
+            }
+        }
     }
-    environment::log("PASS: oversized channel message rejected");
+    environment::log("PASS: oversized channel message rejected (MessageTooLarge)");
 
     drop(chan_a);
     drop(chan_b);
