@@ -336,9 +336,30 @@ pub fn handle_time() -> SyscallFuture {
     Box::pin(core::future::ready(SyscallResult::ok(0)))
 }
 
+/// Map a VFS `FsError` to an `ErrorCode`.
+pub(super) fn fs_error_code(e: crate::vfs::FsError) -> panda_abi::ErrorCode {
+    use crate::vfs::FsError;
+    match e {
+        FsError::NotFound => panda_abi::ErrorCode::NotFound,
+        FsError::InvalidOffset => panda_abi::ErrorCode::InvalidOffset,
+        FsError::NotReadable => panda_abi::ErrorCode::NotReadable,
+        FsError::NotWritable => panda_abi::ErrorCode::NotWritable,
+        FsError::NotSeekable => panda_abi::ErrorCode::NotSeekable,
+        FsError::ReadOnlyFs => panda_abi::ErrorCode::NotSupported,
+        FsError::NoSpace => panda_abi::ErrorCode::NoSpace,
+        FsError::AlreadyExists => panda_abi::ErrorCode::AlreadyExists,
+        FsError::NotEmpty => panda_abi::ErrorCode::NotEmpty,
+        FsError::IsDirectory => panda_abi::ErrorCode::IsDirectory,
+        FsError::NotDirectory => panda_abi::ErrorCode::NotDirectory,
+        FsError::IoError => panda_abi::ErrorCode::IoError,
+    }
+}
+
 /// Handle environment opendir operation.
 ///
 /// This syscall is async - directory listing may require disk I/O.
+/// For `file:` URIs, the returned directory handle supports create/unlink
+/// operations via the VFS path.
 pub fn handle_opendir(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> SyscallFuture {
     let uri = match ua.read_str(uri_ptr, uri_len) {
         Ok(u) => u,
@@ -354,7 +375,15 @@ pub fn handle_opendir(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> Syscal
             return SyscallResult::err(panda_abi::ErrorCode::NotFound);
         };
 
-        let dir_resource = resource::DirectoryResource::new(entries);
+        // For file: URIs, store the VFS path so create/unlink can use it
+        let dir_resource = if let Some(vfs_path) = uri.strip_prefix("file:") {
+            resource::DirectoryResource::with_vfs_path(
+                entries,
+                alloc::string::String::from(vfs_path),
+            )
+        } else {
+            resource::DirectoryResource::new(entries)
+        };
         let result = scheduler::with_current_process(|proc| {
             proc.handles_mut().insert(Arc::new(dir_resource)).ok()
         });

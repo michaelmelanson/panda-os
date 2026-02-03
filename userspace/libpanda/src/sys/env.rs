@@ -107,3 +107,37 @@ pub fn mount(fstype: &str, mountpoint: &str) -> isize {
         mountpoint.len(),
     )
 }
+
+/// Create a new file in a directory.
+///
+/// Returns file handle on success, or negative error code.
+/// The `dir_handle` must be a directory handle opened via `opendir`.
+/// `name` is just the filename (not a full path).
+#[inline(always)]
+pub fn dir_create(dir_handle: Handle, name: &str, mode: u16, mailbox: u64) -> isize {
+    send(
+        dir_handle,
+        OP_DIRECTORY_CREATE_FILE,
+        name.as_ptr() as usize,
+        name.len(),
+        mode as usize,
+        mailbox as usize,
+    )
+}
+
+/// Unlink (delete) a file from a directory.
+///
+/// Returns 0 on success, or negative error code.
+/// The `dir_handle` must be a directory handle opened via `opendir`.
+/// `name` is just the filename (not a full path).
+#[inline(always)]
+pub fn dir_unlink(dir_handle: Handle, name: &str) -> isize {
+    send(
+        dir_handle,
+        OP_DIRECTORY_UNLINK_FILE,
+        name.as_ptr() as usize,
+        name.len(),
+        0,
+        0,
+    )
+}

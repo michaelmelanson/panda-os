@@ -45,21 +45,37 @@ libpanda::main! {
     file::close(console);
     environment::log("Test 2 passed");
 
-    // Test 3: Invalid scheme should fail
+    // Test 3: Invalid scheme should fail with NotFound
     environment::log("Test 3: invalid scheme");
-    if let Ok(_) = environment::open("badscheme:/foo", 0, 0) {
-        environment::log("FAIL: Invalid scheme should return error");
-        return 1;
+    match environment::open("badscheme:/foo", 0, 0) {
+        Ok(_) => {
+            environment::log("FAIL: Invalid scheme should return error");
+            return 1;
+        }
+        Err(e) => {
+            if e != libpanda::ErrorCode::NotFound {
+                environment::log("FAIL: expected NotFound for invalid scheme");
+                return 1;
+            }
+        }
     }
-    environment::log("Test 3 passed");
+    environment::log("Test 3 passed (NotFound)");
 
-    // Test 4: Invalid path within scheme should fail
+    // Test 4: Invalid path within scheme should fail with NotFound
     environment::log("Test 4: invalid path");
-    if let Ok(_) = environment::open("console:/invalid/path", 0, 0) {
-        environment::log("FAIL: Invalid path should return error");
-        return 1;
+    match environment::open("console:/invalid/path", 0, 0) {
+        Ok(_) => {
+            environment::log("FAIL: Invalid path should return error");
+            return 1;
+        }
+        Err(e) => {
+            if e != libpanda::ErrorCode::NotFound {
+                environment::log("FAIL: expected NotFound for invalid path");
+                return 1;
+            }
+        }
     }
-    environment::log("Test 4 passed");
+    environment::log("Test 4 passed (NotFound)");
 
     environment::log("Resource test passed");
     0

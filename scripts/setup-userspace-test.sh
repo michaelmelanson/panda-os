@@ -45,13 +45,15 @@ tar --format=ustar -cf "$BUILD_DIR/efi/initrd.tar" \
 
 echo 'fs0:\efi\boot\bootx64.efi' > "$BUILD_DIR/efi/boot/startup.nsh"
 
-# Create test disk for block tests
-if [ "$TEST_NAME" = "block_test" ]; then
+TEST_SRC_DIR="$PROJECT_DIR/userspace/tests/$TEST_NAME"
+
+# Create test disk for block tests (triggered by needs-block marker file)
+if [ -f "$TEST_SRC_DIR/needs-block" ]; then
     dd if=/dev/zero of="$BUILD_DIR/test-disk.img" bs=1M count=1 2>/dev/null
 fi
 
-# Create ext2 disk for ext2_test and ext2_write_test
-if [ "$TEST_NAME" = "ext2_test" ] || [ "$TEST_NAME" = "ext2_write_test" ]; then
+# Create ext2 disk (triggered by needs-ext2 marker file)
+if [ -f "$TEST_SRC_DIR/needs-ext2" ]; then
     dd if=/dev/zero of="$BUILD_DIR/test-disk.img" bs=1M count=10 2>/dev/null
     mkfs.ext2 -F "$BUILD_DIR/test-disk.img" >/dev/null 2>&1
     # Populate with test files using debugfs

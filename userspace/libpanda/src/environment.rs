@@ -116,6 +116,34 @@ pub fn mount(fstype: &str, mountpoint: &str) -> Result<()> {
     error::from_syscall_unit(sys::env::mount(fstype, mountpoint))
 }
 
+/// Create a new file in a directory.
+///
+/// Returns a file handle on success. The file is opened for reading and writing.
+/// The `dir_handle` must be a directory handle opened via `opendir`.
+///
+/// # Arguments
+/// * `dir_handle` - Directory handle to create the file in
+/// * `name` - Filename to create (just the name, not a full path)
+/// * `mode` - File permissions (e.g., 0o644)
+/// * `mailbox` - Mailbox handle for event notifications (0 = none)
+#[inline(always)]
+pub fn create(dir_handle: Handle, name: &str, mode: u16, mailbox: u64) -> Result<Handle> {
+    error::from_syscall_handle(sys::env::dir_create(dir_handle, name, mode, mailbox))
+}
+
+/// Unlink (delete) a file from a directory.
+///
+/// Removes the directory entry and, if no other links remain, frees the
+/// file's data blocks and inode.
+///
+/// # Arguments
+/// * `dir_handle` - Directory handle containing the file
+/// * `name` - Filename to unlink (just the name, not a full path)
+#[inline(always)]
+pub fn unlink(dir_handle: Handle, name: &str) -> Result<()> {
+    error::from_syscall_unit(sys::env::dir_unlink(dir_handle, name))
+}
+
 /// Check if a file or directory exists at the given path.
 ///
 /// Returns Ok(FileStat) if the path exists, Err otherwise.

@@ -35,6 +35,7 @@ members = [
   "userspace/tests/block_test",
   "userspace/tests/ext2_test",
   "userspace/tests/ext2_write_test",
+  "userspace/tests/ext2_create_test",
   "userspace/tests/device_path_test",
   "userspace/tests/channel_test",
   "userspace/tests/channel_child",

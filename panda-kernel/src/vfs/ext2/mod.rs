@@ -6,6 +6,7 @@
 //! concurrent reads while serialising allocation and metadata updates.
 
 pub mod bitmap;
+mod dir;
 mod file;
 mod structs;
 
@@ -697,6 +698,81 @@ impl Ext2Fs {
     pub fn mutable(&self) -> &RwSpinlock<Ext2FsMutable> {
         &self.mutable
     }
+
+    /// Free all data blocks and indirect index blocks owned by an inode.
+    ///
+    /// Walks the direct block pointers (0–11), single indirect (12),
+    /// double indirect (13), and triple indirect (14) block pointers,
+    /// freeing every allocated block. This is used by `unlink` when the
+    /// link count reaches zero, and will also be needed by `truncate`.
+    pub async fn free_inode_blocks(&self, inode: &Inode) -> Result<(), FsError> {
+        let ptrs_per_block = self.block_size() / 4;
+        let block_size = self.block_size() as usize;
+
+        // Free direct blocks (0–11)
+        for i in 0..12 {
+            if inode.block[i] != 0 {
+                self.free_block(inode.block[i]).await?;
+            }
+        }
+
+        // Free indirect blocks at each level of indirection
+        for (slot, depth) in [(12, 1u32), (13, 2), (14, 3)] {
+            if inode.block[slot] != 0 {
+                self.free_indirect_block(inode.block[slot], block_size, ptrs_per_block, depth)
+                    .await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Recursively free an indirect block and all blocks it points to.
+    ///
+    /// `depth` is 1 for single indirect, 2 for double, 3 for triple.
+    /// At depth 1, the block contains data block pointers which are freed.
+    /// At depth > 1, each pointer leads to another level of indirection.
+    /// The indirect block itself is freed after all its children.
+    fn free_indirect_block<'a>(
+        &'a self,
+        block_num: u32,
+        block_size: usize,
+        ptrs_per_block: u32,
+        depth: u32,
+    ) -> core::pin::Pin<alloc::boxed::Box<dyn core::future::Future<Output = Result<(), FsError>> + Send + 'a>> {
+        alloc::boxed::Box::pin(async move {
+            let mut buf = alloc::vec![0u8; block_size];
+            self.read_block(block_num, &mut buf).await?;
+
+            for i in 0..ptrs_per_block as usize {
+                let ptr = read_block_ptr_from_buf(&buf, i);
+                if ptr == 0 {
+                    continue;
+                }
+                if depth == 1 {
+                    self.free_block(ptr).await?;
+                } else {
+                    self.free_indirect_block(ptr, block_size, ptrs_per_block, depth - 1)
+                        .await?;
+                }
+            }
+
+            // Free the indirect block itself
+            self.free_block(block_num).await?;
+            Ok(())
+        })
+    }
+}
+
+/// Read a u32 block pointer from a buffer at the given index.
+fn read_block_ptr_from_buf(buf: &[u8], index: usize) -> u32 {
+    let offset = index * 4;
+    u32::from_le_bytes([
+        buf[offset],
+        buf[offset + 1],
+        buf[offset + 2],
+        buf[offset + 3],
+    ])
 }
 
 #[async_trait]
@@ -742,5 +818,142 @@ impl Filesystem for Ext2Fs {
         }
 
         self.list_dir(&inode).await
+    }
+
+    /// Create a new regular file at the given path.
+    ///
+    /// Allocates a fresh inode, initialises it as a zero-length regular file,
+    /// adds a directory entry in the parent directory, and returns the opened
+    /// file handle. If directory entry insertion fails after the inode has been
+    /// allocated, the inode is freed to prevent leaks.
+    async fn create(&self, path: &str, mode: u16) -> Result<Box<dyn File>, FsError> {
+        let (parent_path, file_name) = split_parent_name(path)?;
+
+        // Resolve parent directory
+        let parent_ino = self.lookup(parent_path).await?;
+        let parent_inode = self.read_inode(parent_ino).await?;
+        if !parent_inode.is_dir() {
+            return Err(FsError::NotFound);
+        }
+
+        // Check file does not already exist
+        if self.find_entry(&parent_inode, file_name).await.is_ok() {
+            return Err(FsError::AlreadyExists);
+        }
+
+        // Allocate a new inode
+        let new_ino = self.alloc_inode().await?;
+
+        // Initialise the new inode as a regular file
+        let new_inode = Inode {
+            mode: S_IFREG | (mode & 0o7777),
+            uid: 0,
+            size: 0,
+            atime: 0,
+            ctime: 0,
+            mtime: 0,
+            dtime: 0,
+            gid: 0,
+            links_count: 1,
+            blocks: 0,
+            flags: 0,
+            osd1: 0,
+            block: [0u32; 15],
+            generation: 0,
+            file_acl: 0,
+            size_high: 0,
+            faddr: 0,
+            osd2: [0u8; 12],
+        };
+
+        // Write the new inode to disk
+        self.write_inode(new_ino, &new_inode).await?;
+
+        // Add directory entry in the parent directory
+        let updated_parent = match self
+            .add_dir_entry(parent_ino, parent_inode, file_name, new_ino, FT_REG_FILE)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                // Rollback: free the inode we just allocated
+                let _ = self.free_inode(new_ino).await;
+                return Err(e);
+            }
+        };
+
+        // Persist updated parent inode
+        self.write_inode(parent_ino, &updated_parent).await?;
+
+        // Return an opened file handle
+        let fs_arc = self
+            .self_ref
+            .read()
+            .upgrade()
+            .ok_or(FsError::IoError)?;
+
+        Ok(Box::new(Ext2File::new(fs_arc, new_inode, new_ino)))
+    }
+
+    /// Remove (unlink) a file at the given path.
+    ///
+    /// Removes the directory entry from the parent, decrements the target
+    /// inode's link count, and if links reach zero, frees all data blocks
+    /// (direct, indirect, double-indirect, triple-indirect) and the inode.
+    async fn unlink(&self, path: &str) -> Result<(), FsError> {
+        let (parent_path, file_name) = split_parent_name(path)?;
+
+        // Resolve parent directory
+        let parent_ino = self.lookup(parent_path).await?;
+        let parent_inode = self.read_inode(parent_ino).await?;
+        if !parent_inode.is_dir() {
+            return Err(FsError::NotFound);
+        }
+
+        // Remove directory entry and get the removed inode number
+        let (target_ino, updated_parent) = self
+            .remove_dir_entry(parent_ino, parent_inode, file_name)
+            .await?;
+
+        // Persist updated parent inode
+        self.write_inode(parent_ino, &updated_parent).await?;
+
+        // Read and update target inode
+        let mut target_inode = self.read_inode(target_ino).await?;
+        target_inode.links_count = target_inode.links_count.saturating_sub(1);
+
+        if target_inode.links_count == 0 {
+            // Free all data blocks
+            self.free_inode_blocks(&target_inode).await?;
+
+            // Mark as deleted (dtime != 0 signals deletion to fsck)
+            target_inode.dtime = 1;
+            target_inode.set_size(0);
+            target_inode.blocks = 0;
+
+            // Write the zeroed inode, then free it
+            self.write_inode(target_ino, &target_inode).await?;
+            self.free_inode(target_ino).await?;
+        } else {
+            // Just persist the decremented link count
+            self.write_inode(target_ino, &target_inode).await?;
+        }
+
+        Ok(())
+    }
+}
+
+/// Split a path into (parent_path, file_name).
+///
+/// The path is relative to the filesystem mount point (no leading slash after
+/// mount-point stripping). Returns `NotFound` if the path has no name component.
+fn split_parent_name(path: &str) -> Result<(&str, &str), FsError> {
+    let path = path.trim_matches('/');
+    if path.is_empty() {
+        return Err(FsError::NotFound);
+    }
+    match path.rfind('/') {
+        Some(idx) => Ok((&path[..idx], &path[idx + 1..])),
+        None => Ok(("", path)), // File in root directory
     }
 }

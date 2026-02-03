@@ -50,7 +50,12 @@ libpanda::main! {
     };
     let result = sys::surface::blit(window_handle, &params);
     if result < 0 {
-        environment::log("PASS: Overflow src_y rejected");
+        let err = libpanda::error::from_code(result);
+        if err != libpanda::ErrorCode::InvalidArgument {
+            environment::log("FAIL: expected InvalidArgument for overflow src_y");
+            return 1;
+        }
+        environment::log("PASS: Overflow src_y rejected (InvalidArgument)");
     } else {
         environment::log("FAIL: Overflow src_y accepted");
         return 1;
@@ -69,7 +74,12 @@ libpanda::main! {
     };
     let result = sys::surface::blit(window_handle, &params);
     if result < 0 {
-        environment::log("PASS: Overflow dst x rejected");
+        let err = libpanda::error::from_code(result);
+        if err != libpanda::ErrorCode::InvalidArgument {
+            environment::log("FAIL: expected InvalidArgument for overflow dst x");
+            return 1;
+        }
+        environment::log("PASS: Overflow dst x rejected (InvalidArgument)");
     } else {
         environment::log("FAIL: Overflow dst x accepted");
         return 1;
@@ -88,7 +98,12 @@ libpanda::main! {
     };
     let result = sys::surface::blit(window_handle, &params);
     if result < 0 {
-        environment::log("PASS: Overflow dst y rejected");
+        let err = libpanda::error::from_code(result);
+        if err != libpanda::ErrorCode::InvalidArgument {
+            environment::log("FAIL: expected InvalidArgument for overflow dst y");
+            return 1;
+        }
+        environment::log("PASS: Overflow dst y rejected (InvalidArgument)");
     } else {
         environment::log("FAIL: Overflow dst y accepted");
         return 1;
@@ -107,7 +122,12 @@ libpanda::main! {
     };
     let result = sys::surface::blit(window_handle, &params);
     if result < 0 {
-        environment::log("PASS: Large width/height rejected");
+        let err = libpanda::error::from_code(result);
+        if err != libpanda::ErrorCode::InvalidArgument {
+            environment::log("FAIL: expected InvalidArgument for large width/height");
+            return 1;
+        }
+        environment::log("PASS: Large width/height rejected (InvalidArgument)");
     } else {
         environment::log("FAIL: Large width/height accepted");
         return 1;

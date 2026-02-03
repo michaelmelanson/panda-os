@@ -121,7 +121,7 @@ impl SchemeHandler for FileScheme {
         // Check if it's a directory first
         if let Ok(stat) = vfs::stat(path).await {
             if stat.is_dir {
-                // Return a directory resource
+                // Return a directory resource with VFS path for mutation support
                 let entries = vfs::readdir(path).await.ok()?;
                 let dir_entries: Vec<DirEntry> = entries
                     .into_iter()
@@ -130,7 +130,10 @@ impl SchemeHandler for FileScheme {
                         is_dir: e.is_dir,
                     })
                     .collect();
-                return Some(Box::new(DirectoryResource::new(dir_entries)));
+                return Some(Box::new(DirectoryResource::with_vfs_path(
+                    dir_entries,
+                    alloc::string::String::from(path),
+                )));
             }
         }
 
@@ -154,12 +157,12 @@ impl SchemeHandler for FileScheme {
 }
 
 /// A file resource wrapping a VFS file.
-struct VfsFileResource {
+pub struct VfsFileResource {
     file: Spinlock<Box<dyn vfs::File>>,
 }
 
 impl VfsFileResource {
-    fn new(file: Box<dyn vfs::File>) -> Self {
+    pub fn new(file: Box<dyn vfs::File>) -> Self {
         Self {
             file: Spinlock::new(file),
         }
@@ -183,13 +186,29 @@ impl super::VfsFile for VfsFileResource {
 }
 
 /// A directory resource.
+///
+/// If `vfs_path` is set, this directory supports mutation operations
+/// (create, unlink) via the VFS layer.
 pub struct DirectoryResource {
     entries: Vec<DirEntry>,
+    /// Absolute VFS path of this directory, if backed by a VFS filesystem.
+    vfs_path: Option<alloc::string::String>,
 }
 
 impl DirectoryResource {
     pub fn new(entries: Vec<DirEntry>) -> Self {
-        Self { entries }
+        Self {
+            entries,
+            vfs_path: None,
+        }
+    }
+
+    /// Create a directory resource with an associated VFS path for mutation.
+    pub fn with_vfs_path(entries: Vec<DirEntry>, path: alloc::string::String) -> Self {
+        Self {
+            entries,
+            vfs_path: Some(path),
+        }
     }
 }
 
@@ -200,6 +219,10 @@ impl Resource for DirectoryResource {
 
     fn as_directory(&self) -> Option<&dyn Directory> {
         Some(self)
+    }
+
+    fn as_vfs_directory_path(&self) -> Option<alloc::string::String> {
+        self.vfs_path.clone()
     }
 }
 

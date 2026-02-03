@@ -14,7 +14,7 @@ mod event_source;
 mod mailbox;
 mod process;
 mod process_resource;
-mod scheme;
+pub(crate) mod scheme;
 mod spawn_handle;
 mod surface;
 mod window;
@@ -118,6 +118,14 @@ pub trait Resource: Send + Sync {
 
     /// Get this resource as a VFS file (for async file operations).
     fn as_vfs_file(&self) -> Option<&dyn VfsFile> {
+        None
+    }
+
+    /// Get the absolute VFS path for this directory resource.
+    ///
+    /// Returns `Some(path)` if this is a VFS-backed directory that supports
+    /// mutation operations (create, unlink).
+    fn as_vfs_directory_path(&self) -> Option<alloc::string::String> {
         None
     }
 

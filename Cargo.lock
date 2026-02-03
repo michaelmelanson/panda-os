@@ -244,6 +244,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ext2_create_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "ext2_test"
 version = "0.1.0"
 dependencies = [
