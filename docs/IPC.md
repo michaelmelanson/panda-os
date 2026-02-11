@@ -134,12 +134,12 @@ Signals provide a mechanism for process termination and notification.
 
 | Signal | Value | Behaviour |
 |--------|-------|-----------|
-| `Signal::Terminate` | 0 | Graceful termination request. Delivered as a message on `HANDLE_PARENT`. |
-| `Signal::Kill` | 1 | Forced termination. Kernel immediately tears down the process. |
+| `Signal::Stop` | 0 | Graceful termination request. Delivered as a message on `HANDLE_PARENT`. |
+| `Signal::StopImmediately` | 1 | Forced termination. Kernel immediately tears down the process. |
 
 ### SIGKILL semantics
 
-When a process receives `Signal::Kill`:
+When a process receives `Signal::StopImmediately`:
 1. Kernel immediately removes it from the scheduler
 2. All handles are closed (channels notify peers)
 3. Memory is reclaimed
@@ -148,7 +148,7 @@ When a process receives `Signal::Kill`:
 
 ### SIGTERM semantics
 
-When a process receives `Signal::Terminate`:
+When a process receives `Signal::Stop`:
 1. A `ProcessSignalRequest` message is sent via the parent-child channel
 2. `EVENT_SIGNAL_RECEIVED` and `EVENT_CHANNEL_READABLE` are posted to the child's mailbox
 3. The child receives the message on `HANDLE_PARENT`
@@ -181,10 +181,10 @@ use libpanda::process::{Child, Signal};
 let mut child = Child::spawn("file:/initrd/program")?;
 
 // Send SIGTERM (graceful termination)
-child.signal(Signal::Term)?;
+child.signal(Signal::Stop)?;
 
 // Send SIGKILL (forced termination)
-child.kill()?;  // Shorthand for signal(Signal::Kill)
+child.kill()?;  // Shorthand for signal(Signal::StopImmediately)
 
 // Wait for exit
 let status = child.wait()?;
@@ -207,7 +207,7 @@ libpanda::main! {
             if let Ok(len) = channel::try_recv(HANDLE_PARENT, &mut buf) {
                 if let Ok(Some(msg)) = SignalMessage::decode(&buf[..len]) {
                     match msg.signal {
-                        Signal::Terminate => {
+                        Signal::Stop => {
                             // Handle graceful shutdown
                             return 0;
                         }

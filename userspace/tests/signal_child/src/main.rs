@@ -38,14 +38,14 @@ libpanda::main! {
                         Ok(Some(msg)) => {
                             environment::log("Signal child: decoded signal message");
                             match msg.signal {
-                                Signal::Terminate => {
-                                    environment::log("Signal child: SIGTERM received, exiting gracefully");
+                                Signal::Stop => {
+                                    environment::log("Signal child: stop signal received, exiting gracefully");
                                     return 0; // Clean exit
                                 }
-                                Signal::Kill => {
-                                    // We shouldn't receive SIGKILL as a message
+                                Signal::StopImmediately => {
+                                    // We shouldn't receive StopImmediately as a message
                                     // (it's handled by the kernel immediately)
-                                    environment::log("Signal child: unexpected SIGKILL message");
+                                    environment::log("Signal child: unexpected StopImmediately message");
                                 }
                             }
                         }
@@ -58,8 +58,11 @@ libpanda::main! {
                     }
                 } else if result > 0 {
                     environment::log("Signal child: message too short");
+                } else {
+                    // Negative result means an error occurred (e.g., WouldBlock if queue is empty).
+                    // This can happen if the signal was consumed by another call or a race occurred.
+                    environment::log("Signal child: no message available");
                 }
-                // Negative result means error (e.g., queue empty), which is fine
             }
 
             // Check for channel close (parent died)

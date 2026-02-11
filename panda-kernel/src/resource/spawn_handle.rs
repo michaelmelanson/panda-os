@@ -98,7 +98,7 @@ impl Process for SpawnHandle {
         let signal = panda_abi::Signal::from_u32(signal).ok_or(ProcessError::NotSupported)?;
 
         match signal {
-            panda_abi::Signal::Kill => {
+            panda_abi::Signal::StopImmediately => {
                 // SIGKILL: Immediate forced termination
                 let pid = self.process_info.pid();
 
@@ -116,7 +116,7 @@ impl Process for SpawnHandle {
 
                 Ok(())
             }
-            panda_abi::Signal::Terminate => {
+            panda_abi::Signal::Stop => {
                 // SIGTERM: Deliver message to process's parent channel
                 // The child process reads from HANDLE_PARENT and handles it
 

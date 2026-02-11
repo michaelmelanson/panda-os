@@ -58,8 +58,8 @@ pub fn handle_wait(handle_id: u64) -> SyscallFuture {
 /// Handle process signal operation.
 ///
 /// Sends a signal to the target process:
-/// - `Signal::Kill`: Immediately terminates the process (SIGKILL-like)
-/// - `Signal::Terminate`: Delivers a message to the process's parent channel (SIGTERM-like)
+/// - `Signal::StopImmediately`: Immediately terminates the process (SIGKILL-like)
+/// - `Signal::Stop`: Delivers a message to the process's parent channel (SIGTERM-like)
 pub fn handle_signal(handle_id: u64, signal: u32) -> SyscallFuture {
     // 1. Validate signal number
     let signal = match panda_abi::Signal::from_u32(signal) {

@@ -10,13 +10,13 @@ use panda_abi::{
 panda_kernel::test_harness!(
     signal_enum_from_u32_valid,
     signal_enum_from_u32_invalid,
-    encode_signal_message_terminate,
-    encode_signal_message_kill,
+    encode_signal_message_stop,
+    encode_signal_message_stop_immediately,
     encode_signal_message_buffer_too_small,
-    decode_signal_message_terminate,
-    decode_signal_message_kill,
-    decode_signal_message_round_trip_terminate,
-    decode_signal_message_round_trip_kill,
+    decode_signal_message_stop,
+    decode_signal_message_stop_immediately,
+    decode_signal_message_round_trip_stop,
+    decode_signal_message_round_trip_stop_immediately,
     decode_signal_message_not_signal,
     decode_signal_message_truncated,
     decode_signal_message_invalid_signal,
@@ -25,8 +25,8 @@ panda_kernel::test_harness!(
 
 /// Test Signal::from_u32 with valid values.
 fn signal_enum_from_u32_valid() {
-    assert_eq!(Signal::from_u32(0), Some(Signal::Terminate));
-    assert_eq!(Signal::from_u32(1), Some(Signal::Kill));
+    assert_eq!(Signal::from_u32(0), Some(Signal::Stop));
+    assert_eq!(Signal::from_u32(1), Some(Signal::StopImmediately));
 }
 
 /// Test Signal::from_u32 with invalid values.
@@ -36,10 +36,10 @@ fn signal_enum_from_u32_invalid() {
     assert_eq!(Signal::from_u32(u32::MAX), None);
 }
 
-/// Test encoding a Terminate signal message.
-fn encode_signal_message_terminate() {
+/// Test encoding a Stop signal message.
+fn encode_signal_message_stop() {
     let mut buf = [0u8; SIGNAL_MESSAGE_SIZE];
-    let len = encode_signal_message(Signal::Terminate, &mut buf);
+    let len = encode_signal_message(Signal::Stop, &mut buf);
 
     assert_eq!(len, Some(SIGNAL_MESSAGE_SIZE));
 
@@ -50,57 +50,57 @@ fn encode_signal_message_terminate() {
     assert_eq!(&buf[8..12], &[1, 0, 0, 0]);
     // _reserved (u32) = 0
     assert_eq!(&buf[12..16], &[0, 0, 0, 0]);
-    // signal (u32) = Signal::Terminate = 0
+    // signal (u32) = Signal::Stop = 0
     assert_eq!(&buf[16..20], &[0, 0, 0, 0]);
     // _pad (u32) = 0
     assert_eq!(&buf[20..24], &[0, 0, 0, 0]);
 }
 
-/// Test encoding a Kill signal message.
-fn encode_signal_message_kill() {
+/// Test encoding a StopImmediately signal message.
+fn encode_signal_message_stop_immediately() {
     let mut buf = [0u8; SIGNAL_MESSAGE_SIZE];
-    let len = encode_signal_message(Signal::Kill, &mut buf);
+    let len = encode_signal_message(Signal::StopImmediately, &mut buf);
 
     assert_eq!(len, Some(SIGNAL_MESSAGE_SIZE));
 
-    // signal (u32) = Signal::Kill = 1 at offset 16
+    // signal (u32) = Signal::StopImmediately = 1 at offset 16
     assert_eq!(&buf[16..20], &[1, 0, 0, 0]);
 }
 
 /// Test encoding fails with buffer too small.
 fn encode_signal_message_buffer_too_small() {
     let mut buf = [0u8; 10]; // Too small
-    let len = encode_signal_message(Signal::Terminate, &mut buf);
+    let len = encode_signal_message(Signal::Stop, &mut buf);
     assert_eq!(len, None);
 }
 
-/// Test decoding a Terminate signal message.
-fn decode_signal_message_terminate() {
+/// Test decoding a Stop signal message.
+fn decode_signal_message_stop() {
     let mut buf = [0u8; SIGNAL_MESSAGE_SIZE];
-    encode_signal_message(Signal::Terminate, &mut buf).unwrap();
+    encode_signal_message(Signal::Stop, &mut buf).unwrap();
 
     let msg = SignalMessage::decode(&buf).unwrap();
     assert!(msg.is_some());
     let msg = msg.unwrap();
     assert_eq!(msg.id, 0);
-    assert_eq!(msg.signal, Signal::Terminate);
+    assert_eq!(msg.signal, Signal::Stop);
 }
 
-/// Test decoding a Kill signal message.
-fn decode_signal_message_kill() {
+/// Test decoding a StopImmediately signal message.
+fn decode_signal_message_stop_immediately() {
     let mut buf = [0u8; SIGNAL_MESSAGE_SIZE];
-    encode_signal_message(Signal::Kill, &mut buf).unwrap();
+    encode_signal_message(Signal::StopImmediately, &mut buf).unwrap();
 
     let msg = SignalMessage::decode(&buf).unwrap();
     assert!(msg.is_some());
     let msg = msg.unwrap();
     assert_eq!(msg.id, 0);
-    assert_eq!(msg.signal, Signal::Kill);
+    assert_eq!(msg.signal, Signal::StopImmediately);
 }
 
-/// Test round-trip encode/decode for Terminate.
-fn decode_signal_message_round_trip_terminate() {
-    let original = Signal::Terminate;
+/// Test round-trip encode/decode for Stop.
+fn decode_signal_message_round_trip_stop() {
+    let original = Signal::Stop;
     let mut buf = [0u8; SIGNAL_MESSAGE_SIZE];
     encode_signal_message(original, &mut buf).unwrap();
 
@@ -108,9 +108,9 @@ fn decode_signal_message_round_trip_terminate() {
     assert_eq!(decoded.signal, original);
 }
 
-/// Test round-trip encode/decode for Kill.
-fn decode_signal_message_round_trip_kill() {
-    let original = Signal::Kill;
+/// Test round-trip encode/decode for StopImmediately.
+fn decode_signal_message_round_trip_stop_immediately() {
+    let original = Signal::StopImmediately;
     let mut buf = [0u8; SIGNAL_MESSAGE_SIZE];
     encode_signal_message(original, &mut buf).unwrap();
 
@@ -166,7 +166,7 @@ fn decode_signal_message_invalid_signal() {
 fn is_signal_message_check() {
     // Valid signal message
     let mut buf = [0u8; SIGNAL_MESSAGE_SIZE];
-    encode_signal_message(Signal::Terminate, &mut buf).unwrap();
+    encode_signal_message(Signal::Stop, &mut buf).unwrap();
     assert!(SignalMessage::is_signal_message(&buf));
 
     // Non-signal message
