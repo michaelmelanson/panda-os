@@ -53,10 +53,24 @@ impl Ext2Fs {
     /// Add a directory entry in the directory identified by `dir_ino`.
     ///
     /// Scans the directory's data blocks for space to insert a new entry
-    /// pointing to `target_ino` with the given `name` and `file_type`.
+    /// for the inode wrapped in `inode_guard` with the given `name` and `file_type`.
     ///
-    /// Returns the updated directory inode (the caller must write it back
-    /// to disk with `write_inode`).
+    /// The guard is consumed on success, returning the inode number and updated
+    /// directory inode. On failure, the guard is dropped and the inode is
+    /// automatically freed.
+    ///
+    /// # Arguments
+    ///
+    /// * `_dir_ino` - Inode number of the parent directory (unused, for consistency)
+    /// * `dir_inode` - The parent directory inode
+    /// * `name` - Name for the new entry
+    /// * `inode_guard` - Guard wrapping the newly allocated inode
+    /// * `file_type` - File type constant (FT_REG_FILE, FT_DIR, etc.)
+    ///
+    /// # Returns
+    ///
+    /// On success: `(inode_number, updated_directory_inode)`
+    /// On failure: Error (guard is dropped, inode freed automatically)
     ///
     /// # Errors
     ///
@@ -68,9 +82,9 @@ impl Ext2Fs {
         _dir_ino: u32,
         mut dir_inode: Inode,
         name: &str,
-        target_ino: u32,
+        inode_guard: InodeGuard,
         file_type: u8,
-    ) -> Result<Inode, FsError> {
+    ) -> Result<(u32, Inode), FsError> {
         let name_bytes = name.as_bytes();
         if name_bytes.is_empty() || name_bytes.len() > 255 {
             return Err(FsError::IoError);
@@ -129,6 +143,8 @@ impl Ext2Fs {
                         block_buf[pos + 5] = (actual >> 8) as u8;
 
                         // Write new entry at pos + actual
+                        // Consume the guard: this is the commit point
+                        let target_ino = inode_guard.consume();
                         let new_pos = pos + actual;
                         let new_rec_len = old_rec_len as usize - actual;
                         write_dir_entry(
@@ -141,11 +157,13 @@ impl Ext2Fs {
                         );
 
                         self.write_block(block_num, &block_buf).await?;
-                        return Ok(dir_inode);
+                        return Ok((target_ino, dir_inode));
                     }
                 } else {
                     // Deleted entry (inode == 0) — reuse if large enough
                     if entry.rec_len as usize >= needed {
+                        // Consume the guard: this is the commit point
+                        let target_ino = inode_guard.consume();
                         write_dir_entry(
                             &mut block_buf,
                             pos,
@@ -155,7 +173,7 @@ impl Ext2Fs {
                             file_type,
                         );
                         self.write_block(block_num, &block_buf).await?;
-                        return Ok(dir_inode);
+                        return Ok((target_ino, dir_inode));
                     }
                 }
 
@@ -166,6 +184,9 @@ impl Ext2Fs {
         // No space found in existing blocks — allocate a new one
         let new_block = self.alloc_block().await?;
         let mut new_buf = vec![0u8; block_size];
+
+        // Consume the guard: this is the commit point
+        let target_ino = inode_guard.consume();
 
         // Single entry spanning the whole block
         write_dir_entry(
@@ -187,46 +208,7 @@ impl Ext2Fs {
         dir_inode.blocks += (1 + meta_blocks) * (self.block_size() / 512);
         dir_inode.set_size(dir_inode.size() + self.block_size() as u64);
 
-        Ok(dir_inode)
-    }
-
-    /// Add a directory entry, consuming the inode guard on success.
-    ///
-    /// This is the preferred way to add a directory entry for a newly allocated
-    /// inode. The guard is consumed only on success, returning the inode number.
-    /// On failure, the guard is dropped and the inode is automatically freed.
-    ///
-    /// # Arguments
-    ///
-    /// * `dir_ino` - Inode number of the parent directory (unused, for consistency)
-    /// * `dir_inode` - The parent directory inode
-    /// * `name` - Name for the new entry
-    /// * `inode_guard` - Guard wrapping the newly allocated inode
-    /// * `file_type` - File type constant (FT_REG_FILE, FT_DIR, etc.)
-    ///
-    /// # Returns
-    ///
-    /// On success: `(inode_number, updated_directory_inode)`
-    /// On failure: Error (guard is dropped, inode freed automatically)
-    pub async fn add_dir_entry_consuming(
-        &self,
-        dir_ino: u32,
-        dir_inode: Inode,
-        name: &str,
-        inode_guard: InodeGuard,
-        file_type: u8,
-    ) -> Result<(u32, Inode), FsError> {
-        let target_ino = inode_guard.ino_for_write();
-
-        // Try to add the directory entry
-        let updated_inode = self
-            .add_dir_entry(dir_ino, dir_inode, name, target_ino, file_type)
-            .await?;
-
-        // Success! Consume the guard to prevent cleanup
-        let ino = inode_guard.consume();
-
-        Ok((ino, updated_inode))
+        Ok((target_ino, dir_inode))
     }
 
     /// Remove a directory entry by name from the directory identified by `dir_ino`.

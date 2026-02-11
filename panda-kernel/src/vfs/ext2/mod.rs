@@ -876,13 +876,14 @@ impl Filesystem for Ext2Fs {
             osd2: [0u8; 12],
         };
 
-        // Write the new inode to disk (guard still active, will cleanup on error)
-        self.write_inode(inode_guard.ino_for_write(), &new_inode).await?;
-
         // Add directory entry, consuming the guard on success
+        // The guard is consumed here, which is the commit point
         let (new_ino, updated_parent) = self
-            .add_dir_entry_consuming(parent_ino, parent_inode, file_name, inode_guard, FT_REG_FILE)
+            .add_dir_entry(parent_ino, parent_inode, file_name, inode_guard, FT_REG_FILE)
             .await?;
+
+        // Write the new inode to disk (guard already consumed, inode is committed)
+        self.write_inode(new_ino, &new_inode).await?;
 
         // Persist updated parent inode
         self.write_inode(parent_ino, &updated_parent).await?;
@@ -977,7 +978,18 @@ impl Filesystem for Ext2Fs {
         // Allocate initial block for the directory (guarded for automatic rollback)
         let block_guard = BlockGuard::new(fs_arc, self.alloc_block().await?);
 
-        // Initialise the new inode as a directory
+        // Consume block guard first to get the block number for inode initialization
+        // This commits the block allocation; if add_dir_entry fails below, the block
+        // will be leaked (acceptable for this rare error case)
+        let initial_block = block_guard.consume();
+
+        // Add entry in parent directory, consuming the inode guard
+        // This is the commit point for the inode allocation
+        let (new_ino, updated_parent) = self
+            .add_dir_entry(parent_ino, parent_inode, dir_name, inode_guard, FT_DIR)
+            .await?;
+
+        // Initialise the new inode as a directory (now that we have the ino)
         let new_inode = Inode {
             mode: S_IFDIR | (mode & 0o7777),
             uid: 0,
@@ -993,7 +1005,7 @@ impl Filesystem for Ext2Fs {
             osd1: 0,
             block: {
                 let mut b = [0u32; 15];
-                b[0] = block_guard.block_for_write();
+                b[0] = initial_block;
                 b
             },
             generation: 0,
@@ -1003,20 +1015,12 @@ impl Filesystem for Ext2Fs {
             osd2: [0u8; 12],
         };
 
-        // Write . and .. entries to initial block (guards still active)
-        let init_buf = self.init_dir_block(inode_guard.ino_for_write(), parent_ino);
-        self.write_block(block_guard.block_for_write(), &init_buf).await?;
+        // Write . and .. entries to initial block (using the committed inode number)
+        let init_buf = self.init_dir_block(new_ino, parent_ino);
+        self.write_block(initial_block, &init_buf).await?;
 
-        // Write inode to disk (guards still active)
-        self.write_inode(inode_guard.ino_for_write(), &new_inode).await?;
-
-        // Add entry in parent directory, consuming the inode guard
-        let (new_ino, updated_parent) = self
-            .add_dir_entry_consuming(parent_ino, parent_inode, dir_name, inode_guard, FT_DIR)
-            .await?;
-
-        // Success! Consume block guard to prevent cleanup
-        block_guard.consume();
+        // Write inode to disk
+        self.write_inode(new_ino, &new_inode).await?;
 
         // Increment parent's link count (for .. reference)
         let mut updated_parent = updated_parent;
