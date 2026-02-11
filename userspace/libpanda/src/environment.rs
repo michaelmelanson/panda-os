@@ -144,6 +144,31 @@ pub fn unlink(dir_handle: Handle, name: &str) -> Result<()> {
     error::from_syscall_unit(sys::env::dir_unlink(dir_handle, name))
 }
 
+/// Create a subdirectory in a directory.
+///
+/// # Arguments
+/// * `dir_handle` - Directory handle to create the subdirectory in
+/// * `name` - Directory name to create (just the name, not a full path)
+/// * `mode` - Directory permissions (e.g., 0o755)
+#[inline(always)]
+pub fn mkdir(dir_handle: Handle, name: &str, mode: u16) -> Result<()> {
+    error::from_syscall_unit(sys::env::dir_mkdir(dir_handle, name, mode))
+}
+
+/// Remove an empty subdirectory from a directory.
+///
+/// # Arguments
+/// * `dir_handle` - Directory handle containing the subdirectory
+/// * `name` - Directory name to remove (just the name, not a full path)
+///
+/// # Errors
+///
+/// Returns `NotEmpty` if the directory is not empty.
+#[inline(always)]
+pub fn rmdir(dir_handle: Handle, name: &str) -> Result<()> {
+    error::from_syscall_unit(sys::env::dir_rmdir(dir_handle, name))
+}
+
 /// Check if a file or directory exists at the given path.
 ///
 /// Returns Ok(FileStat) if the path exists, Err otherwise.

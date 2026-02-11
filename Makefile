@@ -44,6 +44,7 @@ USERSPACE_TESTS := \
 	env_test \
 	error_test \
 	ext2_create_test \
+	ext2_mkdir_test \
 	ext2_test \
 	ext2_write_test \
 	fault_recovery_test \

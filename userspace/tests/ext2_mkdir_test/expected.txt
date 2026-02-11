@@ -1,0 +1,18 @@
+ext2_mkdir_test: Starting
+ext2_mkdir_test: Mounting ext2 filesystem
+ext2_mkdir_test: ext2 mounted at /mnt
+ext2_mkdir_test: Test 1 - Create directory
+ext2_mkdir_test: Test 1 passed
+ext2_mkdir_test: Test 2 - Verify directory in listing
+ext2_mkdir_test: Test 2 passed
+ext2_mkdir_test: Test 3 - Create file in new directory
+ext2_mkdir_test: Test 3 passed
+ext2_mkdir_test: Test 4 - rmdir non-empty fails
+ext2_mkdir_test: Test 4 passed
+ext2_mkdir_test: Test 5 - rmdir empty directory
+ext2_mkdir_test: Test 5 passed
+ext2_mkdir_test: Test 6 - Nested mkdir
+ext2_mkdir_test: Test 6 passed
+ext2_mkdir_test: Test 7 - mkdir already exists
+ext2_mkdir_test: Test 7 passed
+ext2_mkdir_test: All tests passed!

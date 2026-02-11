@@ -22,8 +22,10 @@
 //! `RwSpinlock` is still used for in-memory counter access, but the async
 //! mutex ensures that the full bitmap I/O + counter update sequence is atomic.
 
+use alloc::sync::Arc;
 use alloc::vec;
 
+use super::guards::InodeGuard;
 use super::Ext2Fs;
 use crate::vfs::FsError;
 
@@ -163,9 +165,12 @@ impl Ext2Fs {
     /// bitmap. Updates the bitmap on disk, and decrements the free inode
     /// counts in both the block group descriptor and the superblock.
     ///
-    /// Returns the allocated inode number (1-indexed), or `NoSpace` if no
-    /// inodes are available.
-    pub async fn alloc_inode(&self) -> Result<u32, FsError> {
+    /// Returns an `InodeGuard` wrapping the allocated inode number (1-indexed).
+    /// The guard provides RAII cleanup: if dropped without calling `consume()`,
+    /// the inode will be automatically freed.
+    ///
+    /// Returns `NoSpace` if no inodes are available.
+    pub async fn alloc_inode(self: &Arc<Self>) -> Result<InodeGuard, FsError> {
         let _guard = self.alloc_lock.lock().await;
 
         let block_size = self.block_size() as usize;
@@ -214,7 +219,7 @@ impl Ext2Fs {
 
                 // Inode numbers are 1-indexed
                 let ino = group as u32 * inodes_per_group + bit_index as u32 + 1;
-                return Ok(ino);
+                return Ok(InodeGuard::new(self.clone(), ino));
             }
         }
 
@@ -312,5 +317,59 @@ fn set_bit(bitmap: &mut [u8], index: usize) {
 /// Clear a bit in a bitmap.
 fn clear_bit(bitmap: &mut [u8], index: usize) {
     bitmap[index / 8] &= !(1 << (index % 8));
+}
+
+// =============================================================================
+// Directory count tracking
+// =============================================================================
+
+impl Ext2Fs {
+    /// Increment the `used_dirs_count` for the block group containing the given inode.
+    ///
+    /// This must be called when a directory inode is allocated (e.g., during `mkdir`).
+    /// The count is used by fsck and some allocation heuristics.
+    ///
+    /// Acquires `alloc_lock` to serialise with other bitmap operations.
+    pub async fn inc_used_dirs_count(&self, ino: u32) -> Result<(), FsError> {
+        let _guard = self.alloc_lock.lock().await;
+
+        let group = ((ino - 1) / self.inodes_per_group()) as usize;
+
+        {
+            let mut m = self.mutable().write();
+            if group >= m.block_groups.len() {
+                return Err(FsError::IoError);
+            }
+            m.block_groups[group].used_dirs_count =
+                m.block_groups[group].used_dirs_count.saturating_add(1);
+        }
+
+        self.write_block_group_descriptor(group as u32).await?;
+        Ok(())
+    }
+
+    /// Decrement the `used_dirs_count` for the block group containing the given inode.
+    ///
+    /// This must be called when a directory inode is freed (e.g., during `rmdir`).
+    /// The count is used by fsck and some allocation heuristics.
+    ///
+    /// Acquires `alloc_lock` to serialise with other bitmap operations.
+    pub async fn dec_used_dirs_count(&self, ino: u32) -> Result<(), FsError> {
+        let _guard = self.alloc_lock.lock().await;
+
+        let group = ((ino - 1) / self.inodes_per_group()) as usize;
+
+        {
+            let mut m = self.mutable().write();
+            if group >= m.block_groups.len() {
+                return Err(FsError::IoError);
+            }
+            m.block_groups[group].used_dirs_count =
+                m.block_groups[group].used_dirs_count.saturating_sub(1);
+        }
+
+        self.write_block_group_descriptor(group as u32).await?;
+        Ok(())
+    }
 }
 

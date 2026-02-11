@@ -8,7 +8,10 @@
 pub mod bitmap;
 mod dir;
 mod file;
+mod guards;
 mod structs;
+
+pub use guards::{BlockGuard, InodeGuard};
 
 pub use file::Ext2File;
 pub use structs::*;
@@ -841,8 +844,15 @@ impl Filesystem for Ext2Fs {
             return Err(FsError::AlreadyExists);
         }
 
-        // Allocate a new inode
-        let new_ino = self.alloc_inode().await?;
+        // Get Arc<Self> for file handle
+        let fs_arc = self
+            .self_ref
+            .read()
+            .upgrade()
+            .ok_or(FsError::IoError)?;
+
+        // Allocate a new inode (guarded for automatic rollback)
+        let inode_guard = fs_arc.alloc_inode().await?;
 
         // Initialise the new inode as a regular file
         let new_inode = Inode {
@@ -866,31 +876,17 @@ impl Filesystem for Ext2Fs {
             osd2: [0u8; 12],
         };
 
-        // Write the new inode to disk
-        self.write_inode(new_ino, &new_inode).await?;
+        // Add directory entry, consuming the guard on success
+        // The guard is consumed here, which is the commit point
+        let (new_ino, updated_parent) = self
+            .add_dir_entry(parent_ino, parent_inode, file_name, inode_guard, FT_REG_FILE)
+            .await?;
 
-        // Add directory entry in the parent directory
-        let updated_parent = match self
-            .add_dir_entry(parent_ino, parent_inode, file_name, new_ino, FT_REG_FILE)
-            .await
-        {
-            Ok(p) => p,
-            Err(e) => {
-                // Rollback: free the inode we just allocated
-                let _ = self.free_inode(new_ino).await;
-                return Err(e);
-            }
-        };
+        // Write the new inode to disk (guard already consumed, inode is committed)
+        self.write_inode(new_ino, &new_inode).await?;
 
         // Persist updated parent inode
         self.write_inode(parent_ino, &updated_parent).await?;
-
-        // Return an opened file handle
-        let fs_arc = self
-            .self_ref
-            .read()
-            .upgrade()
-            .ok_or(FsError::IoError)?;
 
         Ok(Box::new(Ext2File::new(fs_arc, new_inode, new_ino)))
     }
@@ -938,6 +934,173 @@ impl Filesystem for Ext2Fs {
             // Just persist the decremented link count
             self.write_inode(target_ino, &target_inode).await?;
         }
+
+        Ok(())
+    }
+
+    /// Create a new directory at the given path.
+    ///
+    /// Allocates a new inode with directory mode, creates an initial block
+    /// containing `.` (self-reference) and `..` (parent reference) entries,
+    /// adds a directory entry in the parent, and updates link counts.
+    ///
+    /// # Ext2 semantics
+    ///
+    /// - The new directory's `links_count` is 2: one from the parent's entry,
+    ///   one from its own `.` entry
+    /// - The parent's `links_count` is incremented by 1 for the `..` back-reference
+    /// - The block group's `used_dirs_count` is incremented
+    async fn mkdir(&self, path: &str, mode: u16) -> Result<(), FsError> {
+        let (parent_path, dir_name) = split_parent_name(path)?;
+
+        // Resolve parent directory
+        let parent_ino = self.lookup(parent_path).await?;
+        let parent_inode = self.read_inode(parent_ino).await?;
+        if !parent_inode.is_dir() {
+            return Err(FsError::NotFound);
+        }
+
+        // Check for duplicates
+        if self.find_entry(&parent_inode, dir_name).await.is_ok() {
+            return Err(FsError::AlreadyExists);
+        }
+
+        // Get Arc<Self> for RAII guards
+        let fs_arc = self
+            .self_ref
+            .read()
+            .upgrade()
+            .ok_or(FsError::IoError)?;
+
+        // Allocate a new inode for the directory (guarded for automatic rollback)
+        let inode_guard = fs_arc.alloc_inode().await?;
+
+        // Allocate initial block for the directory (guarded for automatic rollback)
+        let block_guard = BlockGuard::new(fs_arc, self.alloc_block().await?);
+
+        // Safety: We peek the block number here for use in the inode initialization,
+        // but keep the guard alive until after add_dir_entry succeeds. If any
+        // operation fails before we consume the guard, the block will be automatically
+        // freed on drop.
+        let initial_block = unsafe { block_guard.peek() };
+
+        // Add entry in parent directory, consuming the inode guard
+        // This is the commit point for the inode allocation
+        let (new_ino, updated_parent) = self
+            .add_dir_entry(parent_ino, parent_inode, dir_name, inode_guard, FT_DIR)
+            .await?;
+
+        // Initialise the new inode as a directory (now that we have the ino)
+        let new_inode = Inode {
+            mode: S_IFDIR | (mode & 0o7777),
+            uid: 0,
+            size: self.block_size(),
+            atime: 0,
+            ctime: 0,
+            mtime: 0,
+            dtime: 0,
+            gid: 0,
+            links_count: 2, // '.' points to self, parent entry points to us
+            blocks: self.block_size() / 512, // Sectors used by initial block
+            flags: 0,
+            osd1: 0,
+            block: {
+                let mut b = [0u32; 15];
+                b[0] = initial_block;
+                b
+            },
+            generation: 0,
+            file_acl: 0,
+            size_high: 0,
+            faddr: 0,
+            osd2: [0u8; 12],
+        };
+
+        // Write . and .. entries to initial block (using the committed inode number)
+        let init_buf = self.init_dir_block(new_ino, parent_ino);
+        self.write_block(initial_block, &init_buf).await?;
+
+        // Write inode to disk
+        self.write_inode(new_ino, &new_inode).await?;
+
+        // Commit the block allocation now that inode is written
+        block_guard.consume();
+
+        // Increment parent's link count (for .. reference)
+        let mut updated_parent = updated_parent;
+        updated_parent.links_count += 1;
+        self.write_inode(parent_ino, &updated_parent).await?;
+
+        // Update used_dirs_count in block group descriptor
+        self.inc_used_dirs_count(new_ino).await?;
+
+        Ok(())
+    }
+
+    /// Remove an empty directory at the given path.
+    ///
+    /// Verifies the directory contains only `.` and `..` entries, removes
+    /// the directory entry from the parent, frees the directory's blocks
+    /// and inode, and updates link counts.
+    ///
+    /// # Errors
+    ///
+    /// - `NotFound` if the path doesn't exist
+    /// - `NotDirectory` if the target is not a directory
+    /// - `NotEmpty` if the directory contains entries other than `.` and `..`
+    async fn rmdir(&self, path: &str) -> Result<(), FsError> {
+        let (parent_path, dir_name) = split_parent_name(path)?;
+
+        // Validate not removing root
+        if dir_name.is_empty() || path.trim_matches('/').is_empty() {
+            return Err(FsError::IoError); // Can't remove root
+        }
+
+        // Resolve parent directory
+        let parent_ino = self.lookup(parent_path).await?;
+        let parent_inode = self.read_inode(parent_ino).await?;
+        if !parent_inode.is_dir() {
+            return Err(FsError::NotFound);
+        }
+
+        // Find target entry and get inode
+        let target_ino = self.find_entry(&parent_inode, dir_name).await?;
+        let target_inode = self.read_inode(target_ino).await?;
+
+        // Verify target is a directory
+        if !target_inode.is_dir() {
+            return Err(FsError::NotDirectory);
+        }
+
+        // Verify directory is empty
+        if !self.is_dir_empty(&target_inode).await? {
+            return Err(FsError::NotEmpty);
+        }
+
+        // Remove entry from parent
+        let (_, updated_parent) = self
+            .remove_dir_entry(parent_ino, parent_inode, dir_name)
+            .await?;
+
+        // Free the directory's data blocks
+        self.free_inode_blocks(&target_inode).await?;
+
+        // Mark inode as deleted and free it
+        let mut deleted_inode = target_inode;
+        deleted_inode.dtime = 1;
+        deleted_inode.set_size(0);
+        deleted_inode.blocks = 0;
+        deleted_inode.links_count = 0;
+        self.write_inode(target_ino, &deleted_inode).await?;
+        self.free_inode(target_ino).await?;
+
+        // Decrement parent's link count (removing .. reference)
+        let mut updated_parent = updated_parent;
+        updated_parent.links_count = updated_parent.links_count.saturating_sub(1);
+        self.write_inode(parent_ino, &updated_parent).await?;
+
+        // Update used_dirs_count in block group descriptor
+        self.dec_used_dirs_count(target_ino).await?;
 
         Ok(())
     }

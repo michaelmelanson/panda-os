@@ -255,6 +255,10 @@ pub enum Operation {
     DirectoryCreateFile = 0x8_0000,
     /// Unlink (delete) file from directory: (name_ptr, name_len) -> 0 or error
     DirectoryUnlinkFile = 0x8_0001,
+    /// Create subdirectory in directory: (name_ptr, name_len, mode) -> 0 or error
+    DirectoryMkdir = 0x8_0002,
+    /// Remove empty subdirectory from directory: (name_ptr, name_len) -> 0 or error
+    DirectoryRmdir = 0x8_0003,
 
     // Buffer operations (0x4_0000 - 0x4_FFFF)
     /// Allocate a shared buffer: (size, info_ptr) -> buffer_handle or error
@@ -330,6 +334,8 @@ impl Operation {
             0x3_0005 => Some(Self::EnvironmentMount),
             0x8_0000 => Some(Self::DirectoryCreateFile),
             0x8_0001 => Some(Self::DirectoryUnlinkFile),
+            0x8_0002 => Some(Self::DirectoryMkdir),
+            0x8_0003 => Some(Self::DirectoryRmdir),
             0x4_0000 => Some(Self::BufferAlloc),
             0x4_0002 => Some(Self::BufferResize),
             0x4_0003 => Some(Self::BufferFree),
@@ -429,6 +435,10 @@ pub const OP_ENVIRONMENT_MOUNT: u32 = Operation::EnvironmentMount as u32;
 pub const OP_DIRECTORY_CREATE_FILE: u32 = Operation::DirectoryCreateFile as u32;
 /// Unlink (delete) file from directory: (name_ptr, name_len) -> 0 or error
 pub const OP_DIRECTORY_UNLINK_FILE: u32 = Operation::DirectoryUnlinkFile as u32;
+/// Create subdirectory in directory: (name_ptr, name_len, mode) -> 0 or error
+pub const OP_DIRECTORY_MKDIR: u32 = Operation::DirectoryMkdir as u32;
+/// Remove empty subdirectory from directory: (name_ptr, name_len) -> 0 or error
+pub const OP_DIRECTORY_RMDIR: u32 = Operation::DirectoryRmdir as u32;
 
 // Buffer operations (0x4_0000 - 0x4_FFFF)
 /// Allocate a shared buffer: (size, info_ptr) -> buffer_handle or error
