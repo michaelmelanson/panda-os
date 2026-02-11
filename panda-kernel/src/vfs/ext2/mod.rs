@@ -941,6 +941,180 @@ impl Filesystem for Ext2Fs {
 
         Ok(())
     }
+
+    /// Create a new directory at the given path.
+    ///
+    /// Allocates a new inode with directory mode, creates an initial block
+    /// containing `.` (self-reference) and `..` (parent reference) entries,
+    /// adds a directory entry in the parent, and updates link counts.
+    ///
+    /// # Ext2 semantics
+    ///
+    /// - The new directory's `links_count` is 2: one from the parent's entry,
+    ///   one from its own `.` entry
+    /// - The parent's `links_count` is incremented by 1 for the `..` back-reference
+    /// - The block group's `used_dirs_count` is incremented
+    async fn mkdir(&self, path: &str, mode: u16) -> Result<(), FsError> {
+        let (parent_path, dir_name) = split_parent_name(path)?;
+
+        // Resolve parent directory
+        let parent_ino = self.lookup(parent_path).await?;
+        let parent_inode = self.read_inode(parent_ino).await?;
+        if !parent_inode.is_dir() {
+            return Err(FsError::NotFound);
+        }
+
+        // Check for duplicates
+        if self.find_entry(&parent_inode, dir_name).await.is_ok() {
+            return Err(FsError::AlreadyExists);
+        }
+
+        // Allocate a new inode for the directory
+        let new_ino = self.alloc_inode().await?;
+
+        // Allocate initial block for the directory
+        let init_block = match self.alloc_block().await {
+            Ok(b) => b,
+            Err(e) => {
+                // Rollback inode allocation
+                let _ = self.free_inode(new_ino).await;
+                return Err(e);
+            }
+        };
+
+        // Initialise the new inode as a directory
+        let new_inode = Inode {
+            mode: S_IFDIR | (mode & 0o7777),
+            uid: 0,
+            size: self.block_size(),
+            atime: 0,
+            ctime: 0,
+            mtime: 0,
+            dtime: 0,
+            gid: 0,
+            links_count: 2, // '.' points to self, parent entry points to us
+            blocks: self.block_size() / 512, // Sectors used by initial block
+            flags: 0,
+            osd1: 0,
+            block: {
+                let mut b = [0u32; 15];
+                b[0] = init_block;
+                b
+            },
+            generation: 0,
+            file_acl: 0,
+            size_high: 0,
+            faddr: 0,
+            osd2: [0u8; 12],
+        };
+
+        // Write . and .. entries to initial block
+        let init_buf = self.init_dir_block(new_ino, parent_ino);
+        if let Err(e) = self.write_block(init_block, &init_buf).await {
+            let _ = self.free_block(init_block).await;
+            let _ = self.free_inode(new_ino).await;
+            return Err(e);
+        }
+
+        // Write inode to disk
+        if let Err(e) = self.write_inode(new_ino, &new_inode).await {
+            let _ = self.free_block(init_block).await;
+            let _ = self.free_inode(new_ino).await;
+            return Err(e);
+        }
+
+        // Add entry in parent directory
+        let updated_parent = match self
+            .add_dir_entry(parent_ino, parent_inode, dir_name, new_ino, FT_DIR)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                // Rollback
+                let _ = self.free_block(init_block).await;
+                let _ = self.free_inode(new_ino).await;
+                return Err(e);
+            }
+        };
+
+        // Increment parent's link count (for .. reference)
+        let mut updated_parent = updated_parent;
+        updated_parent.links_count += 1;
+        self.write_inode(parent_ino, &updated_parent).await?;
+
+        // Update used_dirs_count in block group descriptor
+        self.inc_used_dirs_count(new_ino).await?;
+
+        Ok(())
+    }
+
+    /// Remove an empty directory at the given path.
+    ///
+    /// Verifies the directory contains only `.` and `..` entries, removes
+    /// the directory entry from the parent, frees the directory's blocks
+    /// and inode, and updates link counts.
+    ///
+    /// # Errors
+    ///
+    /// - `NotFound` if the path doesn't exist
+    /// - `NotDirectory` if the target is not a directory
+    /// - `NotEmpty` if the directory contains entries other than `.` and `..`
+    async fn rmdir(&self, path: &str) -> Result<(), FsError> {
+        let (parent_path, dir_name) = split_parent_name(path)?;
+
+        // Validate not removing root
+        if dir_name.is_empty() || path.trim_matches('/').is_empty() {
+            return Err(FsError::IoError); // Can't remove root
+        }
+
+        // Resolve parent directory
+        let parent_ino = self.lookup(parent_path).await?;
+        let parent_inode = self.read_inode(parent_ino).await?;
+        if !parent_inode.is_dir() {
+            return Err(FsError::NotFound);
+        }
+
+        // Find target entry and get inode
+        let target_ino = self.find_entry(&parent_inode, dir_name).await?;
+        let target_inode = self.read_inode(target_ino).await?;
+
+        // Verify target is a directory
+        if !target_inode.is_dir() {
+            return Err(FsError::NotDirectory);
+        }
+
+        // Verify directory is empty
+        if !self.is_dir_empty(&target_inode).await? {
+            return Err(FsError::NotEmpty);
+        }
+
+        // Remove entry from parent
+        let (_, updated_parent) = self
+            .remove_dir_entry(parent_ino, parent_inode, dir_name)
+            .await?;
+
+        // Free the directory's data blocks
+        self.free_inode_blocks(&target_inode).await?;
+
+        // Mark inode as deleted and free it
+        let mut deleted_inode = target_inode;
+        deleted_inode.dtime = 1;
+        deleted_inode.set_size(0);
+        deleted_inode.blocks = 0;
+        deleted_inode.links_count = 0;
+        self.write_inode(target_ino, &deleted_inode).await?;
+        self.free_inode(target_ino).await?;
+
+        // Decrement parent's link count (removing .. reference)
+        let mut updated_parent = updated_parent;
+        updated_parent.links_count = updated_parent.links_count.saturating_sub(1);
+        self.write_inode(parent_ino, &updated_parent).await?;
+
+        // Update used_dirs_count in block group descriptor
+        self.dec_used_dirs_count(target_ino).await?;
+
+        Ok(())
+    }
 }
 
 /// Split a path into (parent_path, file_name).

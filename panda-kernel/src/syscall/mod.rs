@@ -228,6 +228,8 @@ fn build_future(
         // Directory operations
         OP_DIRECTORY_CREATE_FILE => Ok(directory::handle_create(ua, handle, arg0, arg1, arg2, arg3)),
         OP_DIRECTORY_UNLINK_FILE => Ok(directory::handle_unlink(ua, handle, arg0, arg1)),
+        OP_DIRECTORY_MKDIR => Ok(directory::handle_mkdir(ua, handle, arg0, arg1, arg2)),
+        OP_DIRECTORY_RMDIR => Ok(directory::handle_rmdir(ua, handle, arg0, arg1)),
 
         // Buffer operations
         OP_BUFFER_ALLOC => Ok(buffer::handle_alloc(ua, arg0, arg1)),

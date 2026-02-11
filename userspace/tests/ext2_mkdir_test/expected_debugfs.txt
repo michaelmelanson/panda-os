@@ -1,0 +1,17 @@
+# Verify filesystem state after mkdir/rmdir tests.
+#
+# Lines starting with '>' are debugfs commands.
+# All other non-comment lines are expected patterns that must appear
+# in order in the debugfs output.
+
+# Test 5: newdir was created then removed — should NOT exist
+# (only the pre-existing directories should be listed)
+>ls -l /
+subdir
+large.bin
+a
+
+# Test 6: Verify nested directory a/b/c/d was created
+>ls -l a/b/c
+deep.txt
+d

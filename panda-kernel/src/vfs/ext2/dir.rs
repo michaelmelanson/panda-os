@@ -28,9 +28,10 @@
 //! the first entry in its block, zeroes the inode field to mark it deleted.
 
 use alloc::vec;
+use alloc::vec::Vec;
 
 use super::Ext2Fs;
-use super::structs::{DirEntryRaw, Inode};
+use super::structs::{DirEntryRaw, FT_DIR, Inode};
 use crate::vfs::FsError;
 
 /// Minimum ext2 directory entry size (8-byte header, no name).
@@ -271,6 +272,107 @@ impl Ext2Fs {
         }
 
         Err(FsError::NotFound)
+    }
+}
+
+// =============================================================================
+// Directory helper functions for mkdir/rmdir
+// =============================================================================
+
+impl Ext2Fs {
+    /// Initialise a directory block with `.` and `..` entries.
+    ///
+    /// Creates the initial contents for a new directory:
+    /// - `.` entry pointing to `self_ino` (the new directory itself)
+    /// - `..` entry pointing to `parent_ino` (the parent directory)
+    ///
+    /// The `..` entry's `rec_len` extends to the end of the block, allowing
+    /// future entries to be inserted by splitting it.
+    ///
+    /// # Arguments
+    ///
+    /// * `self_ino` - Inode number of the new directory (for `.`)
+    /// * `parent_ino` - Inode number of the parent directory (for `..`)
+    ///
+    /// # Returns
+    ///
+    /// A block-sized buffer ready to write to disk.
+    pub fn init_dir_block(&self, self_ino: u32, parent_ino: u32) -> Vec<u8> {
+        let block_size = self.block_size() as usize;
+        let mut buf = vec![0u8; block_size];
+
+        // "." entry at offset 0
+        // rec_len = 12 bytes (8 header + 1 name + 3 padding)
+        let dot_rec_len: u16 = 12;
+        write_dir_entry(&mut buf, 0, self_ino, dot_rec_len, b".", FT_DIR);
+
+        // ".." entry at offset 12
+        // rec_len extends to the end of the block to allow future entries
+        let dotdot_rec_len = (block_size - 12) as u16;
+        write_dir_entry(&mut buf, 12, parent_ino, dotdot_rec_len, b"..", FT_DIR);
+
+        buf
+    }
+
+    /// Check if a directory is empty (contains only `.` and `..`).
+    ///
+    /// Scans all directory blocks and returns `true` if the only entries
+    /// present are `.` and `..` (or deleted entries with inode == 0).
+    ///
+    /// # Arguments
+    ///
+    /// * `dir_inode` - The inode of the directory to check
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - Directory is empty
+    /// * `Ok(false)` - Directory contains entries other than `.` and `..`
+    /// * `Err(_)` - I/O error reading directory blocks
+    pub async fn is_dir_empty(&self, dir_inode: &Inode) -> Result<bool, FsError> {
+        let block_size = self.block_size() as usize;
+        let dir_size = dir_inode.size();
+        let num_blocks =
+            ((dir_size + self.block_size() as u64 - 1) / self.block_size() as u64) as u32;
+
+        let mut block_buf = vec![0u8; block_size];
+
+        for file_block in 0..num_blocks {
+            let block_num = self.get_block(dir_inode, file_block).await?;
+            if block_num == 0 {
+                continue;
+            }
+
+            self.read_block(block_num, &mut block_buf).await?;
+
+            let mut pos = 0usize;
+            while pos < block_size {
+                if pos + DIR_ENTRY_HEADER_SIZE > block_size {
+                    break;
+                }
+
+                let entry: DirEntryRaw =
+                    unsafe { core::ptr::read(block_buf[pos..].as_ptr() as *const _) };
+
+                if entry.rec_len < 8 || pos + entry.rec_len as usize > block_size {
+                    break;
+                }
+
+                if entry.inode != 0 {
+                    let name_len = entry.name_len as usize;
+                    if name_len <= entry.rec_len as usize - 8 {
+                        let name = &block_buf[pos + 8..pos + 8 + name_len];
+                        // Skip "." and ".." entries
+                        if name != b"." && name != b".." {
+                            return Ok(false);
+                        }
+                    }
+                }
+
+                pos += entry.rec_len as usize;
+            }
+        }
+
+        Ok(true)
     }
 }
 

@@ -314,3 +314,57 @@ fn clear_bit(bitmap: &mut [u8], index: usize) {
     bitmap[index / 8] &= !(1 << (index % 8));
 }
 
+// =============================================================================
+// Directory count tracking
+// =============================================================================
+
+impl Ext2Fs {
+    /// Increment the `used_dirs_count` for the block group containing the given inode.
+    ///
+    /// This must be called when a directory inode is allocated (e.g., during `mkdir`).
+    /// The count is used by fsck and some allocation heuristics.
+    ///
+    /// Acquires `alloc_lock` to serialise with other bitmap operations.
+    pub async fn inc_used_dirs_count(&self, ino: u32) -> Result<(), FsError> {
+        let _guard = self.alloc_lock.lock().await;
+
+        let group = ((ino - 1) / self.inodes_per_group()) as usize;
+
+        {
+            let mut m = self.mutable().write();
+            if group >= m.block_groups.len() {
+                return Err(FsError::IoError);
+            }
+            m.block_groups[group].used_dirs_count =
+                m.block_groups[group].used_dirs_count.saturating_add(1);
+        }
+
+        self.write_block_group_descriptor(group as u32).await?;
+        Ok(())
+    }
+
+    /// Decrement the `used_dirs_count` for the block group containing the given inode.
+    ///
+    /// This must be called when a directory inode is freed (e.g., during `rmdir`).
+    /// The count is used by fsck and some allocation heuristics.
+    ///
+    /// Acquires `alloc_lock` to serialise with other bitmap operations.
+    pub async fn dec_used_dirs_count(&self, ino: u32) -> Result<(), FsError> {
+        let _guard = self.alloc_lock.lock().await;
+
+        let group = ((ino - 1) / self.inodes_per_group()) as usize;
+
+        {
+            let mut m = self.mutable().write();
+            if group >= m.block_groups.len() {
+                return Err(FsError::IoError);
+            }
+            m.block_groups[group].used_dirs_count =
+                m.block_groups[group].used_dirs_count.saturating_sub(1);
+        }
+
+        self.write_block_group_descriptor(group as u32).await?;
+        Ok(())
+    }
+}
+

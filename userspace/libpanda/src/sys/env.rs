@@ -141,3 +141,37 @@ pub fn dir_unlink(dir_handle: Handle, name: &str) -> isize {
         0,
     )
 }
+
+/// Create a subdirectory in a directory.
+///
+/// Returns 0 on success, or negative error code.
+/// The `dir_handle` must be a directory handle opened via `opendir`.
+/// `name` is just the directory name (not a full path).
+#[inline(always)]
+pub fn dir_mkdir(dir_handle: Handle, name: &str, mode: u16) -> isize {
+    send(
+        dir_handle,
+        OP_DIRECTORY_MKDIR,
+        name.as_ptr() as usize,
+        name.len(),
+        mode as usize,
+        0,
+    )
+}
+
+/// Remove an empty subdirectory from a directory.
+///
+/// Returns 0 on success, or negative error code.
+/// The `dir_handle` must be a directory handle opened via `opendir`.
+/// `name` is just the directory name (not a full path).
+#[inline(always)]
+pub fn dir_rmdir(dir_handle: Handle, name: &str) -> isize {
+    send(
+        dir_handle,
+        OP_DIRECTORY_RMDIR,
+        name.as_ptr() as usize,
+        name.len(),
+        0,
+        0,
+    )
+}
