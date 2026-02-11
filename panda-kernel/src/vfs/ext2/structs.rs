@@ -267,6 +267,15 @@ impl Superblock {
         self.feature_incompat & !SUPPORTED_INCOMPAT
     }
 
+    /// Check if the filesystem has unsupported read-only compatible features.
+    ///
+    /// Returns the mask of unsupported features, or 0 if all are supported.
+    /// If any unsupported RO_COMPAT features are present, the filesystem must
+    /// be mounted read-only to prevent corruption.
+    pub fn unsupported_ro_compat_features(&self) -> u32 {
+        self.feature_ro_compat & !SUPPORTED_RO_COMPAT
+    }
+
     /// Serialise this superblock to its on-disk byte representation (1024 bytes).
     pub fn to_bytes(&self) -> [u8; 1024] {
         const _: () = assert!(core::mem::size_of::<Superblock>() == 1024);

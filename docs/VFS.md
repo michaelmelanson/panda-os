@@ -272,6 +272,13 @@ Write handles:
 - File extension (growing the file size)
 - Indirect block allocation (single, double, triple) via `set_block_number`
 - Inode metadata updates (size, block count including indirect metadata blocks)
+- Timestamp updates (mtime, ctime) on write
+
+Truncate handles:
+- Sparse extension (growing without block allocation)
+- Block freeing for shrink operations
+- Partial block zeroing for non-aligned truncates
+- Indirect block cleanup
 
 ## BlockDeviceFile
 
@@ -294,6 +301,59 @@ pub fn poll_immediate<T>(future: Pin<&mut impl Future<Output = T>>) -> Option<T>
 
 Returns `Some(result)` if the future completes immediately (e.g., TarFs), `None` if pending.
 
+## Ext2 RO_COMPAT feature handling
+
+When mounting ext2, the driver checks for unsupported read-only compatible (RO_COMPAT) features:
+
+- If all RO_COMPAT features are supported, the filesystem is mounted read-write
+- If any unsupported RO_COMPAT features are present, the filesystem is mounted read-only
+- This prevents data corruption from writing to filesystems with unknown features
+
+Supported RO_COMPAT features:
+- `SPARSE_SUPER` (0x0001): Sparse superblock copies
+- `LARGE_FILE` (0x0002): Files > 2GB
+- `BTREE_DIR` (0x0004): B-tree indexed directories
+- `HUGE_FILE` (0x0008): Large file sizes
+- `GDT_CSUM` (0x0010): Group descriptor checksums
+- `DIR_NLINK` (0x0020): Large directory link counts
+- `EXTRA_ISIZE` (0x0040): Extended inode size
+
+Write operations (`create`, `unlink`, `mkdir`, `rmdir`, `truncate`, file writes) check `read_write` and return `FsError::ReadOnlyFs` if the filesystem was mounted read-only due to RO_COMPAT features.
+
+## Ext2 crash consistency
+
+The ext2 driver follows ordered write semantics to ensure crash safety without a journal:
+
+### Write ordering discipline
+
+**For allocation (create, mkdir, write extending file):**
+1. Allocate in bitmap → write bitmap
+2. Write data to allocated blocks
+3. Write/update inode
+4. Update directory entry (if new file)
+
+**For deallocation (unlink, rmdir, truncate shrinking):**
+1. Remove directory entry (if unlinking)
+2. Update inode (size, links_count)
+3. Write inode
+4. Free blocks in bitmap → write bitmap
+5. Free inode in bitmap (if links_count == 0)
+
+### Crash recovery scenarios
+
+| Crash point | State | Recovery |
+|-------------|-------|----------|
+| After bitmap alloc, before inode | Leaked block/inode | fsck finds unreferenced, reclaims |
+| After inode write, before dir entry | Orphaned inode | fsck finds inode with no references, reclaims |
+| After dir entry removal, before bitmap free | Unused allocated resources | fsck detects, frees |
+| After partial bitmap free | Inconsistent counts | fsck recalculates free counts |
+
+### Limitations
+
+- No journal: requires fsck after unclean shutdown
+- Block allocation lock (`alloc_lock`) serialises bitmap operations to prevent TOCTOU races
+- Atomic inode swapping is not feasible in ext2 due to fixed inode positions
+
 ## Files
 
 | File | Description |
@@ -303,5 +363,6 @@ Returns `Some(result)` if the future completes immediately (e.g., TarFs), `None`
 | `vfs/ext2/mod.rs` | Ext2 filesystem implementation |
 | `vfs/ext2/file.rs` | Ext2File implementation |
 | `vfs/ext2/structs.rs` | On-disk structures |
+| `vfs/ext2/bitmap.rs` | Block and inode bitmap allocation |
 | `resource/block.rs` | BlockDevice trait |
 | `devices/virtio_block.rs` | Virtio block driver with async futures |

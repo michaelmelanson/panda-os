@@ -178,6 +178,7 @@ impl File for Ext2File {
     /// Invalidates the indirect block cache when new blocks are allocated
     /// beyond the direct range.
     async fn write(&mut self, buf: &[u8]) -> Result<usize, FsError> {
+        self.fs.check_writable()?;
         if buf.is_empty() {
             return Ok(0);
         }
@@ -239,8 +240,11 @@ impl File for Ext2File {
             }
         }
 
-        // Persist inode changes (size, block pointers, block count)
+        // Persist inode changes (size, block pointers, block count, timestamps)
         if inode_dirty {
+            let now = self.fs.current_timestamp();
+            self.inode.mtime = now;
+            self.inode.ctime = now;
             self.fs.write_inode(self.ino, &self.inode).await?;
         }
 

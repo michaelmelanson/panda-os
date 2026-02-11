@@ -58,6 +58,10 @@ panda_kernel::test_harness!(
     free_count_decrement_consistency,
     free_count_increment_consistency,
     free_count_alloc_free_cycle,
+    // RO_COMPAT feature detection tests
+    ro_compat_supported_features_pass,
+    ro_compat_unsupported_features_detected,
+    ro_compat_mixed_features_detected,
 );
 
 // =============================================================================
@@ -638,4 +642,44 @@ fn free_count_alloc_free_cycle() {
     assert_eq!(sb_restored.free_inodes_count, original_free_inodes);
     assert_eq!(bgd_restored.free_blocks_count, original_bgd_free_blocks);
     assert_eq!(bgd_restored.free_inodes_count, original_bgd_free_inodes);
+}
+
+// =============================================================================
+// RO_COMPAT feature detection tests
+// =============================================================================
+
+use panda_kernel::vfs::ext2::{RO_COMPAT_SPARSE_SUPER, RO_COMPAT_LARGE_FILE};
+
+/// Verify that supported RO_COMPAT features are not flagged as unsupported.
+fn ro_compat_supported_features_pass() {
+    let mut sb = make_valid_superblock();
+    // Set only supported features
+    sb.feature_ro_compat = RO_COMPAT_SPARSE_SUPER | RO_COMPAT_LARGE_FILE;
+
+    let unsupported = sb.unsupported_ro_compat_features();
+    assert_eq!(unsupported, 0, "Supported RO_COMPAT features should not be flagged");
+}
+
+/// Verify that unsupported RO_COMPAT features are correctly detected.
+fn ro_compat_unsupported_features_detected() {
+    let mut sb = make_valid_superblock();
+    // Set an unsupported feature (using a high bit that's not in SUPPORTED_RO_COMPAT)
+    let unsupported_bit = 0x8000;
+    sb.feature_ro_compat = unsupported_bit;
+
+    let unsupported = sb.unsupported_ro_compat_features();
+    assert_eq!(unsupported, unsupported_bit, "Unsupported RO_COMPAT feature should be detected");
+}
+
+/// Verify that mixed supported/unsupported features are correctly handled.
+fn ro_compat_mixed_features_detected() {
+    let mut sb = make_valid_superblock();
+    // Set both supported and unsupported features
+    let unsupported_bit = 0x8000;
+    sb.feature_ro_compat = RO_COMPAT_SPARSE_SUPER | unsupported_bit;
+
+    let unsupported = sb.unsupported_ro_compat_features();
+    // Should only report the unsupported bit, not the supported one
+    assert_eq!(unsupported, unsupported_bit, "Only unsupported bits should be reported");
+    assert_eq!(unsupported & RO_COMPAT_SPARSE_SUPER, 0, "Supported feature should not be flagged");
 }
