@@ -1,10 +1,10 @@
 # @unordered
 Signal test: starting
-Test 1: SIGKILL
+Test 1: StopImmediately
 # @barrier
 Signal child: starting event loop
 Test 1: PASS
-Test 2: SIGTERM
+Test 2: Stop
 # @barrier
 Signal child: starting event loop
 Signal child: received signal event
