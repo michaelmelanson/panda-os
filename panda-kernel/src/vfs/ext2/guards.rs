@@ -16,17 +16,15 @@
 //! # Usage
 //!
 //! ```ignore
-//! let inode_guard = InodeGuard::new(fs.clone(), fs.alloc_inode().await?);
+//! // alloc_inode returns InodeGuard directly
+//! let inode_guard = fs.alloc_inode().await?;
 //! let block_guard = BlockGuard::new(fs.clone(), fs.alloc_block().await?);
 //!
-//! // Write operations use consume_with() to get the value and run a closure
-//! let ino = inode_guard.consume_with(|ino| {
-//!     // Use ino for writes, then return it to commit
-//!     fs.write_inode(ino, &inode).await?;
-//!     Ok(ino)
-//! })?;
+//! // For operations needing the value before commit, use unsafe peek()
+//! let block_num = unsafe { block_guard.peek() };
+//! fs.write_block(block_num, &data).await?;
 //!
-//! // Or consume directly at the commit point (e.g., passing to add_dir_entry)
+//! // Consume at the commit point (e.g., passing to add_dir_entry)
 //! let (ino, updated) = fs.add_dir_entry(..., inode_guard, ...).await?;
 //! block_guard.consume();  // Commit block after successful dir entry
 //! ```
@@ -53,11 +51,26 @@ impl InodeGuard {
 
     /// Consume the guard, returning the inode number without freeing it.
     ///
-    /// This is the only way to access the inode number. After calling
+    /// This is the only way to safely access the inode number. After calling
     /// this, the caller takes responsibility for the inode and must handle
     /// cleanup on any subsequent errors.
     pub fn consume(mut self) -> u32 {
         self.ino.take().expect("InodeGuard already consumed")
+    }
+
+    /// Access the inode number without consuming the guard.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that either:
+    /// 1. The guard will be consumed (via `consume()`) before being dropped, or
+    /// 2. The caller will manually handle deallocation if the guard is dropped
+    ///
+    /// This is intended for operations that need to write data using the inode
+    /// number before the final "commit point" where the guard is consumed.
+    /// The guard should be kept alive until the operation is committed.
+    pub unsafe fn peek(&self) -> u32 {
+        self.ino.expect("InodeGuard already consumed")
     }
 }
 
@@ -95,11 +108,26 @@ impl BlockGuard {
 
     /// Consume the guard, returning the block number without freeing it.
     ///
-    /// This is the only way to access the block number. After calling
+    /// This is the only way to safely access the block number. After calling
     /// this, the caller takes responsibility for the block and must handle
     /// cleanup on any subsequent errors.
     pub fn consume(mut self) -> u32 {
         self.block.take().expect("BlockGuard already consumed")
+    }
+
+    /// Access the block number without consuming the guard.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that either:
+    /// 1. The guard will be consumed (via `consume()`) before being dropped, or
+    /// 2. The caller will manually handle deallocation if the guard is dropped
+    ///
+    /// This is intended for operations that need to write data using the block
+    /// number before the final "commit point" where the guard is consumed.
+    /// The guard should be kept alive until the operation is committed.
+    pub unsafe fn peek(&self) -> u32 {
+        self.block.expect("BlockGuard already consumed")
     }
 }
 

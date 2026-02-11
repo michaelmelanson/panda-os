@@ -844,7 +844,7 @@ impl Filesystem for Ext2Fs {
             return Err(FsError::AlreadyExists);
         }
 
-        // Get Arc<Self> for RAII guard and file handle
+        // Get Arc<Self> for file handle
         let fs_arc = self
             .self_ref
             .read()
@@ -852,7 +852,7 @@ impl Filesystem for Ext2Fs {
             .ok_or(FsError::IoError)?;
 
         // Allocate a new inode (guarded for automatic rollback)
-        let inode_guard = InodeGuard::new(fs_arc.clone(), self.alloc_inode().await?);
+        let inode_guard = fs_arc.alloc_inode().await?;
 
         // Initialise the new inode as a regular file
         let new_inode = Inode {
@@ -973,15 +973,16 @@ impl Filesystem for Ext2Fs {
             .ok_or(FsError::IoError)?;
 
         // Allocate a new inode for the directory (guarded for automatic rollback)
-        let inode_guard = InodeGuard::new(fs_arc.clone(), self.alloc_inode().await?);
+        let inode_guard = fs_arc.alloc_inode().await?;
 
         // Allocate initial block for the directory (guarded for automatic rollback)
         let block_guard = BlockGuard::new(fs_arc, self.alloc_block().await?);
 
-        // Consume block guard first to get the block number for inode initialization
-        // This commits the block allocation; if add_dir_entry fails below, the block
-        // will be leaked (acceptable for this rare error case)
-        let initial_block = block_guard.consume();
+        // Safety: We peek the block number here for use in the inode initialization,
+        // but keep the guard alive until after add_dir_entry succeeds. If any
+        // operation fails before we consume the guard, the block will be automatically
+        // freed on drop.
+        let initial_block = unsafe { block_guard.peek() };
 
         // Add entry in parent directory, consuming the inode guard
         // This is the commit point for the inode allocation
@@ -1021,6 +1022,9 @@ impl Filesystem for Ext2Fs {
 
         // Write inode to disk
         self.write_inode(new_ino, &new_inode).await?;
+
+        // Commit the block allocation now that inode is written
+        block_guard.consume();
 
         // Increment parent's link count (for .. reference)
         let mut updated_parent = updated_parent;

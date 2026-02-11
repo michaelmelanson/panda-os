@@ -22,8 +22,10 @@
 //! `RwSpinlock` is still used for in-memory counter access, but the async
 //! mutex ensures that the full bitmap I/O + counter update sequence is atomic.
 
+use alloc::sync::Arc;
 use alloc::vec;
 
+use super::guards::InodeGuard;
 use super::Ext2Fs;
 use crate::vfs::FsError;
 
@@ -163,9 +165,12 @@ impl Ext2Fs {
     /// bitmap. Updates the bitmap on disk, and decrements the free inode
     /// counts in both the block group descriptor and the superblock.
     ///
-    /// Returns the allocated inode number (1-indexed), or `NoSpace` if no
-    /// inodes are available.
-    pub async fn alloc_inode(&self) -> Result<u32, FsError> {
+    /// Returns an `InodeGuard` wrapping the allocated inode number (1-indexed).
+    /// The guard provides RAII cleanup: if dropped without calling `consume()`,
+    /// the inode will be automatically freed.
+    ///
+    /// Returns `NoSpace` if no inodes are available.
+    pub async fn alloc_inode(self: &Arc<Self>) -> Result<InodeGuard, FsError> {
         let _guard = self.alloc_lock.lock().await;
 
         let block_size = self.block_size() as usize;
@@ -214,7 +219,7 @@ impl Ext2Fs {
 
                 // Inode numbers are 1-indexed
                 let ino = group as u32 * inodes_per_group + bit_index as u32 + 1;
-                return Ok(ino);
+                return Ok(InodeGuard::new(self.clone(), ino));
             }
         }
 
