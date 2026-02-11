@@ -99,7 +99,7 @@ impl Process for SpawnHandle {
 
         match signal {
             panda_abi::Signal::StopImmediately => {
-                // SIGKILL: Immediate forced termination
+                // Immediate forced termination - no userspace code runs
                 let pid = self.process_info.pid();
 
                 // Check if already exited
@@ -108,8 +108,7 @@ impl Process for SpawnHandle {
                 }
 
                 // Set exit code before removal so waiters see it
-                // Convention: -9 is the SIGKILL exit code
-                self.process_info.set_exit_code(-9);
+                self.process_info.set_exit_code(panda_abi::EXIT_STOP_IMMEDIATELY);
 
                 // Remove from scheduler (reclaims memory, closes handles)
                 scheduler::remove_process(pid);
@@ -117,7 +116,7 @@ impl Process for SpawnHandle {
                 Ok(())
             }
             panda_abi::Signal::Stop => {
-                // SIGTERM: Deliver message to process's parent channel
+                // Deliver message to process's parent channel
                 // The child process reads from HANDLE_PARENT and handles it
 
                 // Check if already exited

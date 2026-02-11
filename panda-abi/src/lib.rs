@@ -1274,6 +1274,14 @@ pub struct ProcessSignalResponse {
     pub _pad: u32,
 }
 
+// =============================================================================
+// Exit codes
+// =============================================================================
+
+/// Exit code for processes terminated by `Signal::StopImmediately`.
+/// This is an immediate forced termination where no userspace code runs.
+pub const EXIT_STOP_IMMEDIATELY: i32 = -9;
+
 /// Signals that can be sent to a process via OP_PROCESS_SIGNAL.
 ///
 /// Signals provide a mechanism for process termination and notification:
