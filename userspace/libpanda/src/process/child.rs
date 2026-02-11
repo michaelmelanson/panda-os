@@ -95,9 +95,9 @@ impl Child {
         }
     }
 
-    /// Kill the child process (send SIGKILL equivalent).
+    /// Stop the child process immediately (send SIGKILL equivalent).
     pub fn kill(&mut self) -> Result<()> {
-        self.signal(Signal::Kill)
+        self.signal(Signal::StopImmediately)
     }
 
     /// Consume the Child and return the underlying handle without waiting.
@@ -326,8 +326,8 @@ impl ExitStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Signal {
-    /// Terminate the process gracefully.
-    Term = 0,
-    /// Kill the process immediately.
-    Kill = 1,
+    /// Request graceful termination.
+    Stop = 0,
+    /// Stop the process immediately.
+    StopImmediately = 1,
 }

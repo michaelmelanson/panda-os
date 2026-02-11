@@ -107,3 +107,7 @@ harness = false
 [[test]]
 name = "mailbox"
 harness = false
+
+[[test]]
+name = "signal"
+harness = false

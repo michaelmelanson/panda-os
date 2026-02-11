@@ -116,6 +116,12 @@ impl Events {
         self.0 & EVENT_PROCESS_EXITED != 0
     }
 
+    /// Check if a signal was received.
+    #[inline(always)]
+    pub fn is_signal_received(&self) -> bool {
+        self.0 & EVENT_SIGNAL_RECEIVED != 0
+    }
+
     /// Iterate over all set events.
     ///
     /// This yields each event that is set in the flags.

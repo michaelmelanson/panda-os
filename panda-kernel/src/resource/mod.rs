@@ -26,7 +26,7 @@ pub use char_output::{CharOutError, CharacterOutput};
 pub use directory::{DirEntry, Directory};
 pub use event_source::{Event, EventSource, KeyEvent};
 pub use mailbox::{Mailbox, MailboxRef};
-pub use process::Process as ProcessInterface;
+pub use process::{Process as ProcessInterface, ProcessError};
 pub use process_resource::ProcessResource;
 pub use scheme::{
     ConsoleScheme, DirectoryResource, FileScheme, KeyboardResource, KeyboardScheme, SchemeHandler,

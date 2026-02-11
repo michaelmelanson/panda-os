@@ -665,6 +665,10 @@ impl EventFlags {
     /// Key event available (key data packed in bits 8-25).
     pub const KEYBOARD_KEY: Self = Self(1 << 4);
 
+    // Signal events (bit 5)
+    /// Signal received on this handle.
+    pub const SIGNAL_RECEIVED: Self = Self(1 << 5);
+
     /// Check if channel readable flag is set.
     #[inline]
     pub const fn is_channel_readable(self) -> bool {
@@ -693,6 +697,12 @@ impl EventFlags {
     #[inline]
     pub const fn is_keyboard_key(self) -> bool {
         self.0 & Self::KEYBOARD_KEY.0 != 0
+    }
+
+    /// Check if signal received flag is set.
+    #[inline]
+    pub const fn is_signal_received(self) -> bool {
+        self.0 & Self::SIGNAL_RECEIVED.0 != 0
     }
 
     /// Combine flags with bitwise OR.
@@ -732,6 +742,10 @@ pub const EVENT_PROCESS_EXITED: u32 = EventFlags::PROCESS_EXITED.0;
 /// - Bits 8-23: key code (16 bits)
 /// - Bits 24-25: key value (0=release, 1=press, 2=repeat)
 pub const EVENT_KEYBOARD_KEY: u32 = EventFlags::KEYBOARD_KEY.0;
+
+// Signal events (bit 5)
+/// Signal received on this handle.
+pub const EVENT_SIGNAL_RECEIVED: u32 = EventFlags::SIGNAL_RECEIVED.0;
 
 // Keyboard event encoding helpers
 /// Shift for key code in event flags.
@@ -971,7 +985,7 @@ impl core::fmt::Display for ErrorCode {
 
 /// Message header for tagged messages (used for correlation).
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessageHeader {
     /// Message ID for request/response correlation.
     /// ID 0 is reserved for unsolicited events.
@@ -980,6 +994,38 @@ pub struct MessageHeader {
     pub msg_type: u32,
     /// Reserved for future use.
     pub _reserved: u32,
+}
+
+impl MessageHeader {
+    /// Create a new message header.
+    pub const fn new(id: u64, msg_type: u32) -> Self {
+        Self {
+            id,
+            msg_type,
+            _reserved: 0,
+        }
+    }
+}
+
+impl encoding::Encode for MessageHeader {
+    fn encode(&self, enc: &mut encoding::Encoder) {
+        enc.write_u64(self.id);
+        enc.write_u32(self.msg_type);
+        enc.write_u32(self._reserved);
+    }
+}
+
+impl encoding::Decode for MessageHeader {
+    fn decode(dec: &mut encoding::Decoder) -> Result<Self, encoding::DecodeError> {
+        let id = dec.read_u64()?;
+        let msg_type = dec.read_u32()?;
+        let _reserved = dec.read_u32()?;
+        Ok(Self {
+            id,
+            msg_type,
+            _reserved,
+        })
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -1226,6 +1272,193 @@ pub struct ProcessSignalResponse {
     pub header: MessageHeader,
     pub error: ErrorCode,
     pub _pad: u32,
+}
+
+// =============================================================================
+// Exit codes
+// =============================================================================
+
+/// Exit code for processes terminated by `Signal::StopImmediately`.
+/// This is an immediate forced termination where no userspace code runs.
+pub const EXIT_STOP_IMMEDIATELY: i32 = -9;
+
+/// Signals that can be sent to a process via OP_PROCESS_SIGNAL.
+///
+/// Signals provide a mechanism for process termination and notification:
+/// - `Stop` (SIGTERM equivalent): Delivered as a message on `HANDLE_PARENT`.
+///   The process can catch and handle it gracefully (e.g., flush buffers, close connections).
+/// - `StopImmediately` (SIGKILL equivalent): Kernel immediately tears down the process.
+///   No userspace code runs in the target.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal {
+    /// Request graceful termination. Delivered as a message on HANDLE_PARENT.
+    Stop = 0,
+    /// Forced termination. Kernel immediately tears down the process.
+    StopImmediately = 1,
+}
+
+impl Signal {
+    /// Convert from u32.
+    pub const fn from_u32(v: u32) -> Option<Self> {
+        match v {
+            0 => Some(Signal::Stop),
+            1 => Some(Signal::StopImmediately),
+            _ => None,
+        }
+    }
+
+    /// Convert to u32.
+    pub const fn as_u32(self) -> u32 {
+        self as u32
+    }
+
+    /// Get the exit code that should be set when a process is terminated by this signal.
+    ///
+    /// Returns `None` for signals that don't cause immediate termination.
+    pub const fn exit_code(self) -> Option<i32> {
+        match self {
+            Signal::Stop => None, // Graceful, no exit code
+            Signal::StopImmediately => Some(EXIT_STOP_IMMEDIATELY),
+        }
+    }
+}
+
+impl encoding::Encode for Signal {
+    fn encode(&self, enc: &mut encoding::Encoder) {
+        enc.write_u32(self.as_u32());
+    }
+}
+
+impl encoding::Decode for Signal {
+    fn decode(dec: &mut encoding::Decoder) -> Result<Self, encoding::DecodeError> {
+        let v = dec.read_u32()?;
+        Signal::from_u32(v).ok_or(encoding::DecodeError::InvalidValue)
+    }
+}
+
+/// Size of an encoded signal message in bytes.
+/// Layout: id (8) + msg_type (4) + _reserved (4) + signal (4) + _pad (4) = 24 bytes
+pub const SIGNAL_MESSAGE_SIZE: usize = 24;
+
+/// A signal event message sent on the parent channel.
+///
+/// This is used to notify a process of a signal (e.g., `Signal::Stop`).
+/// The message includes a header with `msg_type = ProcessMessageType::Signal`
+/// and the signal value as payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalEvent {
+    /// Message header with type = ProcessMessageType::Signal.
+    pub header: MessageHeader,
+    /// The signal being delivered.
+    pub signal: Signal,
+}
+
+impl SignalEvent {
+    /// Create a new signal event (unsolicited, id = 0).
+    pub const fn new(signal: Signal) -> Self {
+        Self {
+            header: MessageHeader::new(0, ProcessMessageType::Signal as u32),
+            signal,
+        }
+    }
+}
+
+impl encoding::Encode for SignalEvent {
+    fn encode(&self, enc: &mut encoding::Encoder) {
+        self.header.encode(enc);
+        self.signal.encode(enc);
+        enc.write_u32(0); // _pad for alignment
+    }
+}
+
+impl encoding::Decode for SignalEvent {
+    fn decode(dec: &mut encoding::Decoder) -> Result<Self, encoding::DecodeError> {
+        let header = MessageHeader::decode(dec)?;
+        if header.msg_type != ProcessMessageType::Signal as u32 {
+            return Err(encoding::DecodeError::InvalidValue);
+        }
+        let signal = Signal::decode(dec)?;
+        let _pad = dec.read_u32()?;
+        Ok(Self { header, signal })
+    }
+}
+
+/// Encode a signal message into a byte buffer using safe encoding.
+///
+/// This creates a `SignalEvent` message with:
+/// - `id = 0` (unsolicited event)
+/// - `msg_type = ProcessMessageType::Signal`
+/// - `signal` = the signal value
+///
+/// Returns the number of bytes written (always `SIGNAL_MESSAGE_SIZE`),
+/// or `None` if the buffer is too small.
+pub fn encode_signal_message(signal: Signal, buf: &mut [u8]) -> Option<usize> {
+    if buf.len() < SIGNAL_MESSAGE_SIZE {
+        return None;
+    }
+
+    use encoding::Encode;
+    let event = SignalEvent::new(signal);
+    let bytes = event.to_bytes();
+    buf[..SIGNAL_MESSAGE_SIZE].copy_from_slice(&bytes);
+    Some(SIGNAL_MESSAGE_SIZE)
+}
+
+/// Decoded signal message from a channel.
+///
+/// This is a convenience type for decoding signal messages that may or may not
+/// be signal messages. For strict decoding, use `SignalEvent` instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalMessage {
+    /// Message ID (0 for unsolicited events).
+    pub id: u64,
+    /// The signal that was received.
+    pub signal: Signal,
+}
+
+impl SignalMessage {
+    /// Decode a signal message from bytes.
+    ///
+    /// Returns `Ok(Some(msg))` if this is a valid signal message,
+    /// `Ok(None)` if this is not a signal message (different msg_type),
+    /// `Err` if the buffer is truncated or contains invalid data.
+    pub fn decode(buf: &[u8]) -> Result<Option<Self>, encoding::DecodeError> {
+        use encoding::{Decode, DecodeError, Decoder};
+
+        let mut dec = Decoder::new(buf);
+
+        // Parse MessageHeader using Decode trait
+        let header = MessageHeader::decode(&mut dec)?;
+
+        // Check message type
+        if header.msg_type != ProcessMessageType::Signal as u32 {
+            return Ok(None); // Not a signal message
+        }
+
+        // Parse signal payload using Decode trait
+        let signal = Signal::decode(&mut dec).map_err(|_| DecodeError::InvalidValue)?;
+        let _pad = dec.read_u32()?;
+
+        Ok(Some(SignalMessage {
+            id: header.id,
+            signal,
+        }))
+    }
+
+    /// Check if a buffer contains a signal message without fully decoding.
+    ///
+    /// This is a fast check that only reads the message type.
+    pub fn is_signal_message(buf: &[u8]) -> bool {
+        if buf.len() < 16 {
+            // Need at least MessageHeader (16 bytes)
+            return false;
+        }
+
+        // Read msg_type at offset 8 (after id)
+        let msg_type = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        msg_type == ProcessMessageType::Signal as u32
+    }
 }
 
 // -----------------------------------------------------------------------------

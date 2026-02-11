@@ -145,6 +145,40 @@ impl ChannelEndpoint {
         Ok(())
     }
 
+    /// Send a message to the peer with a custom event flag.
+    ///
+    /// Like `send()`, but posts the specified event flags to the peer's mailbox
+    /// instead of just `EVENT_CHANNEL_READABLE`. This is used for signal delivery
+    /// where we need to post `EVENT_SIGNAL_RECEIVED` in addition to or instead of
+    /// the normal channel events.
+    pub fn send_with_event(&self, msg: &[u8], event_flags: u32) -> Result<(), ChannelError> {
+        if msg.len() > MAX_MESSAGE_SIZE {
+            return Err(ChannelError::MessageTooLarge);
+        }
+
+        let mut shared = self.shared.lock();
+        let capacity = shared.capacity;
+        let (ours, peer) = shared.halves(self.side);
+
+        if peer.closed {
+            return Err(ChannelError::PeerClosed);
+        }
+
+        if ours.queue.len() >= capacity {
+            return Err(ChannelError::QueueFull);
+        }
+
+        ours.queue.push_back(msg.to_vec());
+
+        // Notify peer with specified event flags
+        peer.waker.wake();
+        if let Some(ref mailbox) = peer.mailbox {
+            mailbox.post_event(event_flags);
+        }
+
+        Ok(())
+    }
+
     /// Check if send would block (queue is full).
     pub fn would_block_send(&self) -> bool {
         let mut shared = self.shared.lock();

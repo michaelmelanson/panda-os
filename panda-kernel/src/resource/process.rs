@@ -36,4 +36,6 @@ pub enum ProcessError {
     NotFound,
     /// Permission denied.
     PermissionDenied,
+    /// Operation would block.
+    WouldBlock,
 }
