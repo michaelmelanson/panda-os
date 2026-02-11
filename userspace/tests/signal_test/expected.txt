@@ -1,0 +1,16 @@
+# @unordered
+Signal test: starting
+Test 1: SIGKILL
+# @barrier
+Signal child: starting event loop
+Test 1: PASS
+Test 2: SIGTERM
+# @barrier
+Signal child: starting event loop
+Signal child: received signal event
+Signal child: decoded signal message
+Signal child: stop signal received, exiting gracefully
+Test 2: PASS
+# @barrier
+Signal test: all tests passed
+PASS

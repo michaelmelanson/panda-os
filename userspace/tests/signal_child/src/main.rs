@@ -33,7 +33,13 @@ libpanda::main! {
 
                 if result >= SIGNAL_MESSAGE_SIZE as isize {
                     let len = result as usize;
-                    // Decode the signal message
+                    // First check the message header to see if this is a signal message
+                    if !SignalMessage::is_signal_message(&buf[..len]) {
+                        environment::log("Signal child: not a signal message");
+                        continue;
+                    }
+
+                    // Now decode the signal message payload
                     match SignalMessage::decode(&buf[..len]) {
                         Ok(Some(msg)) => {
                             environment::log("Signal child: decoded signal message");
@@ -50,7 +56,8 @@ libpanda::main! {
                             }
                         }
                         Ok(None) => {
-                            environment::log("Signal child: not a signal message");
+                            // This shouldn't happen since we checked is_signal_message above
+                            environment::log("Signal child: unexpected decode result");
                         }
                         Err(_) => {
                             environment::log("Signal child: failed to decode signal");
