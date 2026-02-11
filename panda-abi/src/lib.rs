@@ -1312,6 +1312,16 @@ impl Signal {
     pub const fn as_u32(self) -> u32 {
         self as u32
     }
+
+    /// Get the exit code that should be set when a process is terminated by this signal.
+    ///
+    /// Returns `None` for signals that don't cause immediate termination.
+    pub const fn exit_code(self) -> Option<i32> {
+        match self {
+            Signal::Stop => None, // Graceful, no exit code
+            Signal::StopImmediately => Some(EXIT_STOP_IMMEDIATELY),
+        }
+    }
 }
 
 impl encoding::Encode for Signal {
