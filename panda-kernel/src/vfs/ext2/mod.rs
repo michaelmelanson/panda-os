@@ -8,7 +8,10 @@
 pub mod bitmap;
 mod dir;
 mod file;
+mod guards;
 mod structs;
+
+pub use guards::{BlockGuard, InodeGuard};
 
 pub use file::Ext2File;
 pub use structs::*;
@@ -841,8 +844,16 @@ impl Filesystem for Ext2Fs {
             return Err(FsError::AlreadyExists);
         }
 
-        // Allocate a new inode
-        let new_ino = self.alloc_inode().await?;
+        // Get Arc<Self> for RAII guard
+        let fs_arc = self
+            .self_ref
+            .read()
+            .upgrade()
+            .ok_or(FsError::IoError)?;
+
+        // Allocate a new inode (guarded for automatic rollback)
+        let inode_guard = InodeGuard::new(fs_arc.clone(), self.alloc_inode().await?);
+        let new_ino = inode_guard.ino();
 
         // Initialise the new inode as a regular file
         let new_inode = Inode {
@@ -870,27 +881,15 @@ impl Filesystem for Ext2Fs {
         self.write_inode(new_ino, &new_inode).await?;
 
         // Add directory entry in the parent directory
-        let updated_parent = match self
+        let updated_parent = self
             .add_dir_entry(parent_ino, parent_inode, file_name, new_ino, FT_REG_FILE)
-            .await
-        {
-            Ok(p) => p,
-            Err(e) => {
-                // Rollback: free the inode we just allocated
-                let _ = self.free_inode(new_ino).await;
-                return Err(e);
-            }
-        };
+            .await?;
+
+        // Success! Consume the guard to prevent rollback.
+        inode_guard.consume();
 
         // Persist updated parent inode
         self.write_inode(parent_ino, &updated_parent).await?;
-
-        // Return an opened file handle
-        let fs_arc = self
-            .self_ref
-            .read()
-            .upgrade()
-            .ok_or(FsError::IoError)?;
 
         Ok(Box::new(Ext2File::new(fs_arc, new_inode, new_ino)))
     }
@@ -969,18 +968,20 @@ impl Filesystem for Ext2Fs {
             return Err(FsError::AlreadyExists);
         }
 
-        // Allocate a new inode for the directory
-        let new_ino = self.alloc_inode().await?;
+        // Get Arc<Self> for RAII guards
+        let fs_arc = self
+            .self_ref
+            .read()
+            .upgrade()
+            .ok_or(FsError::IoError)?;
 
-        // Allocate initial block for the directory
-        let init_block = match self.alloc_block().await {
-            Ok(b) => b,
-            Err(e) => {
-                // Rollback inode allocation
-                let _ = self.free_inode(new_ino).await;
-                return Err(e);
-            }
-        };
+        // Allocate a new inode for the directory (guarded for automatic rollback)
+        let inode_guard = InodeGuard::new(fs_arc.clone(), self.alloc_inode().await?);
+        let new_ino = inode_guard.ino();
+
+        // Allocate initial block for the directory (guarded for automatic rollback)
+        let block_guard = BlockGuard::new(fs_arc, self.alloc_block().await?);
+        let init_block = block_guard.block();
 
         // Initialise the new inode as a directory
         let new_inode = Inode {
@@ -1010,32 +1011,19 @@ impl Filesystem for Ext2Fs {
 
         // Write . and .. entries to initial block
         let init_buf = self.init_dir_block(new_ino, parent_ino);
-        if let Err(e) = self.write_block(init_block, &init_buf).await {
-            let _ = self.free_block(init_block).await;
-            let _ = self.free_inode(new_ino).await;
-            return Err(e);
-        }
+        self.write_block(init_block, &init_buf).await?;
 
         // Write inode to disk
-        if let Err(e) = self.write_inode(new_ino, &new_inode).await {
-            let _ = self.free_block(init_block).await;
-            let _ = self.free_inode(new_ino).await;
-            return Err(e);
-        }
+        self.write_inode(new_ino, &new_inode).await?;
 
         // Add entry in parent directory
-        let updated_parent = match self
+        let updated_parent = self
             .add_dir_entry(parent_ino, parent_inode, dir_name, new_ino, FT_DIR)
-            .await
-        {
-            Ok(p) => p,
-            Err(e) => {
-                // Rollback
-                let _ = self.free_block(init_block).await;
-                let _ = self.free_inode(new_ino).await;
-                return Err(e);
-            }
-        };
+            .await?;
+
+        // Success! Consume the guards to prevent rollback.
+        inode_guard.consume();
+        block_guard.consume();
 
         // Increment parent's link count (for .. reference)
         let mut updated_parent = updated_parent;

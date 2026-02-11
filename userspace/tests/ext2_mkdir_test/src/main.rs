@@ -38,13 +38,7 @@ libpanda::main! {
     environment::log("ext2_mkdir_test: Test 1 - Create directory");
     if let Err(e) = environment::mkdir(root_dir, "newdir", 0o755) {
         environment::log("FAIL: Could not create newdir");
-        environment::log(match e {
-            libpanda::ErrorCode::AlreadyExists => "Error: AlreadyExists",
-            libpanda::ErrorCode::NoSpace => "Error: NoSpace",
-            libpanda::ErrorCode::NotFound => "Error: NotFound",
-            libpanda::ErrorCode::IoError => "Error: IoError",
-            _ => "Error: Unknown",
-        });
+        environment::log(&libpanda::format!("Error: {}", e));
         return 1;
     }
     environment::log("ext2_mkdir_test: Test 1 passed");
@@ -121,10 +115,12 @@ libpanda::main! {
     environment::log("ext2_mkdir_test: Test 4 - rmdir non-empty fails");
     match environment::rmdir(root_dir, "newdir") {
         Err(libpanda::ErrorCode::NotEmpty) => {
-            // Expected
+            // Expected: rmdir on non-empty directory returns NotEmpty
         }
-        Err(_) => {
-            // Also acceptable - any error for non-empty rmdir
+        Err(e) => {
+            environment::log("FAIL: rmdir returned unexpected error");
+            environment::log(&libpanda::format!("Expected NotEmpty, got: {}", e));
+            return 1;
         }
         Ok(()) => {
             environment::log("FAIL: rmdir on non-empty should fail");
@@ -155,13 +151,7 @@ libpanda::main! {
     // Now rmdir should succeed
     if let Err(e) = environment::rmdir(root_dir, "newdir") {
         environment::log("FAIL: Could not rmdir empty newdir");
-        environment::log(match e {
-            libpanda::ErrorCode::NotEmpty => "Error: NotEmpty",
-            libpanda::ErrorCode::NotFound => "Error: NotFound",
-            libpanda::ErrorCode::NotDirectory => "Error: NotDirectory",
-            libpanda::ErrorCode::IoError => "Error: IoError",
-            _ => "Error: Unknown",
-        });
+        environment::log(&libpanda::format!("Error: {}", e));
         return 1;
     }
     environment::log("ext2_mkdir_test: Test 5 passed");
@@ -196,10 +186,12 @@ libpanda::main! {
     environment::log("ext2_mkdir_test: Test 7 - mkdir already exists");
     match environment::mkdir(root_dir, "subdir", 0o755) {
         Err(libpanda::ErrorCode::AlreadyExists) => {
-            // Expected
+            // Expected: mkdir on existing directory returns AlreadyExists
         }
-        Err(_) => {
-            // Also acceptable
+        Err(e) => {
+            environment::log("FAIL: mkdir returned unexpected error");
+            environment::log(&libpanda::format!("Expected AlreadyExists, got: {}", e));
+            return 1;
         }
         Ok(()) => {
             environment::log("FAIL: mkdir on existing dir should fail");

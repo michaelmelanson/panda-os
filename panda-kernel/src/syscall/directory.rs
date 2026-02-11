@@ -5,7 +5,7 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-use log::{error, info};
+use log::{debug, error};
 
 use crate::{resource, scheduler};
 
@@ -58,7 +58,7 @@ pub fn handle_create(
         )));
     };
 
-    info!(
+    debug!(
         "handle_create: dir={}, name={}, mode={:#o}",
         dir_path, name, mode
     );
@@ -93,14 +93,14 @@ pub fn handle_create(
                 });
                 match result {
                     Ok(handle_id) => {
-                        info!("handle_create: created file, handle_id={}", handle_id);
+                        debug!("handle_create: created file, handle_id={}", handle_id);
                         SyscallResult::ok(handle_id)
                     }
                     Err(e) => SyscallResult::err(e),
                 }
             }
             Err(e) => {
-                info!("handle_create: failed: {:?}", e);
+                error!("handle_create: failed: {:?}", e);
                 SyscallResult::err(fs_error_code(e))
             }
         }
@@ -145,7 +145,7 @@ pub fn handle_unlink(
         )));
     };
 
-    info!("handle_unlink: dir={}, name={}", dir_path, name);
+    debug!("handle_unlink: dir={}, name={}", dir_path, name);
 
     Box::pin(async move {
         // Build the full path: dir_path + "/" + name
@@ -157,11 +157,11 @@ pub fn handle_unlink(
 
         match crate::vfs::unlink(&full_path).await {
             Ok(()) => {
-                info!("handle_unlink: unlinked {}", full_path);
+                debug!("handle_unlink: unlinked {}", full_path);
                 SyscallResult::ok(0)
             }
             Err(e) => {
-                info!("handle_unlink: failed: {:?}", e);
+                error!("handle_unlink: failed: {:?}", e);
                 SyscallResult::err(fs_error_code(e))
             }
         }
@@ -210,7 +210,7 @@ pub fn handle_mkdir(
         )));
     };
 
-    info!(
+    debug!(
         "handle_mkdir: dir={}, name={}, mode={:#o}",
         dir_path, name, mode
     );
@@ -225,11 +225,11 @@ pub fn handle_mkdir(
 
         match crate::vfs::mkdir(&full_path, mode).await {
             Ok(()) => {
-                info!("handle_mkdir: created directory {}", full_path);
+                debug!("handle_mkdir: created directory {}", full_path);
                 SyscallResult::ok(0)
             }
             Err(e) => {
-                info!("handle_mkdir: failed: {:?}", e);
+                error!("handle_mkdir: failed: {:?}", e);
                 SyscallResult::err(fs_error_code(e))
             }
         }
@@ -274,7 +274,7 @@ pub fn handle_rmdir(
         )));
     };
 
-    info!("handle_rmdir: dir={}, name={}", dir_path, name);
+    debug!("handle_rmdir: dir={}, name={}", dir_path, name);
 
     Box::pin(async move {
         // Build the full path: dir_path + "/" + name
@@ -286,11 +286,11 @@ pub fn handle_rmdir(
 
         match crate::vfs::rmdir(&full_path).await {
             Ok(()) => {
-                info!("handle_rmdir: removed directory {}", full_path);
+                debug!("handle_rmdir: removed directory {}", full_path);
                 SyscallResult::ok(0)
             }
             Err(e) => {
-                info!("handle_rmdir: failed: {:?}", e);
+                error!("handle_rmdir: failed: {:?}", e);
                 SyscallResult::err(fs_error_code(e))
             }
         }
