@@ -665,6 +665,10 @@ impl EventFlags {
     /// Key event available (key data packed in bits 8-25).
     pub const KEYBOARD_KEY: Self = Self(1 << 4);
 
+    // Signal events (bit 5)
+    /// Signal received on this handle.
+    pub const SIGNAL_RECEIVED: Self = Self(1 << 5);
+
     /// Check if channel readable flag is set.
     #[inline]
     pub const fn is_channel_readable(self) -> bool {
@@ -693,6 +697,12 @@ impl EventFlags {
     #[inline]
     pub const fn is_keyboard_key(self) -> bool {
         self.0 & Self::KEYBOARD_KEY.0 != 0
+    }
+
+    /// Check if signal received flag is set.
+    #[inline]
+    pub const fn is_signal_received(self) -> bool {
+        self.0 & Self::SIGNAL_RECEIVED.0 != 0
     }
 
     /// Combine flags with bitwise OR.
@@ -732,6 +742,10 @@ pub const EVENT_PROCESS_EXITED: u32 = EventFlags::PROCESS_EXITED.0;
 /// - Bits 8-23: key code (16 bits)
 /// - Bits 24-25: key value (0=release, 1=press, 2=repeat)
 pub const EVENT_KEYBOARD_KEY: u32 = EventFlags::KEYBOARD_KEY.0;
+
+// Signal events (bit 5)
+/// Signal received on this handle.
+pub const EVENT_SIGNAL_RECEIVED: u32 = EventFlags::SIGNAL_RECEIVED.0;
 
 // Keyboard event encoding helpers
 /// Shift for key code in event flags.
@@ -1226,6 +1240,128 @@ pub struct ProcessSignalResponse {
     pub header: MessageHeader,
     pub error: ErrorCode,
     pub _pad: u32,
+}
+
+/// Signals that can be sent to a process via OP_PROCESS_SIGNAL.
+///
+/// Signals provide a mechanism for process termination and notification:
+/// - `Terminate` (SIGTERM equivalent): Delivered as a message on `HANDLE_PARENT`.
+///   The process can catch and handle it gracefully (e.g., flush buffers, close connections).
+/// - `Kill` (SIGKILL equivalent): Kernel immediately tears down the process.
+///   No userspace code runs in the target.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal {
+    /// Request graceful termination. Delivered as a message on HANDLE_PARENT.
+    Terminate = 0,
+    /// Forced termination. Kernel immediately tears down the process.
+    Kill = 1,
+}
+
+impl Signal {
+    /// Convert from u32.
+    pub const fn from_u32(v: u32) -> Option<Self> {
+        match v {
+            0 => Some(Signal::Terminate),
+            1 => Some(Signal::Kill),
+            _ => None,
+        }
+    }
+
+    /// Convert to u32.
+    pub const fn as_u32(self) -> u32 {
+        self as u32
+    }
+}
+
+/// Size of an encoded signal message in bytes.
+/// Layout: id (8) + msg_type (4) + _reserved (4) + signal (4) + _pad (4) = 24 bytes
+pub const SIGNAL_MESSAGE_SIZE: usize = 24;
+
+/// Encode a signal message into a byte buffer using safe encoding.
+///
+/// This creates a `ProcessSignalRequest` message with:
+/// - `id = 0` (unsolicited event)
+/// - `msg_type = ProcessMessageType::Signal`
+/// - `signal` = the signal value
+///
+/// Returns the number of bytes written (always `SIGNAL_MESSAGE_SIZE`),
+/// or `None` if the buffer is too small.
+pub fn encode_signal_message(signal: Signal, buf: &mut [u8]) -> Option<usize> {
+    if buf.len() < SIGNAL_MESSAGE_SIZE {
+        return None;
+    }
+
+    use encoding::Encoder;
+    let mut enc = Encoder::with_capacity(SIGNAL_MESSAGE_SIZE);
+
+    // MessageHeader fields
+    enc.write_u64(0); // id = 0 (unsolicited event)
+    enc.write_u32(ProcessMessageType::Signal as u32);
+    enc.write_u32(0); // _reserved
+
+    // Signal payload
+    enc.write_u32(signal.as_u32());
+    enc.write_u32(0); // _pad
+
+    let bytes = enc.finish();
+    buf[..SIGNAL_MESSAGE_SIZE].copy_from_slice(&bytes);
+    Some(SIGNAL_MESSAGE_SIZE)
+}
+
+/// Decoded signal message from a channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalMessage {
+    /// Message ID (0 for unsolicited events).
+    pub id: u64,
+    /// The signal that was received.
+    pub signal: Signal,
+}
+
+impl SignalMessage {
+    /// Decode a signal message from bytes.
+    ///
+    /// Returns `Ok(Some(msg))` if this is a valid signal message,
+    /// `Ok(None)` if this is not a signal message (different msg_type),
+    /// `Err` if the buffer is truncated or contains invalid data.
+    pub fn decode(buf: &[u8]) -> Result<Option<Self>, encoding::DecodeError> {
+        use encoding::{DecodeError, Decoder};
+
+        let mut dec = Decoder::new(buf);
+
+        // Parse MessageHeader
+        let id = dec.read_u64()?;
+        let msg_type = dec.read_u32()?;
+        let _reserved = dec.read_u32()?;
+
+        // Check message type
+        if msg_type != ProcessMessageType::Signal as u32 {
+            return Ok(None); // Not a signal message
+        }
+
+        // Parse signal payload
+        let signal_raw = dec.read_u32()?;
+        let _pad = dec.read_u32()?;
+
+        // Validate signal value
+        let signal = Signal::from_u32(signal_raw).ok_or(DecodeError::InvalidValue)?;
+
+        Ok(Some(SignalMessage { id, signal }))
+    }
+
+    /// Check if a buffer contains a signal message without fully decoding.
+    ///
+    /// This is a fast check that only reads the message type.
+    pub fn is_signal_message(buf: &[u8]) -> bool {
+        if buf.len() < 16 {
+            // Need at least MessageHeader (16 bytes)
+            return false;
+        }
+
+        // Read msg_type at offset 8 (after id)
+        let msg_type = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+        msg_type == ProcessMessageType::Signal as u32
+    }
 }
 
 // -----------------------------------------------------------------------------

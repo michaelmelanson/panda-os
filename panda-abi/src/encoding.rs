@@ -113,6 +113,11 @@ impl Encoder {
         self.buf.extend_from_slice(&value.to_le_bytes());
     }
 
+    /// Write a u64 (little-endian).
+    pub fn write_u64(&mut self, value: u64) {
+        self.buf.extend_from_slice(&value.to_le_bytes());
+    }
+
     /// Write an i64 (little-endian).
     pub fn write_i64(&mut self, value: i64) {
         self.buf.extend_from_slice(&value.to_le_bytes());
@@ -241,6 +246,25 @@ impl<'a> Decoder<'a> {
             self.buf[self.pos + 3],
         ]);
         self.pos += 4;
+        Ok(value)
+    }
+
+    /// Read a u64 (little-endian).
+    pub fn read_u64(&mut self) -> Result<u64, DecodeError> {
+        if self.remaining() < 8 {
+            return Err(DecodeError::Truncated);
+        }
+        let value = u64::from_le_bytes([
+            self.buf[self.pos],
+            self.buf[self.pos + 1],
+            self.buf[self.pos + 2],
+            self.buf[self.pos + 3],
+            self.buf[self.pos + 4],
+            self.buf[self.pos + 5],
+            self.buf[self.pos + 6],
+            self.buf[self.pos + 7],
+        ]);
+        self.pos += 8;
         Ok(value)
     }
 
@@ -402,6 +426,18 @@ impl Encode for i32 {
 impl Decode for i32 {
     fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
         dec.read_i32()
+    }
+}
+
+impl Encode for u64 {
+    fn encode(&self, enc: &mut Encoder) {
+        enc.write_u64(*self);
+    }
+}
+
+impl Decode for u64 {
+    fn decode(dec: &mut Decoder) -> Result<Self, DecodeError> {
+        dec.read_u64()
     }
 }
 
