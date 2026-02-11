@@ -31,6 +31,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::Ext2Fs;
+use super::guards::InodeGuard;
 use super::structs::{DirEntryRaw, FT_DIR, Inode};
 use crate::vfs::FsError;
 
@@ -187,6 +188,45 @@ impl Ext2Fs {
         dir_inode.set_size(dir_inode.size() + self.block_size() as u64);
 
         Ok(dir_inode)
+    }
+
+    /// Add a directory entry, consuming the inode guard on success.
+    ///
+    /// This is the preferred way to add a directory entry for a newly allocated
+    /// inode. The guard is consumed only on success, returning the inode number.
+    /// On failure, the guard is dropped and the inode is automatically freed.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir_ino` - Inode number of the parent directory (unused, for consistency)
+    /// * `dir_inode` - The parent directory inode
+    /// * `name` - Name for the new entry
+    /// * `inode_guard` - Guard wrapping the newly allocated inode
+    /// * `file_type` - File type constant (FT_REG_FILE, FT_DIR, etc.)
+    ///
+    /// # Returns
+    ///
+    /// On success: `(inode_number, updated_directory_inode)`
+    /// On failure: Error (guard is dropped, inode freed automatically)
+    pub async fn add_dir_entry_consuming(
+        &self,
+        dir_ino: u32,
+        dir_inode: Inode,
+        name: &str,
+        inode_guard: InodeGuard,
+        file_type: u8,
+    ) -> Result<(u32, Inode), FsError> {
+        let target_ino = inode_guard.ino_for_write();
+
+        // Try to add the directory entry
+        let updated_inode = self
+            .add_dir_entry(dir_ino, dir_inode, name, target_ino, file_type)
+            .await?;
+
+        // Success! Consume the guard to prevent cleanup
+        let ino = inode_guard.consume();
+
+        Ok((ino, updated_inode))
     }
 
     /// Remove a directory entry by name from the directory identified by `dir_ino`.

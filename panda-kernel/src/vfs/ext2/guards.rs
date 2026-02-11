@@ -4,17 +4,32 @@
 //! on drop if not explicitly consumed. This provides exception-safe cleanup
 //! during multi-step operations like `mkdir` and `create`.
 //!
+//! # Design
+//!
+//! The guards only expose the guarded value through `consume()`, which takes
+//! ownership of the guard and returns the value. This ensures that:
+//!
+//! 1. External code cannot access the value without committing to keeping it
+//! 2. The consume happens at the "commit point" (e.g., when adding a dir entry)
+//! 3. RAII cleanup runs if any operation fails before the commit
+//!
+//! For internal filesystem operations that need the value before commit (like
+//! `write_inode`), the guards provide `ino_for_write()` / `block_for_write()`
+//! which are module-private (`pub(super)`).
+//!
 //! # Usage
 //!
 //! ```ignore
 //! let inode_guard = InodeGuard::new(fs.clone(), fs.alloc_inode().await?);
 //! let block_guard = BlockGuard::new(fs.clone(), fs.alloc_block().await?);
 //!
-//! // Do work that might fail...
+//! // Internal operations use module-private accessors (guard remains active)
+//! fs.write_inode(inode_guard.ino_for_write(), &inode).await?;
+//! fs.write_block(block_guard.block_for_write(), &data).await?;
 //!
-//! // On success, consume the guards to prevent freeing:
-//! let ino = inode_guard.consume();
-//! let block = block_guard.consume();
+//! // Consume at the commit point (e.g., adding directory entry)
+//! let (ino, updated) = fs.add_dir_entry_consuming(..., inode_guard, ...).await?;
+//! block_guard.consume();  // Commit block after successful dir entry
 //! ```
 
 use alloc::sync::Arc;
@@ -37,16 +52,22 @@ impl InodeGuard {
         Self { fs, ino: Some(ino) }
     }
 
-    /// Get the inode number.
-    pub fn ino(&self) -> u32 {
-        self.ino.expect("InodeGuard already consumed")
-    }
-
     /// Consume the guard, returning the inode number without freeing it.
     ///
-    /// After calling this, the caller takes responsibility for the inode.
+    /// This is the only public way to access the inode number. After calling
+    /// this, the caller takes responsibility for the inode and must handle
+    /// cleanup on any subsequent errors.
     pub fn consume(mut self) -> u32 {
         self.ino.take().expect("InodeGuard already consumed")
+    }
+
+    /// Get the inode number for internal filesystem operations.
+    ///
+    /// This is module-private to ensure external code can only access the
+    /// inode number by consuming the guard. The guard remains active for
+    /// cleanup on error.
+    pub(super) fn ino_for_write(&self) -> u32 {
+        self.ino.expect("InodeGuard already consumed")
     }
 }
 
@@ -82,16 +103,22 @@ impl BlockGuard {
         }
     }
 
-    /// Get the block number.
-    pub fn block(&self) -> u32 {
-        self.block.expect("BlockGuard already consumed")
-    }
-
     /// Consume the guard, returning the block number without freeing it.
     ///
-    /// After calling this, the caller takes responsibility for the block.
+    /// This is the only public way to access the block number. After calling
+    /// this, the caller takes responsibility for the block and must handle
+    /// cleanup on any subsequent errors.
     pub fn consume(mut self) -> u32 {
         self.block.take().expect("BlockGuard already consumed")
+    }
+
+    /// Get the block number for internal filesystem operations.
+    ///
+    /// This is module-private to ensure external code can only access the
+    /// block number by consuming the guard. The guard remains active for
+    /// cleanup on error.
+    pub(super) fn block_for_write(&self) -> u32 {
+        self.block.expect("BlockGuard already consumed")
     }
 }
 

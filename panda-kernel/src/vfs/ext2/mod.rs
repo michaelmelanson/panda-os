@@ -844,7 +844,7 @@ impl Filesystem for Ext2Fs {
             return Err(FsError::AlreadyExists);
         }
 
-        // Get Arc<Self> for RAII guard
+        // Get Arc<Self> for RAII guard and file handle
         let fs_arc = self
             .self_ref
             .read()
@@ -853,7 +853,6 @@ impl Filesystem for Ext2Fs {
 
         // Allocate a new inode (guarded for automatic rollback)
         let inode_guard = InodeGuard::new(fs_arc.clone(), self.alloc_inode().await?);
-        let new_ino = inode_guard.ino();
 
         // Initialise the new inode as a regular file
         let new_inode = Inode {
@@ -877,16 +876,13 @@ impl Filesystem for Ext2Fs {
             osd2: [0u8; 12],
         };
 
-        // Write the new inode to disk
-        self.write_inode(new_ino, &new_inode).await?;
+        // Write the new inode to disk (guard still active, will cleanup on error)
+        self.write_inode(inode_guard.ino_for_write(), &new_inode).await?;
 
-        // Add directory entry in the parent directory
-        let updated_parent = self
-            .add_dir_entry(parent_ino, parent_inode, file_name, new_ino, FT_REG_FILE)
+        // Add directory entry, consuming the guard on success
+        let (new_ino, updated_parent) = self
+            .add_dir_entry_consuming(parent_ino, parent_inode, file_name, inode_guard, FT_REG_FILE)
             .await?;
-
-        // Success! Consume the guard to prevent rollback.
-        inode_guard.consume();
 
         // Persist updated parent inode
         self.write_inode(parent_ino, &updated_parent).await?;
@@ -977,11 +973,9 @@ impl Filesystem for Ext2Fs {
 
         // Allocate a new inode for the directory (guarded for automatic rollback)
         let inode_guard = InodeGuard::new(fs_arc.clone(), self.alloc_inode().await?);
-        let new_ino = inode_guard.ino();
 
         // Allocate initial block for the directory (guarded for automatic rollback)
         let block_guard = BlockGuard::new(fs_arc, self.alloc_block().await?);
-        let init_block = block_guard.block();
 
         // Initialise the new inode as a directory
         let new_inode = Inode {
@@ -999,7 +993,7 @@ impl Filesystem for Ext2Fs {
             osd1: 0,
             block: {
                 let mut b = [0u32; 15];
-                b[0] = init_block;
+                b[0] = block_guard.block_for_write();
                 b
             },
             generation: 0,
@@ -1009,20 +1003,19 @@ impl Filesystem for Ext2Fs {
             osd2: [0u8; 12],
         };
 
-        // Write . and .. entries to initial block
-        let init_buf = self.init_dir_block(new_ino, parent_ino);
-        self.write_block(init_block, &init_buf).await?;
+        // Write . and .. entries to initial block (guards still active)
+        let init_buf = self.init_dir_block(inode_guard.ino_for_write(), parent_ino);
+        self.write_block(block_guard.block_for_write(), &init_buf).await?;
 
-        // Write inode to disk
-        self.write_inode(new_ino, &new_inode).await?;
+        // Write inode to disk (guards still active)
+        self.write_inode(inode_guard.ino_for_write(), &new_inode).await?;
 
-        // Add entry in parent directory
-        let updated_parent = self
-            .add_dir_entry(parent_ino, parent_inode, dir_name, new_ino, FT_DIR)
+        // Add entry in parent directory, consuming the inode guard
+        let (new_ino, updated_parent) = self
+            .add_dir_entry_consuming(parent_ino, parent_inode, dir_name, inode_guard, FT_DIR)
             .await?;
 
-        // Success! Consume the guards to prevent rollback.
-        inode_guard.consume();
+        // Success! Consume block guard to prevent cleanup
         block_guard.consume();
 
         // Increment parent's link count (for .. reference)
