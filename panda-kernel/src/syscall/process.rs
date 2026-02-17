@@ -56,10 +56,59 @@ pub fn handle_wait(handle_id: u64) -> SyscallFuture {
 }
 
 /// Handle process signal operation.
-pub fn handle_signal() -> SyscallFuture {
-    Box::pin(core::future::ready(SyscallResult::err(
-        panda_abi::ErrorCode::NotSupported,
-    )))
+///
+/// Sends a signal to the target process:
+/// - `Signal::StopImmediately`: Immediately terminates the process (no userspace code runs)
+/// - `Signal::Stop`: Delivers a message to the process's parent channel for graceful handling
+pub fn handle_signal(handle_id: u64, signal: u32) -> SyscallFuture {
+    // 1. Validate signal number
+    let signal = match panda_abi::Signal::from_u32(signal) {
+        Some(s) => s,
+        None => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )))
+        }
+    };
+
+    // 2. Get target process resource from handle
+    let resource = scheduler::with_current_process(|proc| {
+        let handle = proc.handles().get(handle_id)?;
+        if handle.as_process().is_some() {
+            Some(handle.resource_arc())
+        } else {
+            None
+        }
+    });
+
+    let Some(resource) = resource else {
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidHandle,
+        )));
+    };
+    let Some(process_iface) = resource.as_process() else {
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidHandle,
+        )));
+    };
+
+    let result = match process_iface.signal(signal.as_u32()) {
+        Ok(()) => SyscallResult::ok(0),
+        Err(crate::resource::ProcessError::NotSupported) => {
+            SyscallResult::err(panda_abi::ErrorCode::NotSupported)
+        }
+        Err(crate::resource::ProcessError::NotFound) => {
+            SyscallResult::err(panda_abi::ErrorCode::NotFound)
+        }
+        Err(crate::resource::ProcessError::PermissionDenied) => {
+            SyscallResult::err(panda_abi::ErrorCode::PermissionDenied)
+        }
+        Err(crate::resource::ProcessError::WouldBlock) => {
+            SyscallResult::err(panda_abi::ErrorCode::WouldBlock)
+        }
+    };
+
+    Box::pin(core::future::ready(result))
 }
 
 /// Handle process brk operation.

@@ -214,7 +214,7 @@ fn build_future(
         // Process operations (yield and exit are handled above as diverging)
         OP_PROCESS_GET_PID => Ok(process::handle_get_pid()),
         OP_PROCESS_WAIT => Ok(process::handle_wait(handle)),
-        OP_PROCESS_SIGNAL => Ok(process::handle_signal()),
+        OP_PROCESS_SIGNAL => Ok(process::handle_signal(handle, arg0 as u32)),
         OP_PROCESS_BRK => Ok(process::handle_brk(arg0)),
 
         // Environment operations

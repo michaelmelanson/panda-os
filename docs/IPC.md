@@ -121,6 +121,105 @@ EVENT_KEYBOARD_KEY      // Key event available
 EVENT_PROCESS_EXITED    // Child process exited
 ```
 
+**Signal events:**
+```rust
+EVENT_SIGNAL_RECEIVED   // Signal message available
+```
+
+## Signals
+
+Signals provide a mechanism for process termination and notification.
+
+### Signal types
+
+| Signal | Value | Behaviour |
+|--------|-------|-----------|
+| `Signal::Stop` | 0 | Graceful termination request. Delivered as a message on `HANDLE_PARENT`. |
+| `Signal::StopImmediately` | 1 | Forced termination. Kernel immediately tears down the process. |
+
+### SIGKILL semantics
+
+When a process receives `Signal::StopImmediately`:
+1. Kernel immediately removes it from the scheduler
+2. All handles are closed (channels notify peers)
+3. Memory is reclaimed
+4. Exit code is set to -9
+5. Waiters are woken with the exit code
+
+### SIGTERM semantics
+
+When a process receives `Signal::Stop`:
+1. A `ProcessSignalRequest` message is sent via the parent-child channel
+2. `EVENT_SIGNAL_RECEIVED` and `EVENT_CHANNEL_READABLE` are posted to the child's mailbox
+3. The child receives the message on `HANDLE_PARENT`
+4. The message uses `MessageHeader` with `msg_type = ProcessMessageType::Signal`
+5. The process can catch and handle it gracefully
+6. If the channel is full, the syscall returns `WouldBlock`
+
+### Signal message format
+
+Signals use the existing message infrastructure with safe encoding/decoding:
+
+```rust
+// MessageHeader (16 bytes)
+// - id: u64 = 0 (unsolicited event)
+// - msg_type: u32 = ProcessMessageType::Signal
+// - _reserved: u32 = 0
+// Signal payload (8 bytes)
+// - signal: u32 = Signal value
+// - _pad: u32 = 0
+
+// Total: 24 bytes (SIGNAL_MESSAGE_SIZE)
+```
+
+### API
+
+```rust
+use libpanda::process::{Child, Signal};
+
+// Spawn a child
+let mut child = Child::spawn("file:/initrd/program")?;
+
+// Send SIGTERM (graceful termination)
+child.signal(Signal::Stop)?;
+
+// Send SIGKILL (forced termination)
+child.kill()?;  // Shorthand for signal(Signal::StopImmediately)
+
+// Wait for exit
+let status = child.wait()?;
+```
+
+### Handling signals (child side)
+
+```rust
+use panda_abi::{EventFlags, SignalMessage, Signal, SIGNAL_MESSAGE_SIZE, WellKnownHandle};
+
+libpanda::main! {
+    let mailbox = Mailbox::default();
+
+    loop {
+        let (handle, events) = mailbox.wait();
+        let events = EventFlags(events);
+
+        if handle == WellKnownHandle::PARENT && events.is_signal_received() {
+            let mut buf = [0u8; SIGNAL_MESSAGE_SIZE];
+            if let Ok(len) = channel::try_recv(HANDLE_PARENT, &mut buf) {
+                if let Ok(Some(msg)) = SignalMessage::decode(&buf[..len]) {
+                    match msg.signal {
+                        Signal::Stop => {
+                            // Handle graceful shutdown
+                            return 0;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
 ## Well-Known Handles
 
 Every process has these pre-allocated handles. Handle values encode a type tag in the high 8 bits and an ID in the low 24 bits.

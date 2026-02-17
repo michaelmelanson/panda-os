@@ -7,8 +7,10 @@ use alloc::sync::Arc;
 use crate::process::ProcessId;
 use crate::process::info::ProcessInfo;
 use crate::process::waker::Waker;
+use crate::resource::channel::ChannelError;
 use crate::resource::process::{Process, ProcessError};
 use crate::resource::{ChannelEndpoint, MailboxRef, Resource};
+use crate::scheduler;
 
 /// A handle returned from spawn() that combines channel and process info.
 ///
@@ -92,9 +94,56 @@ impl Process for SpawnHandle {
         self.process_info.exit_code()
     }
 
-    fn signal(&self, _signal: u32) -> Result<(), ProcessError> {
-        // TODO: Implement signal delivery
-        Err(ProcessError::NotSupported)
+    fn signal(&self, signal: u32) -> Result<(), ProcessError> {
+        let signal = panda_abi::Signal::from_u32(signal).ok_or(ProcessError::NotSupported)?;
+
+        match signal {
+            panda_abi::Signal::StopImmediately => {
+                // Immediate forced termination - no userspace code runs
+                let pid = self.process_info.pid();
+
+                // Check if already exited
+                if self.process_info.has_exited() {
+                    return Ok(());
+                }
+
+                // Set exit code before removal so waiters see it
+                self.process_info.set_exit_code(panda_abi::EXIT_STOP_IMMEDIATELY);
+
+                // Remove from scheduler (reclaims memory, closes handles)
+                scheduler::remove_process(pid);
+
+                Ok(())
+            }
+            panda_abi::Signal::Stop => {
+                // Deliver message to process's parent channel
+                // The child process reads from HANDLE_PARENT and handles it
+
+                // Check if already exited
+                if self.process_info.has_exited() {
+                    return Err(ProcessError::NotFound);
+                }
+
+                // Build signal message using safe encoding
+                let mut buf = [0u8; panda_abi::SIGNAL_MESSAGE_SIZE];
+                let len = panda_abi::encode_signal_message(signal, &mut buf)
+                    .ok_or(ProcessError::NotSupported)?;
+
+                // Send via channel with SIGNAL_RECEIVED event
+                // (also includes CHANNEL_READABLE so the child can recv the message)
+                let event_flags =
+                    panda_abi::EVENT_SIGNAL_RECEIVED | panda_abi::EVENT_CHANNEL_READABLE;
+                self.channel
+                    .send_with_event(&buf[..len], event_flags)
+                    .map_err(|e| match e {
+                        ChannelError::QueueFull => ProcessError::WouldBlock,
+                        ChannelError::PeerClosed => ProcessError::NotFound,
+                        _ => ProcessError::NotSupported,
+                    })?;
+
+                Ok(())
+            }
+        }
     }
 
     fn waker(&self) -> Arc<Waker> {
