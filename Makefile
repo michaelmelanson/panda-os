@@ -1,6 +1,6 @@
 # Resolve bash from PATH (NixOS has no /bin/bash); $(shell) itself uses /bin/sh which is universal.
 SHELL := $(shell command -v bash)
-.PHONY: build panda-kernel init run test kernel-test userspace-test unit-test ext2-image clean-ext2 release
+.PHONY: build panda-kernel init run test kernel-test userspace-test unit-test check-extras ext2-image clean-ext2 release
 
 # Set PROFILE=release for optimized builds: make build PROFILE=release
 PROFILE ?= dev
@@ -12,68 +12,11 @@ else
   PROFILE_DIR := debug
 endif
 
-KERNEL_TESTS := \
-	apic \
-	basic \
-	block \
-	device_path \
-	elf_security \
-	ext2_validation \
-	ext2_write \
-	fmask \
-	heap \
-	mailbox \
-	memory \
-	nx_bit \
-	pci \
-	process \
-	raii \
-	resource \
-	scheduler \
-	smap \
-	vfs_path
-
-USERSPACE_TESTS := \
-	alpha_test \
-	api_test \
-	args_test \
-	block_test \
-	buffer_test \
-	channel_test \
-	control_plane_test \
-	device_path_test \
-	env_test \
-	error_test \
-	ext2_create_test \
-	ext2_mkdir_test \
-	ext2_test \
-	ext2_write_test \
-	fault_recovery_test \
-	fmask_test \
-	handle_limit_test \
-	heap_test \
-	keyboard_test \
-	mailbox_keyboard_test \
-	mailbox_overflow_test \
-	mailbox_test \
-	multi_window_test \
-	partial_refresh_test \
-	path_traversal_test \
-	pipeline_test \
-	preempt_test \
-	print_test \
-	readdir_test \
-	resource_test \
-	segfault_test \
-	size_cap_test \
-	spawn_test \
-	state_test \
-	surface_overflow_test \
-	surface_test \
-	vfs_test \
-	window_move_test \
-	window_test \
-	yield_test
+# Test lists are derived from the workspace itself (see scripts/list-tests.sh)
+# rather than hardcoded, so a new test can't silently fail to run because
+# someone forgot to add it here.
+KERNEL_TESTS := $(shell ./scripts/list-tests.sh kernel)
+USERSPACE_TESTS := $(shell ./scripts/list-tests.sh userspace)
 
 # Ext2 test disk image
 EXT2_IMAGE = build/test.ext2
@@ -159,7 +102,13 @@ clean-ext2:
 	rm -f $(EXT2_IMAGE)
 
 # All tests
-test: unit-test kernel-test userspace-test
+test: check-extras unit-test kernel-test userspace-test
+
+# Validate the <test>_EXTRAS mappings against the workspace: every
+# referenced crate must exist, and every helper crate (*_child/*_producer/
+# *_consumer) must be referenced by at least one _EXTRAS mapping.
+check-extras:
+	@./scripts/list-tests.sh check-extras
 
 # Rust unit tests and doctests (run on host without build-std)
 unit-test:

@@ -1,8 +1,8 @@
 [package]
 name = "multi_window_test"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
-libpanda = { path = "../../libpanda" }
+libpanda = { workspace = true }
 panda-abi = { path = "../../../panda-abi" }
