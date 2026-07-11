@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::Waker;
 use spinning_top::Spinlock;
 
-use crate::resource::{FramebufferSurface, Rect, SharedBuffer, Surface, alpha_blend};
+use crate::resource::{FramebufferSurface, Rect, Surface, alpha_blend};
 
 /// Background color (Nord dark gray)
 const BACKGROUND_COLOR: u32 = 0xFF2E3440;
@@ -42,7 +42,6 @@ pub struct Window {
     pub visible: bool,
     pub position: (u32, u32),
     pub size: (u32, u32),
-    pub content_buffer: Option<Arc<SharedBuffer>>,
     pub pixel_data: Vec<u8>, // Own persistent pixel buffer (BGRA format)
 }
 
@@ -290,7 +289,6 @@ pub fn create_window() -> Arc<Spinlock<Window>> {
         visible: false,
         position: (0, 0),
         size: (0, 0),
-        content_buffer: None,
         pixel_data: Vec::new(), // Will be allocated when size is set
     }));
 

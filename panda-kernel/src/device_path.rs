@@ -111,11 +111,3 @@ pub fn list(path: &str) -> Option<Vec<DirEntry>> {
         None
     }
 }
-
-/// Convert a DeviceAddress to a canonical path string.
-///
-/// This returns the raw address form (e.g., "pci/00:04.0") which is
-/// always valid, rather than the class form which depends on enumeration order.
-pub fn to_path(address: &DeviceAddress) -> String {
-    address.to_string()
-}

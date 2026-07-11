@@ -21,10 +21,6 @@ impl Resource for WindowResource {
         Some(self)
     }
 
-    fn as_surface_mut(&mut self) -> Option<&mut dyn Surface> {
-        Some(self)
-    }
-
     fn as_window(&self) -> Option<Arc<Spinlock<crate::compositor::Window>>> {
         Some(self.window.clone())
     }

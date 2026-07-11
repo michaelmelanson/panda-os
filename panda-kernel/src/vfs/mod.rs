@@ -16,46 +16,8 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use async_trait::async_trait;
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker as TaskWaker};
 use panda_abi::path;
 use spinning_top::RwSpinlock;
-
-// =============================================================================
-// Synchronous wrapper for immediate-completion futures
-// =============================================================================
-
-/// A no-op waker that does nothing when woken.
-/// Used for polling futures that are expected to complete immediately.
-fn noop_waker() -> TaskWaker {
-    fn noop_clone(_: *const ()) -> RawWaker {
-        RawWaker::new(core::ptr::null(), &NOOP_VTABLE)
-    }
-    fn noop(_: *const ()) {}
-
-    static NOOP_VTABLE: RawWakerVTable = RawWakerVTable::new(noop_clone, noop, noop, noop);
-
-    unsafe { TaskWaker::from_raw(RawWaker::new(core::ptr::null(), &NOOP_VTABLE)) }
-}
-
-/// Poll a future once, returning `Some(result)` if it completes immediately.
-///
-/// This is for use with synchronous filesystems like TarFs that always
-/// return immediately-ready futures. Returns `None` if the future is not
-/// ready (i.e., it would need to be polled again later).
-///
-/// For truly async operations (like ext2 disk I/O), use the process-level
-/// async infrastructure instead.
-pub fn poll_immediate<T>(mut future: Pin<&mut (impl Future<Output = T> + ?Sized)>) -> Option<T> {
-    let waker = noop_waker();
-    let mut cx = Context::from_waker(&waker);
-
-    match future.as_mut().poll(&mut cx) {
-        Poll::Ready(result) => Some(result),
-        Poll::Pending => None,
-    }
-}
 
 /// How to reposition within a file
 pub enum SeekFrom {

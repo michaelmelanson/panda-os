@@ -122,7 +122,6 @@ fn handle_read_sync(handle_id: u64, dst: UserSlice, flags: u32) -> SyscallFuture
                             bytes[4..8].copy_from_slice(&key.value.to_ne_bytes());
                             bytes.to_vec()
                         }
-                        _ => return Some(Some((0, alloc::vec::Vec::new()))),
                     };
                     let n = event_bytes.len().min(dst.len());
                     Some(Some((n as isize, event_bytes[..n].to_vec())))
@@ -173,7 +172,6 @@ fn handle_read_sync(handle_id: u64, dst: UserSlice, flags: u32) -> SyscallFuture
                             bytes[4..8].copy_from_slice(&key.value.to_ne_bytes());
                             bytes.to_vec()
                         }
-                        _ => return Poll::Ready(SyscallResult::ok(0)),
                     };
                     let n = event_bytes.len().min(dst.len());
                     let data = event_bytes[..n].to_vec();

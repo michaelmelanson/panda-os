@@ -354,8 +354,6 @@ pub fn handle_blit(
                     }
                 }
 
-                // Keep buffer reference for backwards compatibility
-                window.content_buffer = Some(source_buffer);
                 window.id
             };
 

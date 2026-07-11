@@ -382,10 +382,6 @@ impl Resource for FramebufferSurface {
     fn as_surface(&self) -> Option<&dyn Surface> {
         Some(self)
     }
-
-    fn as_surface_mut(&mut self) -> Option<&mut dyn Surface> {
-        Some(self)
-    }
 }
 
 /// Global framebuffer surface.

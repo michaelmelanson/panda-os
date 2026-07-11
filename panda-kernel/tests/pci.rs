@@ -14,7 +14,7 @@ panda_kernel::test_harness!(
     device_class_unknown_code,
     device_class_unknown_name,
     devices_registered_by_class,
-    get_device_by_class_name
+    device_lookup_by_class_name
 );
 
 fn finds_devices() {
@@ -113,21 +113,24 @@ fn devices_registered_by_class() {
     assert!(input_count > 0, "Expected at least one input device");
 }
 
-fn get_device_by_class_name() {
-    // Test the helper function that uses class names
-    // Use "input" since virtio-keyboard is always present
-    let input_device = pci::get_device_by_class_name("input", 0);
+fn device_lookup_by_class_name() {
+    // Look up a device by human-readable class name via DeviceClass +
+    // get_device_by_class, the same composition device path resolution uses.
+    // Use "input" since virtio-keyboard is always present.
+    let input_code = DeviceClass::from_name("input")
+        .expect("input class should resolve")
+        .code();
+    let input_device = pci::get_device_by_class(input_code, 0);
     assert!(input_device.is_some(), "Should find input device by name");
 
-    let nonexistent = pci::get_device_by_class_name("input", 999);
+    let nonexistent = pci::get_device_by_class(input_code, 999);
     assert!(
         nonexistent.is_none(),
         "Should not find device at invalid index"
     );
 
-    let invalid_class = pci::get_device_by_class_name("invalid", 0);
     assert!(
-        invalid_class.is_none(),
-        "Should not find device with invalid class name"
+        DeviceClass::from_name("invalid").is_none(),
+        "Should not resolve an invalid class name"
     );
 }

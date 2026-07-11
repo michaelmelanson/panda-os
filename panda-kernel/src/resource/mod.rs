@@ -13,7 +13,6 @@ mod directory;
 mod event_source;
 mod mailbox;
 mod process;
-mod process_resource;
 pub(crate) mod scheme;
 mod spawn_handle;
 mod surface;
@@ -27,7 +26,6 @@ pub use directory::{DirEntry, Directory};
 pub use event_source::{Event, EventSource, KeyEvent};
 pub use mailbox::{Mailbox, MailboxRef};
 pub use process::Process as ProcessInterface;
-pub use process_resource::ProcessResource;
 pub use scheme::{
     ConsoleScheme, DirectoryResource, FileScheme, KeyboardResource, KeyboardScheme, SchemeHandler,
     init as init_schemes, open, readdir, register_scheme,
@@ -86,18 +84,8 @@ pub trait Resource: Send + Sync {
         None
     }
 
-    /// Get this resource as a mutable Buffer.
-    fn as_buffer_mut(&mut self) -> Option<&mut dyn Buffer> {
-        None
-    }
-
     /// Get this resource as a Surface (for framebuffer, display).
     fn as_surface(&self) -> Option<&dyn Surface> {
-        None
-    }
-
-    /// Get this resource as a mutable Surface.
-    fn as_surface_mut(&mut self) -> Option<&mut dyn Surface> {
         None
     }
 

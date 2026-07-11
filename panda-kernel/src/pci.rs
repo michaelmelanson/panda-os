@@ -159,16 +159,6 @@ impl DeviceClass {
     }
 }
 
-/// Get the human-readable name for a PCI class code.
-pub fn class_name(class_code: u8) -> Option<&'static str> {
-    DeviceClass::from_code(class_code).map(|c| c.name())
-}
-
-/// Get the PCI class code from a human-readable name.
-pub fn class_code(name: &str) -> Option<u8> {
-    DeviceClass::from_name(name).map(|c| c.code())
-}
-
 /// Register a PCI device in the class registry.
 fn register_device_class(class_code: u8, address: DeviceAddress) {
     let mut by_class = DEVICES_BY_CLASS.write();
@@ -179,12 +169,6 @@ fn register_device_class(class_code: u8, address: DeviceAddress) {
 pub fn get_device_by_class(class_code: u8, index: usize) -> Option<DeviceAddress> {
     let by_class = DEVICES_BY_CLASS.read();
     by_class.get(&class_code)?.get(index).cloned()
-}
-
-/// Get a device address by class name and index.
-pub fn get_device_by_class_name(class_name: &str, index: usize) -> Option<DeviceAddress> {
-    let code = class_code(class_name)?;
-    get_device_by_class(code, index)
 }
 
 /// List all class codes that have devices.

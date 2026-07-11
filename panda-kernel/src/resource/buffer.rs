@@ -228,10 +228,6 @@ impl Resource for SharedBuffer {
         Some(self)
     }
 
-    fn as_buffer_mut(&mut self) -> Option<&mut dyn Buffer> {
-        Some(self)
-    }
-
     fn as_shared_buffer(&self) -> Option<Arc<SharedBuffer>> {
         self.self_ref.upgrade()
     }

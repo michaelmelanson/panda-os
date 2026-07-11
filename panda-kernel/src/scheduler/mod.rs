@@ -16,7 +16,7 @@ use crate::apic;
 use crate::executor;
 use crate::interrupts;
 use crate::process::{
-    Process, ProcessId, ProcessState, ProcessWaker, SavedState, return_from_deferred_syscall,
+    Process, ProcessId, ProcessState, ProcessWaker, return_from_deferred_syscall,
     return_from_interrupt, return_from_syscall,
 };
 use crate::syscall::CalleeSavedRegs;
@@ -137,24 +137,6 @@ impl Scheduler {
         }
 
         None
-    }
-
-    /// Get execution parameters for a process entity.
-    /// Returns `None` if the process no longer exists.
-    #[allow(dead_code)]
-    pub fn get_process_exec_params(
-        &self,
-        pid: ProcessId,
-    ) -> Option<(
-        x86_64::VirtAddr,
-        x86_64::VirtAddr,
-        x86_64::PhysAddr,
-        Option<SavedState>,
-    )> {
-        let process = self.processes.get(&pid)?;
-        let (ip, sp, page_table, saved_state) = process.exec_params();
-        let saved = saved_state.cloned();
-        Some((ip, sp, page_table, saved))
     }
 
     /// Remove a process from the scheduler and drop it (releasing resources).
