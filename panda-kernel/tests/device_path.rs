@@ -30,7 +30,10 @@ fn resolve_pci_class_path() {
     assert!(addr.is_some(), "Should resolve /pci/input/0");
 
     let addr = addr.unwrap();
-    assert!(addr.is_pci(), "Should be a PCI address");
+    assert!(
+        matches!(addr, DeviceAddress::Pci { .. }),
+        "Should be a PCI address"
+    );
 
     // Also test display class (virtio-gpu is always present)
     let addr = device_path::resolve("/pci/display/0");
@@ -43,18 +46,14 @@ fn resolve_pci_raw_address() {
     assert!(addr.is_some(), "Should resolve /pci/00:04.0");
 
     let addr = addr.unwrap();
-    match addr {
-        DeviceAddress::Pci {
-            bus,
-            device,
-            function,
-        } => {
-            assert_eq!(bus, 0);
-            assert_eq!(device, 4);
-            assert_eq!(function, 0);
-        }
-        _ => panic!("Expected PCI address"),
-    }
+    let DeviceAddress::Pci {
+        bus,
+        device,
+        function,
+    } = addr;
+    assert_eq!(bus, 0);
+    assert_eq!(device, 4);
+    assert_eq!(function, 0);
 }
 
 fn resolve_invalid_path() {

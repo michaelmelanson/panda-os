@@ -60,16 +60,8 @@ pub async fn open(uri: &str) -> Option<Box<dyn Resource>> {
 }
 
 /// List directory contents by URI (e.g., "file:/initrd")
-///
-/// Special case: `*:/path` discovers which schemes support the given path,
-/// returning each scheme name as a directory entry.
 pub async fn readdir(uri: &str) -> Option<Vec<DirEntry>> {
     let (scheme, path) = uri.split_once(':')?;
-
-    // Special case: "*" scheme discovers which schemes support this path
-    if scheme == "*" {
-        return Some(discover_schemes(path).await);
-    }
 
     // Clone the handler to avoid holding the lock across await
     let handler: Arc<dyn SchemeHandler> = {
@@ -77,35 +69,6 @@ pub async fn readdir(uri: &str) -> Option<Vec<DirEntry>> {
         schemes.get(scheme).map(|h| Arc::clone(h))?
     };
     handler.readdir(path).await
-}
-
-/// Discover which schemes can open a given path.
-///
-/// Returns a list of scheme names that successfully open the path.
-/// This enables cross-scheme discovery like `*:/pci/storage/0` or `*:/serial/0`.
-pub async fn discover_schemes(path: &str) -> Vec<DirEntry> {
-    // Get list of all scheme names and handlers
-    let handlers: Vec<(&'static str, Arc<dyn SchemeHandler>)> = {
-        let schemes = SCHEMES.read();
-        schemes
-            .iter()
-            .map(|(&name, handler)| (name, Arc::clone(handler)))
-            .collect()
-    };
-
-    let mut results = Vec::new();
-
-    for (name, handler) in handlers {
-        // Try to open the path with this scheme
-        if handler.open(path).await.is_some() {
-            results.push(DirEntry {
-                name: alloc::string::String::from(name),
-                is_dir: false,
-            });
-        }
-    }
-
-    results
 }
 
 // =============================================================================

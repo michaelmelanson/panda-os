@@ -41,23 +41,7 @@ fn resolve_pci(path: &str) -> Option<DeviceAddress> {
     }
 
     // Fall back to raw address: "00:04.0"
-    parse_pci_bdf(path)
-}
-
-/// Parse a raw PCI BDF (bus:device.function) address.
-fn parse_pci_bdf(addr: &str) -> Option<DeviceAddress> {
-    let (bus_str, rest) = addr.split_once(':')?;
-    let (device_str, function_str) = rest.split_once('.')?;
-
-    let bus = u8::from_str_radix(bus_str, 16).ok()?;
-    let device = u8::from_str_radix(device_str, 16).ok()?;
-    let function = u8::from_str_radix(function_str, 16).ok()?;
-
-    Some(DeviceAddress::Pci {
-        bus,
-        device,
-        function,
-    })
+    DeviceAddress::parse_bdf(path)
 }
 
 /// List directory contents at a device path.

@@ -18,9 +18,6 @@ libpanda::main! {
     // Test 2: List devices in input class
     test_readdir_input_devices();
 
-    // Test 3: Cross-scheme discovery for input device
-    test_cross_scheme_discovery();
-
     environment::log("device_path_test passed");
     0
 }
@@ -117,51 +114,4 @@ fn test_readdir_input_devices() {
     }
 
     environment::log("  Input devices listing OK");
-}
-
-fn test_cross_scheme_discovery() {
-    environment::log("Test 3: Cross-scheme discovery");
-
-    // Use *:/pci/input/0 to discover which schemes support the first input device
-    let result = environment::opendir("*:/pci/input/0");
-    if result.is_err() {
-        environment::log("FAIL: Could not opendir *:/pci/input/0");
-        process::exit(1);
-    }
-
-    let handle = result.unwrap();
-
-    let mut entry = DirEntry {
-        name_len: 0,
-        is_dir: false,
-        name: [0; 255],
-    };
-
-    let mut found_keyboard = false;
-    loop {
-        let result = file::readdir(handle, &mut entry);
-        if result < 0 {
-            environment::log("FAIL: readdir returned error");
-            file::close(handle);
-            process::exit(1);
-        }
-        if result == 0 {
-            break;
-        }
-
-        // Check if "keyboard" scheme supports this device
-        let name = entry.name();
-        if name == "keyboard" {
-            found_keyboard = true;
-        }
-    }
-
-    file::close(handle);
-
-    if !found_keyboard {
-        environment::log("FAIL: 'keyboard' scheme not found for input device");
-        process::exit(1);
-    }
-
-    environment::log("  Cross-scheme discovery OK");
 }

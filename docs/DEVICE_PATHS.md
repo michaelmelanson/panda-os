@@ -36,31 +36,6 @@ surface:/pci/display/0      # First display, opened as surface
 block:/pci/00:04.0          # By raw PCI address
 ```
 
-## Cross-Scheme Discovery with `*:`
-
-The special `*:` scheme prefix queries across all schemes without opening a device.
-
-**List device classes:**
-```
-readdir("*:/pci")
-// Returns: ["storage", "display", "input"]
-```
-
-**List devices in a class:**
-```
-readdir("*:/pci/storage")
-// Returns: ["0", "1"]  (two storage devices)
-```
-
-**List schemes that support a device:**
-```
-readdir("*:/pci/storage/0")
-// Returns: ["block"]
-
-readdir("*:/pci/input/0")
-// Returns: ["keyboard"]
-```
-
 ## Architecture
 
 ```
@@ -87,26 +62,6 @@ All schemes use shared path resolution via `device_path::resolve()`.
 
 ## Usage Examples
 
-### Device Discovery
-
-```rust
-// List all device classes
-for class in readdir("*:/pci") {
-    // List devices in each class
-    for device in readdir(&format!("*:/pci/{}", class.name())) {
-        let path = format!("pci/{}/{}", class.name(), device.name());
-        
-        // What schemes support this device?
-        let schemes = readdir(&format!("*:/{}", path));
-        println!("{}: {:?}", path, schemes);
-    }
-}
-// Output:
-// pci/storage/0: ["block"]
-// pci/display/0: ["surface"]
-// pci/input/0: ["keyboard"]
-```
-
 ### Opening Devices
 
 ```rust
@@ -126,6 +81,3 @@ let screen = open("surface:/pci/display/0")?;
 |-------------|---------|
 | `scheme:/pci/class/index` | Open device by class/index with specific interface |
 | `scheme:/pci/BB:DD.F` | Open device by PCI address (legacy) |
-| `*:/pci` | List device classes |
-| `*:/pci/class` | List devices in class |
-| `*:/pci/class/index` | List schemes supporting device |
