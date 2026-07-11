@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run multiple tests in parallel and report results
 # Usage: run-tests.sh <test-type> <test1> [test2] ...
 #

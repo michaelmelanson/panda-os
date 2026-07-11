@@ -2,9 +2,28 @@
 
 ## Prerequisites
 
-- Rust nightly toolchain
+The repository ships a Nix flake that provides everything below. On any system
+with Nix installed:
+
+```bash
+# One-off commands
+nix develop -c make test
+
+# Or enter a shell with the full environment
+nix develop
+```
+
+The flake reads `rust-toolchain.toml`, so the pinned nightly, `rust-src`
+component, and targets stay in sync with rustup-based setups automatically.
+
+Without Nix, you need:
+
+- Rust nightly toolchain (pinned by `rust-toolchain.toml`)
 - QEMU with x86_64 and UEFI support
-- OVMF firmware files in `firmware/`
+- OVMF firmware files in `firmware/` (vendored)
+- e2fsprogs (`debugfs`, used to build and verify ext2 test images)
+- ImageMagick (`convert`/`compare`, required by graphics screenshot tests)
+- GNU make, bash, tar, coreutils
 
 ## Build commands
 

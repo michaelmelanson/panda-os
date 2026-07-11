@@ -1,4 +1,5 @@
-SHELL := /bin/bash
+# Resolve bash from PATH (NixOS has no /bin/bash); $(shell) itself uses /bin/sh which is universal.
+SHELL := $(shell command -v bash)
 .PHONY: build panda-kernel init run test kernel-test userspace-test unit-test ext2-image clean-ext2 release
 
 # Set PROFILE=release for optimized builds: make build PROFILE=release

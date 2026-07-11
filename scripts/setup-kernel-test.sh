@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Set up build directory for a kernel test
 # Usage: setup-kernel-test.sh <test-name>
 

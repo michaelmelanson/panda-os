@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Run a single test in QEMU and report pass/fail
 # Usage: run-qemu-test.sh <test-name> <build-dir> <log-file> [timeout] [expected-file] [monitor-file]
 #
@@ -112,14 +112,14 @@ if [ $SCREENSHOT_TEST -eq 1 ]; then
                 exit 1
             fi
 
-            # Convert PPM to PNG
-            if command -v convert >/dev/null 2>&1; then
-                convert "$ACTUAL_PNG_TMP" "$ACTUAL_PNG"
-                rm -f "$ACTUAL_PNG_TMP"
-            else
-                # No ImageMagick - keep PPM format
-                mv "$ACTUAL_PNG_TMP" "$ACTUAL_PNG"
+            # Convert PPM to PNG (ImageMagick is a hard requirement for
+            # screenshot tests; it is provided by the Nix dev shell)
+            if ! command -v convert >/dev/null 2>&1; then
+                echo "ImageMagick 'convert' not found - required for screenshot tests" >&2
+                exit 1
             fi
+            convert "$ACTUAL_PNG_TMP" "$ACTUAL_PNG"
+            rm -f "$ACTUAL_PNG_TMP"
 
             # If expected.png doesn't exist, this is the first run
             if [ ! -f "$EXPECTED_PNG" ]; then
@@ -129,40 +129,27 @@ if [ $SCREENSHOT_TEST -eq 1 ]; then
                 exit 1
             fi
 
-            # Compare screenshots
-            SCREENSHOT_PASSED=0
-            if command -v compare >/dev/null 2>&1; then
-                DIFF_PNG="$BUILD_DIR/${TEST_NAME}_diff.png"
-                # Allow 1% fuzz for anti-aliasing differences
-                DIFF_PIXELS=$(compare -metric AE -fuzz 1% "$EXPECTED_PNG" "$ACTUAL_PNG" "$DIFF_PNG" 2>&1 | head -1 | awk '{print $1}' || echo "999999")
-                if [ "$DIFF_PIXELS" -gt 1000 ] 2>/dev/null; then
-                    echo "Screenshot differs from expected (${DIFF_PIXELS} pixels different)" >&2
-                    echo "Expected: $EXPECTED_PNG" >&2
-                    echo "Actual: $ACTUAL_PNG (preserved for inspection)" >&2
-                    echo "Diff: $DIFF_PNG" >&2
-                    echo "" >&2
-                    echo "To accept new screenshot: cp $ACTUAL_PNG $EXPECTED_PNG" >&2
-                    exit 1
-                fi
-                rm -f "$DIFF_PNG"
-                SCREENSHOT_PASSED=1
-            else
-                # Pixel-perfect comparison
-                if ! cmp -s "$EXPECTED_PNG" "$ACTUAL_PNG"; then
-                    echo "Screenshot differs from expected (install ImageMagick for fuzzy compare)" >&2
-                    echo "Expected: $EXPECTED_PNG" >&2
-                    echo "Actual: $ACTUAL_PNG (preserved for inspection)" >&2
-                    echo "" >&2
-                    echo "To accept new screenshot: cp $ACTUAL_PNG $EXPECTED_PNG" >&2
-                    exit 1
-                fi
-                SCREENSHOT_PASSED=1
+            # Compare screenshots (fuzzy; ImageMagick is a hard requirement)
+            if ! command -v compare >/dev/null 2>&1; then
+                echo "ImageMagick 'compare' not found - required for screenshot tests" >&2
+                exit 1
             fi
+            DIFF_PNG="$BUILD_DIR/${TEST_NAME}_diff.png"
+            # Allow 1% fuzz for anti-aliasing differences
+            DIFF_PIXELS=$(compare -metric AE -fuzz 1% "$EXPECTED_PNG" "$ACTUAL_PNG" "$DIFF_PNG" 2>&1 | head -1 | awk '{print $1}' || echo "999999")
+            if [ "$DIFF_PIXELS" -gt 1000 ] 2>/dev/null; then
+                echo "Screenshot differs from expected (${DIFF_PIXELS} pixels different)" >&2
+                echo "Expected: $EXPECTED_PNG" >&2
+                echo "Actual: $ACTUAL_PNG (preserved for inspection)" >&2
+                echo "Diff: $DIFF_PNG" >&2
+                echo "" >&2
+                echo "To accept new screenshot: cp $ACTUAL_PNG $EXPECTED_PNG" >&2
+                exit 1
+            fi
+            rm -f "$DIFF_PNG"
 
-            # Only clean up actual screenshot if it passed
-            if [ $SCREENSHOT_PASSED -eq 1 ]; then
-                rm -f "$ACTUAL_PNG"
-            fi
+            # Clean up the actual screenshot now that it passed
+            rm -f "$ACTUAL_PNG"
 
             # Screenshot test passed - now check expected.txt if it exists
             break
@@ -233,6 +220,13 @@ elif [ -n "$MONITOR_FILE" ] && [ -f "$MONITOR_FILE" ]; then
     fi
 
     # Send monitor commands over a single persistent connection using Python
+    # (hard requirement: without it the commands are never sent and the test
+    # hangs until timeout, which is much harder to diagnose)
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "python3 not found - required to send QEMU monitor commands" >&2
+        kill $QEMU_PID 2>/dev/null
+        exit 1
+    fi
     python3 -c "
 import socket, time, sys
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -436,16 +430,17 @@ if [ -n "$EXPECTED_FILE" ]; then
         # Run debugfs commands from the expected file and capture output.
         # Lines starting with '>' are debugfs commands; all other non-comment
         # lines are expected output patterns matched in order.
-        DEBUGFS_CMDS=""
+        # Each command runs as a separate `debugfs -R` invocation: piping
+        # commands into debugfs's stdin produces prompt-concatenated output
+        # without newlines in e2fsprogs >= 1.47, which breaks line matching.
+        DEBUGFS_OUTPUT=""
         while IFS= read -r line; do
             [[ -z "${line// }" ]] && continue
             [[ "$line" =~ ^# ]] && continue
             if [[ "$line" =~ ^\> ]]; then
-                DEBUGFS_CMDS="${DEBUGFS_CMDS}${line#>}"$'\n'
+                DEBUGFS_OUTPUT="${DEBUGFS_OUTPUT}$(debugfs -R "${line#>}" "$DISK_IMAGE" 2>/dev/null)"$'\n'
             fi
         done < "$EXPECTED_DEBUGFS_FILE"
-
-        DEBUGFS_OUTPUT=$(echo "$DEBUGFS_CMDS" | debugfs "$DISK_IMAGE" 2>/dev/null)
 
         # Now verify expected patterns appear in the debugfs output (in order)
         DEBUGFS_REMAINING="$DEBUGFS_OUTPUT"

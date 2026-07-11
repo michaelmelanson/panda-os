@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Set up build directory for a userspace test
 # Usage: setup-userspace-test.sh <test-name> [extra-binaries...]
 
