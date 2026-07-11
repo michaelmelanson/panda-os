@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use ::uefi::{Status, entry};
 use log::info;
 use panda_kernel::{
-    initrd, memory,
+    executor, memory,
     process::{Context, Process},
     resource, scheduler,
     syscall::gdt::SYSCALL_STACK,
@@ -79,8 +79,6 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
     // but linked_list_allocator's extend() has strict requirements about
     // contiguity that make it fragile. The 2MB is a small price for stability.
 
-    initrd::init(initrd_data);
-
     // Mount initrd as /initrd
     let tarfs = vfs::TarFs::from_tar_data(initrd_data).expect("Failed to parse initrd TAR archive");
     vfs::mount("/initrd", alloc::sync::Arc::new(tarfs));
@@ -90,7 +88,13 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
 
     info!("Panda OS");
 
-    let init_data = initrd::get_init();
+    // Load the init binary through the same resource-loading path used to
+    // spawn every other process. The scheduler and kernel task executor
+    // aren't running yet, but TarFs operations always resolve on their
+    // first poll (the data is already in memory), so we can drive the
+    // future to completion directly rather than spawning a kernel task.
+    let init_data = executor::block_on_immediate(resource::load_binary("file:/initrd/init"))
+        .expect("Failed to load init binary from initrd");
     let init_process =
         unsafe { Process::from_elf_data(Context::from_current_page_table(), init_data) }
             .expect("Failed to load init process - cannot boot");

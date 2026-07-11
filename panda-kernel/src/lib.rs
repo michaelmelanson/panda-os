@@ -20,7 +20,6 @@ pub mod device_path;
 pub mod devices;
 pub mod executor;
 pub mod handle;
-pub mod initrd;
 pub mod interrupts;
 pub mod logging;
 pub mod memory;

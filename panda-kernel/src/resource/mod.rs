@@ -150,3 +150,53 @@ pub trait Resource: Send + Sync {
         // Default: do nothing
     }
 }
+
+/// Errors that can occur while loading a binary from a resource URI.
+#[derive(Debug)]
+pub enum LoadBinaryError {
+    /// No resource exists at the given URI.
+    NotFound,
+    /// The resource exists but does not support reading as a file.
+    NotReadable,
+    /// An I/O error occurred while stat-ing or reading the file.
+    IoError,
+}
+
+/// Open a resource URI and read its entire contents into a leaked, `'static`
+/// byte slice suitable for zero-copy process creation via
+/// `Process::from_elf_data`.
+///
+/// This is the single path used to load an ELF binary for a new process,
+/// whether spawning a child process at runtime or loading the very first
+/// process at boot. Callers that need to drive this to completion before the
+/// kernel task executor is running (e.g. boot) can use
+/// `executor::block_on_immediate`.
+pub async fn load_binary(uri: &str) -> Result<*const [u8], LoadBinaryError> {
+    let resource = open(uri).await.ok_or(LoadBinaryError::NotFound)?;
+    let vfs_file = resource
+        .as_vfs_file()
+        .ok_or(LoadBinaryError::NotReadable)?;
+
+    let file_lock = vfs_file.file();
+    let mut file = file_lock.lock();
+
+    let stat = file.stat().await.map_err(|_| LoadBinaryError::IoError)?;
+    let size = stat.size as usize;
+
+    let mut data = alloc::vec![0u8; size];
+    let mut total_read = 0;
+    while total_read < size {
+        match file.read(&mut data[total_read..]).await {
+            Ok(0) => break, // EOF
+            Ok(n) => total_read += n,
+            Err(_) => return Err(LoadBinaryError::IoError),
+        }
+    }
+
+    if total_read != size {
+        return Err(LoadBinaryError::IoError);
+    }
+
+    let boxed = data.into_boxed_slice();
+    Ok(Box::leak(boxed))
+}

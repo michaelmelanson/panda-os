@@ -13,7 +13,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll};
+use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use spinning_top::Spinlock;
 
 use log::debug;
@@ -152,4 +152,41 @@ pub(crate) fn wake_task(task_id: TaskId) {
 /// None otherwise.
 pub fn current_task_id() -> Option<TaskId> {
     *CURRENT_TASK.lock()
+}
+
+/// A waker that does nothing when woken.
+///
+/// Suitable only for futures that are guaranteed to resolve on their first
+/// poll, so a real wake-up notification is never needed.
+fn noop_waker() -> Waker {
+    fn clone(_: *const ()) -> RawWaker {
+        RawWaker::new(core::ptr::null(), &VTABLE)
+    }
+    fn no_op(_: *const ()) {}
+
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
+
+    unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VTABLE)) }
+}
+
+/// Drive a future to completion by polling it, without going through the
+/// task executor or scheduler.
+///
+/// This is for use during early boot, before the scheduler and kernel task
+/// executor are running, to drive futures (such as reading from the
+/// in-memory initrd `TarFs`) that are known to always resolve on their first
+/// poll. Panics if the future is not ready after being polled once, since
+/// that would indicate it needs a real waker to make further progress.
+pub fn block_on_immediate<F: Future>(future: F) -> F::Output {
+    let mut future = core::pin::pin!(future);
+    let waker = noop_waker();
+    let mut context = Context::from_waker(&waker);
+
+    match future.as_mut().poll(&mut context) {
+        Poll::Ready(value) => value,
+        Poll::Pending => panic!(
+            "block_on_immediate: future did not complete on first poll \
+             (expected an in-memory filesystem operation that always resolves immediately)"
+        ),
+    }
 }

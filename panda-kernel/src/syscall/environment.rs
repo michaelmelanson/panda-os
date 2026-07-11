@@ -4,7 +4,6 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 use log::{debug, error, info};
 
@@ -206,53 +205,24 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
     };
 
     Box::pin(async move {
-        let Some(resource) = resource::open(&uri).await else {
-            error!("SPAWN: failed to open {}", uri);
-            return SyscallResult::err(panda_abi::ErrorCode::NotFound);
-        };
-
-        // Read the file via async VFS interface
-        let Some(vfs_file) = resource.as_vfs_file() else {
-            error!("SPAWN: {} is not a readable file", uri);
-            return SyscallResult::err(panda_abi::ErrorCode::NotReadable);
-        };
-
-        let file_lock = vfs_file.file();
-        let mut file = file_lock.lock();
-
-        // Get file size via stat
-        let stat = match file.stat().await {
-            Ok(s) => s,
-            Err(e) => {
-                error!("SPAWN: failed to stat {}: {:?}", uri, e);
+        // Read the binary via the shared resource-loading path (also used to
+        // load the first process at boot), so the underlying filesystem is
+        // only ever parsed through this one route.
+        let elf_ptr = match resource::load_binary(&uri).await {
+            Ok(ptr) => ptr,
+            Err(resource::LoadBinaryError::NotFound) => {
+                error!("SPAWN: failed to open {}", uri);
+                return SyscallResult::err(panda_abi::ErrorCode::NotFound);
+            }
+            Err(resource::LoadBinaryError::NotReadable) => {
+                error!("SPAWN: {} is not a readable file", uri);
+                return SyscallResult::err(panda_abi::ErrorCode::NotReadable);
+            }
+            Err(resource::LoadBinaryError::IoError) => {
+                error!("SPAWN: failed to read {}", uri);
                 return SyscallResult::err(panda_abi::ErrorCode::IoError);
             }
         };
-        let size = stat.size as usize;
-
-        let mut elf_data = Vec::new();
-        elf_data.resize(size, 0);
-
-        // Read the entire file
-        let mut total_read = 0;
-        while total_read < size {
-            match file.read(&mut elf_data[total_read..]).await {
-                Ok(0) => break, // EOF
-                Ok(n) => total_read += n,
-                Err(e) => {
-                    error!("SPAWN: failed to read {}: {:?}", uri, e);
-                    return SyscallResult::err(panda_abi::ErrorCode::IoError);
-                }
-            }
-        }
-
-        if total_read != size {
-            error!("SPAWN: incomplete read: {} of {} bytes", total_read, size);
-            return SyscallResult::err(panda_abi::ErrorCode::IoError);
-        }
-
-        let elf_data = elf_data.into_boxed_slice();
-        let elf_ptr: *const [u8] = alloc::boxed::Box::leak(elf_data);
 
         let mut process = match Process::from_elf_data(Context::new_user_context(), elf_ptr) {
             Ok(p) => p,
