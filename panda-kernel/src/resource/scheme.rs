@@ -183,10 +183,6 @@ impl Resource for DirectoryResource {
     fn as_directory(&self) -> Option<&dyn Directory> {
         Some(self)
     }
-
-    fn as_vfs_directory_path(&self) -> Option<alloc::string::String> {
-        self.vfs_path.clone()
-    }
 }
 
 impl Directory for DirectoryResource {
@@ -196,6 +192,10 @@ impl Directory for DirectoryResource {
 
     fn count(&self) -> usize {
         self.entries.len()
+    }
+
+    fn vfs_path(&self) -> Option<alloc::string::String> {
+        self.vfs_path.clone()
     }
 }
 
@@ -289,13 +289,6 @@ pub struct KeyboardResource {
     keyboard: Arc<Spinlock<VirtioKeyboard>>,
 }
 
-impl KeyboardResource {
-    /// Attach a mailbox to receive keyboard events.
-    pub fn attach_mailbox(&self, mailbox_ref: super::MailboxRef) {
-        self.keyboard.lock().attach_mailbox(mailbox_ref);
-    }
-}
-
 impl Resource for KeyboardResource {
     fn handle_type(&self) -> panda_abi::HandleType {
         // Keyboard is accessed like a file (read events)
@@ -306,12 +299,30 @@ impl Resource for KeyboardResource {
         Some(self)
     }
 
-    fn as_keyboard(&self) -> Option<&KeyboardResource> {
-        Some(self)
-    }
-
     fn waker(&self) -> Option<Arc<Waker>> {
         Some(self.keyboard.lock().waker())
+    }
+
+    fn supported_events(&self) -> u32 {
+        panda_abi::EVENT_KEYBOARD_KEY
+    }
+
+    fn poll_events(&self) -> u32 {
+        // The ring buffer only exposes a has-pending check, not per-event
+        // peeking, so we report the coarse "at least one key event is
+        // buffered" state rather than inventing additional buffering here.
+        // Mailbox delivery of individual key events still happens eagerly
+        // via the wake/post mechanism in `VirtioKeyboard::poll`, independent
+        // of this method.
+        if self.keyboard.lock().has_events() {
+            panda_abi::EVENT_KEYBOARD_KEY
+        } else {
+            0
+        }
+    }
+
+    fn attach_mailbox(&self, mailbox_ref: super::MailboxRef) {
+        self.keyboard.lock().attach_mailbox(mailbox_ref);
     }
 }
 

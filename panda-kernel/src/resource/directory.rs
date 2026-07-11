@@ -22,4 +22,12 @@ pub trait Directory: Send + Sync {
 
     /// Get the number of entries in this directory.
     fn count(&self) -> usize;
+
+    /// Get the absolute VFS path for this directory, if any.
+    ///
+    /// Returns `Some(path)` if this is a VFS-backed directory that supports
+    /// mutation operations (create, unlink).
+    fn vfs_path(&self) -> Option<String> {
+        None
+    }
 }

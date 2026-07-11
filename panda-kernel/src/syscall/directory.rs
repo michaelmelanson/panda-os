@@ -48,7 +48,8 @@ pub fn handle_create(
     let dir_path: Option<alloc::string::String> = scheduler::with_current_process(|proc| {
         proc.handles()
             .get(handle_id)
-            .and_then(|h| h.as_vfs_directory_path())
+            .and_then(|h| h.as_directory())
+            .and_then(|d| d.vfs_path())
     });
 
     let Some(dir_path) = dir_path else {
@@ -135,7 +136,8 @@ pub fn handle_unlink(
     let dir_path: Option<alloc::string::String> = scheduler::with_current_process(|proc| {
         proc.handles()
             .get(handle_id)
-            .and_then(|h| h.as_vfs_directory_path())
+            .and_then(|h| h.as_directory())
+            .and_then(|d| d.vfs_path())
     });
 
     let Some(dir_path) = dir_path else {
@@ -200,7 +202,8 @@ pub fn handle_mkdir(
     let dir_path: Option<alloc::string::String> = scheduler::with_current_process(|proc| {
         proc.handles()
             .get(handle_id)
-            .and_then(|h| h.as_vfs_directory_path())
+            .and_then(|h| h.as_directory())
+            .and_then(|d| d.vfs_path())
     });
 
     let Some(dir_path) = dir_path else {
@@ -264,7 +267,8 @@ pub fn handle_rmdir(
     let dir_path: Option<alloc::string::String> = scheduler::with_current_process(|proc| {
         proc.handles()
             .get(handle_id)
-            .and_then(|h| h.as_vfs_directory_path())
+            .and_then(|h| h.as_directory())
+            .and_then(|d| d.vfs_path())
     });
 
     let Some(dir_path) = dir_path else {

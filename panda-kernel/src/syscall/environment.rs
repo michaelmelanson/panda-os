@@ -62,11 +62,9 @@ pub fn handle_open(
                                 mailbox.attach(handle_id, event_mask);
 
                                 if let Some(opened_h) = proc.handles().get(handle_id) {
-                                    if let Some(keyboard) = opened_h.as_keyboard() {
-                                        let mailbox_ref =
-                                            resource::MailboxRef::new(mailbox, handle_id);
-                                        keyboard.attach_mailbox(mailbox_ref);
-                                    }
+                                    let mailbox_ref =
+                                        resource::MailboxRef::new(mailbox, handle_id);
+                                    opened_h.attach_mailbox(mailbox_ref);
                                 }
                             }
                         }
