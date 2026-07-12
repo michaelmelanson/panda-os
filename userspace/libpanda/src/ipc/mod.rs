@@ -8,7 +8,9 @@
 
 mod channel;
 
-pub use channel::{Channel, create_pair, recv, send, try_recv, try_send};
+pub use channel::{
+    Channel, create_pair, recv, recv_with_handle, send, send_with_handle, try_recv, try_send,
+};
 
 // Re-export mailbox types for convenience
 pub use crate::mailbox::{

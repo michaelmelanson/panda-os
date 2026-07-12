@@ -35,10 +35,31 @@ enum Side {
     B,
 }
 
+/// A queued channel message: raw bytes plus an optional attached resource.
+///
+/// The attachment implements SCM_RIGHTS-style handle transfer (see
+/// `syscall/channel.rs::handle_send`, which whitelists which resource types
+/// may be attached, and `handle_recv`, which installs the attachment into
+/// the receiver's handle table). This resource layer doesn't enforce the
+/// whitelist itself — it just carries whatever `Arc<dyn Resource>` the
+/// syscall handler hands it — and doesn't need special handling for either
+/// end of the transfer:
+///
+/// - The sender keeps its own handle: attaching duplicates the `Arc` rather
+///   than moving it out of the sender's table, exactly like SCM_RIGHTS over
+///   a Unix domain socket.
+/// - If the channel is closed (or dropped) before the message is received,
+///   the attachment is simply dropped along with the rest of the queue —
+///   no special-cased cleanup is needed since it's just an `Arc`.
+struct ChannelMessage {
+    data: Vec<u8>,
+    attachment: Option<Arc<dyn Resource>>,
+}
+
 /// One half of a channel's state (one direction of communication).
 struct ChannelHalf {
     /// Outgoing message queue (messages sent by this side).
-    queue: VecDeque<Vec<u8>>,
+    queue: VecDeque<ChannelMessage>,
     /// Is this side closed?
     closed: bool,
     /// Waker for this side (woken when peer sends or closes).
@@ -118,6 +139,19 @@ impl ChannelEndpoint {
     /// Send a message to the peer.
     /// Returns Ok(()) on success, or an error.
     pub fn send(&self, msg: &[u8]) -> Result<(), ChannelError> {
+        self.send_with_attachment(msg, None)
+    }
+
+    /// Send a message to the peer, optionally attaching a resource.
+    ///
+    /// The attachment is delivered to the peer's `recv_with_attachment` call
+    /// that dequeues this message. See [`ChannelMessage`] for the transfer
+    /// semantics (duplicate-Arc, not a move).
+    pub fn send_with_attachment(
+        &self,
+        msg: &[u8],
+        attachment: Option<Arc<dyn Resource>>,
+    ) -> Result<(), ChannelError> {
         if msg.len() > MAX_MESSAGE_SIZE {
             return Err(ChannelError::MessageTooLarge);
         }
@@ -134,7 +168,10 @@ impl ChannelEndpoint {
             return Err(ChannelError::QueueFull);
         }
 
-        ours.queue.push_back(msg.to_vec());
+        ours.queue.push_back(ChannelMessage {
+            data: msg.to_vec(),
+            attachment,
+        });
 
         // Notify peer
         peer.waker.wake();
@@ -156,20 +193,36 @@ impl ChannelEndpoint {
     /// Receive a message from the peer.
     /// Returns Ok(len) on success where len is the message length.
     pub fn recv(&self, buf: &mut [u8]) -> Result<usize, ChannelError> {
+        self.recv_with_attachment(buf).map(|(len, _)| len)
+    }
+
+    /// Receive a message from the peer, returning its length and any
+    /// attached resource.
+    ///
+    /// This pops the message unconditionally on success. Callers that need
+    /// to install the attachment into a receiver's handle table (the
+    /// channel-recv syscall handler) must check handle-table capacity
+    /// *before* calling this — see [`peek_has_attachment`](Self::peek_has_attachment)
+    /// — since there's no way to "un-pop" a message once its attachment has
+    /// been handed to the caller.
+    pub fn recv_with_attachment(
+        &self,
+        buf: &mut [u8],
+    ) -> Result<(usize, Option<Arc<dyn Resource>>), ChannelError> {
         let mut shared = self.shared.lock();
         let capacity = shared.capacity;
         let (_, peer) = shared.halves(self.side);
 
         // We receive from peer's queue (peer sends to us via their queue)
         if let Some(msg) = peer.queue.pop_front() {
-            if buf.len() < msg.len() {
+            if buf.len() < msg.data.len() {
                 // Put message back and return error
                 peer.queue.push_front(msg);
                 return Err(ChannelError::BufferTooSmall);
             }
 
-            let len = msg.len();
-            buf[..len].copy_from_slice(&msg);
+            let len = msg.data.len();
+            buf[..len].copy_from_slice(&msg.data);
 
             // Notify peer that there's space now (if queue was full)
             let was_full = peer.queue.len() + 1 >= capacity;
@@ -180,7 +233,7 @@ impl ChannelEndpoint {
                 }
             }
 
-            Ok(len)
+            Ok((len, msg.attachment))
         } else {
             // Queue empty - check if peer closed
             if peer.closed {
@@ -189,6 +242,18 @@ impl ChannelEndpoint {
                 Err(ChannelError::QueueEmpty)
             }
         }
+    }
+
+    /// Whether the message at the front of the receive queue carries an
+    /// attachment. Returns `None` if the queue is empty.
+    ///
+    /// Used by the recv syscall handler to check handle-table capacity
+    /// before popping, so a message with an attachment stays queued (rather
+    /// than being silently lost) if the receiver's handle table is full.
+    pub fn peek_has_attachment(&self) -> Option<bool> {
+        let mut shared = self.shared.lock();
+        let (_, peer) = shared.halves(self.side);
+        peer.queue.front().map(|msg| msg.attachment.is_some())
     }
 
     /// Check if recv would block (queue is empty and peer not closed).

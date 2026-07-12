@@ -131,8 +131,75 @@ See `HandleType` in panda-abi for all type tags.
 | Operation | Code | Arguments | Returns |
 |-----------|------|-----------|---------|
 | `OP_CHANNEL_CREATE` | 0x7_1000 | () | (handle_a << 32) \| handle_b |
-| `OP_CHANNEL_SEND` | 0x7_1001 | (buf_ptr, buf_len, flags) | 0 or error |
-| `OP_CHANNEL_RECV` | 0x7_1002 | (buf_ptr, buf_len, flags) | msg_len or error |
+| `OP_CHANNEL_SEND` | 0x7_1001 | (buf_ptr, buf_len, flags, attach_handle) | 0 or error |
+| `OP_CHANNEL_RECV` | 0x7_1002 | (buf_ptr, buf_len, flags, out_handle_ptr) | msg_len or error |
+
+`attach_handle` and `out_handle_ptr` are new — see "Handle transfer" below.
+Callers that pass 0 for both get bit-for-bit the original plain send/recv
+behaviour.
+
+## Handle transfer
+
+A channel message may carry one attached handle — a kernel-level analogue of
+SCM_RIGHTS over a Unix domain socket. This is how a process hands another
+process a resource it can't name by path (e.g. a shared buffer or a channel
+endpoint it created), without a shared filesystem-like namespace.
+
+### ABI
+
+`OP_CHANNEL_SEND`'s previously-unused 4th argument becomes `attach_handle`: a
+handle in the sender's own table to duplicate-transfer alongside the message,
+or `0` for no attachment. `OP_CHANNEL_RECV`'s previously-unused 4th argument
+becomes `out_handle_ptr`: the address of a `u64` that receives the
+transferred handle id after a successful recv (or `0` if the message had no
+attachment), or `0` if the caller doesn't want it written at all. Both
+arguments were free — the existing handlers only used 3 of the syscall's 4
+operation-specific registers — so no new operation code was needed, and every
+existing caller that passes 0 (the default when an argument is omitted from
+the register) sees unchanged behaviour.
+
+The transferred handle id can't share `OP_CHANNEL_RECV`'s normal return-value
+writeback slot: that slot already carries the message payload, and the two
+destinations (the caller's message buffer and the caller's handle-id
+out-pointer) are independent addresses. The kernel's `SyscallResult` gained a
+second, parallel writeback (`handle_writeback`, alongside the existing
+`writeback`) for exactly this: a single extra `u64` copied out to a second
+address in the same copy-out pass, after the same future resolves. This
+avoided adding a second operation code (e.g. a hypothetical
+`OP_CHANNEL_RECV_HANDLE`) for what is otherwise identical recv behaviour.
+
+### Semantics
+
+- **Whitelist.** Only resources whose type is `SharedBuffer` or
+  `ChannelEndpoint` may be attached (checked via `resource::is_transferable`,
+  which gates on the resource's own `handle_type()` combined with the
+  matching `as_shared_buffer()`/`as_channel()` interface — not merely
+  "implements `as_channel()`", since `SpawnHandle` also implements that
+  interface so a process handle doubles as a channel handle to the child, but
+  carries additional process-coupled state — exit-code delivery, the process
+  waker — that isn't yet defined for a resource installed into a *different*
+  process's handle table). Attaching any other resource type fails the send
+  with `InvalidHandle`.
+- **Transfer is a duplicate, not a move.** Like SCM_RIGHTS, the sender's own
+  handle remains valid and open after a successful send — the kernel clones
+  the resource's `Arc`, it doesn't remove the handle from the sender's table.
+- **Handle 0 means no attachment**, both for `attach_handle` on send and the
+  value written through `out_handle_ptr` on recv.
+- **Receiver handle-table full.** If the dequeued message carries an
+  attachment but the receiver's handle table is already at
+  [the per-process limit](#per-process-handle-limit), the recv fails with
+  `TooManyHandles` and the message **stays queued** — it is not lost. The
+  caller can close a handle and retry the recv.
+- **Channel closed with a queued attachment.** If a channel (or process) is
+  torn down while a message with an attachment is still queued, the
+  attachment's `Arc` is simply dropped along with the rest of the queue —
+  no special-cased cleanup.
+- **Self-transfer.** Sending a channel endpoint through itself (or through
+  the other endpoint of the same pair) is allowed; it's just an `Arc` clone,
+  with no special-casing needed.
+
+See [IPC.md](IPC.md) for the userspace `Channel::send_with_handle` /
+`Channel::recv_with_handle` API.
 
 ## Event flags
 

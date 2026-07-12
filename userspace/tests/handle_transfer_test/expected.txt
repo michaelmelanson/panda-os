@@ -1,0 +1,5 @@
+Handle transfer test: starting
+Handle transfer test: sent transferred channel to child
+Handle transfer test: received message over transferred channel
+Handle transfer test: child exited successfully
+PASS

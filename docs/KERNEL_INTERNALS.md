@@ -37,7 +37,7 @@ Handlers fall into three categories:
 Handlers never access userspace memory directly. The `UserAccess` type is a `!Send` token that proves the current process's page table is active. It cannot be captured in a `Send` future, so the compiler prevents userspace access from inside async blocks. Instead, handlers follow a copy-in/copy-out discipline:
 
 - **Copy-in**: Handlers that read from userspace (channel send, file write, spawn) receive a `&UserAccess` and copy data into kernel buffers before building their future.
-- **Copy-out**: Handlers that produce data for userspace (channel recv, file read) capture a `UserSlice` (an opaque address+length pair) in their future and return the data via `WriteBack`. The top-level dispatch copies it out after the future completes.
+- **Copy-out**: Handlers that produce data for userspace (channel recv, file read) capture a `UserSlice` (an opaque address+length pair) in their future and return the data via `WriteBack`. The top-level dispatch copies it out after the future completes. A handler that needs to write to a *second*, independent destination in the same completion — channel recv's transferred handle id, alongside the message payload — sets `SyscallResult::handle_writeback` too; the dispatch performs both copies in the same `UserAccess` window.
 
 The `UserSlice` type has private fields, so handler code cannot extract raw addresses. All handler modules have `#![deny(unsafe_code)]`, ensuring they cannot use `unsafe` to bypass these protections. Only `mod.rs` (top-level dispatch) and `user_ptr.rs` (the `UserAccess` implementation) contain `unsafe`.
 

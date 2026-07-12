@@ -229,6 +229,27 @@ impl HandleTable {
     pub fn remove(&mut self, id: HandleId) -> Option<Handle> {
         self.handles.remove(&id)
     }
+
+    /// Number of handles currently held.
+    pub fn len(&self) -> usize {
+        self.handles.len()
+    }
+
+    /// Whether the table is empty.
+    pub fn is_empty(&self) -> bool {
+        self.handles.is_empty()
+    }
+
+    /// Whether the table is at [`MAX_HANDLES_PER_PROCESS`] and cannot accept
+    /// another handle without a slot being freed first.
+    ///
+    /// Used by the channel-recv syscall handler to check capacity *before*
+    /// dequeuing a message with an attachment, so a full table fails the
+    /// recv with `TooManyHandles` while leaving the message queued rather
+    /// than losing the attachment.
+    pub fn is_full(&self) -> bool {
+        self.handles.len() >= MAX_HANDLES_PER_PROCESS
+    }
 }
 
 impl Default for HandleTable {

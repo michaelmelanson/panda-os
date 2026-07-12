@@ -138,6 +138,27 @@ pub trait Resource: Send + Sync {
     }
 }
 
+/// Whether `resource` may be attached to a channel message and transferred
+/// into the receiver's handle table (see `syscall/channel.rs`'s `handle_send`
+/// and `handle_recv`, and docs/SYSCALLS.md "Handle transfer").
+///
+/// Whitelisted by concrete resource identity — `handle_type()` paired with
+/// the matching `as_*` interface — rather than merely "implements
+/// `as_channel()`". [`SpawnHandle`] also implements `as_channel()` (a
+/// process handle doubles as a channel handle to the child so callers can
+/// `send`/`recv` on it directly), but it additionally carries process-coupled
+/// state — exit-code delivery, the process waker, `wait()` semantics — that
+/// isn't yet defined for a resource installed into a *different* process's
+/// handle table. Until that's designed, only plain channel endpoints and
+/// shared buffers are transferable.
+pub fn is_transferable(resource: &Arc<dyn Resource>) -> bool {
+    match resource.handle_type() {
+        HandleType::Buffer => resource.as_shared_buffer().is_some(),
+        HandleType::Channel => resource.as_channel().is_some(),
+        _ => false,
+    }
+}
+
 /// Errors that can occur while loading a binary from a resource URI.
 #[derive(Debug)]
 pub enum LoadBinaryError {

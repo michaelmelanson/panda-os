@@ -139,6 +139,25 @@ impl Channel {
         self.recv(response)
     }
 
+    /// Send a message with an attached handle (blocking if queue is full).
+    ///
+    /// The attached handle is duplicated into the receiver's handle table —
+    /// see docs/IPC.md "Handle transfer". Like SCM_RIGHTS over a Unix domain
+    /// socket, this is a duplicate, not a move: `attach` remains valid in
+    /// the sender's own handle table afterwards.
+    pub fn send_with_handle(&self, msg: &[u8], attach: Handle) -> Result<()> {
+        send_with_handle(self.handle.into(), msg, attach)
+    }
+
+    /// Receive a message (blocking if queue is empty), reporting any handle
+    /// attached to it.
+    ///
+    /// Returns the payload length and `Some(handle)` if the message carried
+    /// an attachment, `None` otherwise. See docs/IPC.md "Handle transfer".
+    pub fn recv_with_handle(&self, buf: &mut [u8]) -> Result<(usize, Option<Handle>)> {
+        recv_with_handle(self.handle.into(), buf)
+    }
+
     /// Consume the channel and return the underlying typed handle without closing it.
     pub fn into_handle(self) -> ChannelHandle {
         let handle = self.handle;
@@ -188,6 +207,21 @@ pub fn try_send(handle: Handle, msg: &[u8]) -> Result<()> {
     }
 }
 
+/// Send a message on a channel with an attached handle (blocking if queue full).
+///
+/// See docs/IPC.md "Handle transfer". The attached handle is duplicated into
+/// the receiver's handle table — `attach` remains valid in the caller's own
+/// handle table afterwards.
+#[inline(always)]
+pub fn send_with_handle(handle: Handle, msg: &[u8], attach: Handle) -> Result<()> {
+    let result = sys::channel::send_msg_with_handle(handle, msg, attach);
+    if result < 0 {
+        Err(error::from_code(result))
+    } else {
+        Ok(())
+    }
+}
+
 /// Receive a message from a channel (blocking if queue empty).
 ///
 /// Returns the number of bytes received on success.
@@ -211,6 +245,23 @@ pub fn try_recv(handle: Handle, buf: &mut [u8]) -> Result<usize> {
         Err(error::from_code(result))
     } else {
         Ok(result as usize)
+    }
+}
+
+/// Receive a message from a channel (blocking if queue empty), reporting
+/// any handle attached to it.
+///
+/// Returns the payload length and `Some(handle)` if the message carried an
+/// attachment, `None` otherwise. See docs/IPC.md "Handle transfer".
+#[inline(always)]
+pub fn recv_with_handle(handle: Handle, buf: &mut [u8]) -> Result<(usize, Option<Handle>)> {
+    let mut out_handle: u64 = 0;
+    let result = sys::channel::recv_msg_with_handle(handle, buf, &mut out_handle);
+    if result < 0 {
+        Err(error::from_code(result))
+    } else {
+        let attached = (out_handle != 0).then(|| Handle::from(out_handle));
+        Ok((result as usize, attached))
     }
 }
 

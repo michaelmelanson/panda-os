@@ -33,6 +33,34 @@ let len = channel::recv(handle, &mut buf)?;
 let len = channel::try_recv(handle, &mut buf)?;
 ```
 
+### Handle transfer
+
+A message can carry one attached handle — a kernel-level analogue of
+SCM_RIGHTS over a Unix domain socket. This is how a process hands another
+process a resource it can't name by path, such as a shared buffer or a
+channel endpoint it created (e.g. sending a client's window buffer to the
+compositor).
+
+```rust
+use libpanda::ipc::Channel;
+
+// Sender: attach `buffer_handle` to the message. The sender keeps its own
+// handle afterwards — this duplicates the resource, it doesn't move it.
+channel.send_with_handle(b"here's a buffer", buffer_handle)?;
+
+// Receiver: recv_with_handle reports the transferred handle, if any.
+let (len, attached) = channel.recv_with_handle(&mut buf)?;
+if let Some(handle) = attached {
+    // `handle` is now installed in this process's own handle table.
+}
+```
+
+Only `SharedBuffer` and `ChannelEndpoint` resources may be attached today —
+other resource types are rejected with `InvalidHandle` at send time. See
+[SYSCALLS.md](SYSCALLS.md#handle-transfer) for the full ABI, the whitelist
+rationale, and edge-case behaviour (handle-table-full, channel-closed, and
+self-transfer).
+
 ### Spawn Creates Channel
 
 When a process spawns a child:

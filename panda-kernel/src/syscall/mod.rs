@@ -279,8 +279,8 @@ fn build_future(
 
         // Channel operations
         OP_CHANNEL_CREATE => Ok(channel::handle_create(ua, arg0)),
-        OP_CHANNEL_SEND => channel::handle_send(ua, handle, arg0, arg1, arg2),
-        OP_CHANNEL_RECV => Ok(channel::handle_recv(handle, arg0, arg1, arg2)),
+        OP_CHANNEL_SEND => channel::handle_send(ua, handle, arg0, arg1, arg2, arg3 as u64),
+        OP_CHANNEL_RECV => Ok(channel::handle_recv(handle, arg0, arg1, arg2, arg3)),
 
         _ => {
             error!("Unknown operation: {:#x}", operation);
@@ -320,10 +320,17 @@ fn poll_and_dispatch(
 
     match future.as_mut().poll(&mut cx) {
         Poll::Ready(result) => {
-            // Copy out writeback data if present (page table is still active)
-            if let Some(wb) = result.writeback {
+            // Copy out writeback data if present (page table is still active).
+            // Both writebacks share one UserAccess token/SMAP window since
+            // they always occur together in the same completed syscall.
+            if result.writeback.is_some() || result.handle_writeback.is_some() {
                 let ua = unsafe { user_ptr::UserAccess::new() };
-                let _ = ua.write(wb.dst, &wb.data);
+                if let Some(wb) = result.writeback {
+                    let _ = ua.write(wb.dst, &wb.data);
+                }
+                if let Some(hwb) = result.handle_writeback {
+                    let _ = ua.write_user(hwb.ptr, &hwb.value);
+                }
             }
             result.code
         }

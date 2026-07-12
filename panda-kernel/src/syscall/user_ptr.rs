@@ -184,8 +184,8 @@ impl UserAccess {
 pub enum SyscallError {
     /// A userspace pointer was outside the valid address range.
     BadUserPointer,
-    /// The handle ID was invalid or of the wrong type.
-    #[allow(dead_code)]
+    /// The handle ID was invalid or of the wrong type (e.g. a channel-send
+    /// attachment that doesn't exist, or isn't a whitelisted resource type).
     InvalidHandle,
 }
 
@@ -205,6 +205,14 @@ pub struct SyscallResult {
     pub code: isize,
     /// Optional data to copy to userspace after the future completes.
     pub writeback: Option<WriteBack>,
+    /// Optional out-of-band `u64` to copy to userspace after the future
+    /// completes, alongside `writeback`. Used by channel recv to deliver a
+    /// transferred handle id through a second, caller-supplied out-pointer
+    /// (see `SyscallResult::write_back_with_handle` and docs/SYSCALLS.md
+    /// "Handle transfer") — `writeback` only expresses a single destination,
+    /// and the handle id's destination is a separate pointer from the
+    /// message payload's.
+    pub handle_writeback: Option<HandleWriteBack>,
 }
 
 impl SyscallResult {
@@ -213,6 +221,7 @@ impl SyscallResult {
         Self {
             code,
             writeback: None,
+            handle_writeback: None,
         }
     }
 
@@ -221,6 +230,7 @@ impl SyscallResult {
         Self {
             code: code.to_isize(),
             writeback: None,
+            handle_writeback: None,
         }
     }
 
@@ -229,6 +239,7 @@ impl SyscallResult {
         Self {
             code,
             writeback: Some(WriteBack { data, dst }),
+            handle_writeback: None,
         }
     }
 
@@ -246,6 +257,30 @@ impl SyscallResult {
                 data: bytes.to_vec(),
                 dst,
             }),
+            handle_writeback: None,
+        }
+    }
+
+    /// A result with data to write back to userspace, plus a `u64` handle id
+    /// to write back through a second, independent out-pointer.
+    ///
+    /// Used by channel recv: the message payload goes to `dst` (the caller's
+    /// buffer), while a transferred handle id (or 0, if the message carried
+    /// no attachment) goes to `handle_ptr`.
+    pub fn write_back_with_handle(
+        code: isize,
+        data: Vec<u8>,
+        dst: UserSlice,
+        handle_ptr: UserPtr<u64>,
+        handle_value: u64,
+    ) -> Self {
+        Self {
+            code,
+            writeback: Some(WriteBack { data, dst }),
+            handle_writeback: Some(HandleWriteBack {
+                ptr: handle_ptr,
+                value: handle_value,
+            }),
         }
     }
 }
@@ -256,4 +291,13 @@ pub struct WriteBack {
     pub data: Vec<u8>,
     /// Destination in userspace.
     pub dst: UserSlice,
+}
+
+/// A single `u64` to copy to userspace after a future completes, at an
+/// address independent of `WriteBack::dst`. See [`SyscallResult::handle_writeback`].
+pub struct HandleWriteBack {
+    /// Destination in userspace.
+    pub ptr: UserPtr<u64>,
+    /// Value to write.
+    pub value: u64,
 }

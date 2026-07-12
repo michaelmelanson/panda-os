@@ -48,13 +48,15 @@ pub mod stdio;
 pub mod terminal;
 
 // Re-export ipc::channel functions at top level for convenience
-pub use ipc::{create_pair, recv, send, try_recv, try_send};
+pub use ipc::{create_pair, recv, recv_with_handle, send, send_with_handle, try_recv, try_send};
 
 /// Channel functions for IPC.
 ///
 /// This module re-exports the channel functions from `ipc` for backwards compatibility.
 pub mod channel {
-    pub use crate::ipc::{Channel, create_pair, recv, send, try_recv, try_send};
+    pub use crate::ipc::{
+        Channel, create_pair, recv, recv_with_handle, send, send_with_handle, try_recv, try_send,
+    };
 }
 
 // Re-export alloc types for convenience

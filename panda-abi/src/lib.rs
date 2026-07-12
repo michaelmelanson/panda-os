@@ -298,9 +298,15 @@ pub enum Operation {
     /// Create a channel pair: (out_handles_ptr) -> 0 or error
     /// Writes two handle IDs to out_handles_ptr: [endpoint_a, endpoint_b]
     ChannelCreate = 0x7_1000,
-    /// Send a message on a channel: (handle, buf_ptr, buf_len, flags) -> 0 or error
+    /// Send a message on a channel: (buf_ptr, buf_len, flags, attach_handle) -> 0 or error
+    /// attach_handle: 0 = no attachment, else a handle in the sender's table to
+    /// duplicate-transfer to the receiver alongside the message. See
+    /// docs/SYSCALLS.md "Handle transfer".
     ChannelSend = 0x7_1001,
-    /// Receive a message from a channel: (handle, buf_ptr, buf_len, flags) -> msg_len or error
+    /// Receive a message from a channel: (buf_ptr, buf_len, flags, out_handle_ptr) -> msg_len or error
+    /// out_handle_ptr: 0 = caller doesn't care, else the address of a `u64`
+    /// that receives the transferred handle id (0 if the message carried no
+    /// attachment). See docs/SYSCALLS.md "Handle transfer".
     ChannelRecv = 0x7_1002,
 }
 
@@ -502,9 +508,9 @@ pub struct MailboxEventResult {
 // Channel operations (0x7_1000 - 0x7_1FFF)
 /// Create a channel pair: (out_handles_ptr) -> 0 or error
 pub const OP_CHANNEL_CREATE: u32 = Operation::ChannelCreate as u32;
-/// Send a message on a channel: (handle, buf_ptr, buf_len, flags) -> 0 or error
+/// Send a message on a channel: (buf_ptr, buf_len, flags, attach_handle) -> 0 or error
 pub const OP_CHANNEL_SEND: u32 = Operation::ChannelSend as u32;
-/// Receive a message from a channel: (handle, buf_ptr, buf_len, flags) -> msg_len or error
+/// Receive a message from a channel: (buf_ptr, buf_len, flags, out_handle_ptr) -> msg_len or error
 pub const OP_CHANNEL_RECV: u32 = Operation::ChannelRecv as u32;
 
 // =============================================================================
