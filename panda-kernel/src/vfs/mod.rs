@@ -185,6 +185,16 @@ struct Mount {
     path: String,
     /// The filesystem implementation
     fs: Arc<dyn Filesystem>,
+    /// Exclusive claim on the backing device, if this filesystem is backed
+    /// by a claimable device (e.g. ext2 on a virtio-blk device). `None` for
+    /// filesystems with no underlying device to claim (e.g. `TarFs`, which
+    /// is backed by the in-memory initrd).
+    ///
+    /// Mounts are currently permanent (there is no unmount syscall), so this
+    /// claim simply lives for the kernel's lifetime once granted; it exists
+    /// to keep a raw `block:` open from being handed out over the same
+    /// device while it's mounted, not to support unmounting.
+    _claim: Option<crate::devices::claims::ClaimGuard>,
 }
 
 static MOUNTS: RwSpinlock<Vec<Mount>> = RwSpinlock::new(Vec::new());
@@ -207,10 +217,21 @@ fn canonicalize(input: &str) -> String {
 
 /// Mount a filesystem at the given path.
 pub fn mount(path: &str, fs: Arc<dyn Filesystem>) {
+    mount_with_claim(path, fs, None);
+}
+
+/// Mount a filesystem at the given path, holding a device claim for as long
+/// as the mount table entry exists (see `mount_ext2`).
+fn mount_with_claim(
+    path: &str,
+    fs: Arc<dyn Filesystem>,
+    claim: Option<crate::devices::claims::ClaimGuard>,
+) {
     let mut mounts = MOUNTS.write();
     mounts.push(Mount {
         path: String::from(path),
         fs,
+        _claim: claim,
     });
 }
 
@@ -400,6 +421,17 @@ pub async fn mount_ext2(mountpoint: &str) -> Result<(), &'static str> {
     let address = &devices[0];
     info!("Attempting to mount ext2 from block device {:?}", address);
 
+    // Claim the device before mounting, so a concurrent raw `block:` open of
+    // the same device is rejected instead of racing the filesystem for
+    // reads and writes underneath it (see `resource::scheme::BlockScheme`).
+    // The guard is stored on the `Mount` entry, so it lives as long as the
+    // mount does.
+    let claim = crate::devices::claims::claim(
+        address.clone(),
+        crate::devices::claims::ClaimOwner::Mount,
+    )
+    .map_err(|_| "Device already claimed (in use elsewhere)")?;
+
     // Get the block device
     let Some(device) = crate::devices::virtio_block::get_device(address) else {
         return Err("Failed to get block device");
@@ -408,6 +440,6 @@ pub async fn mount_ext2(mountpoint: &str) -> Result<(), &'static str> {
 
     // Mount ext2 - Ext2Fs::mount returns Arc<Ext2Fs> which implements Filesystem
     let fs = Ext2Fs::mount(device).await?;
-    mount(mountpoint, fs);
+    mount_with_claim(mountpoint, fs, Some(claim));
     Ok(())
 }

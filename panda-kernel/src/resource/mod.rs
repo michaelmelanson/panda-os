@@ -27,8 +27,8 @@ pub use event_source::{Event, EventSource, KeyEvent};
 pub use mailbox::{Mailbox, MailboxRef};
 pub use process::Process as ProcessInterface;
 pub use scheme::{
-    ConsoleScheme, DirectoryResource, FileScheme, KeyboardResource, KeyboardScheme, SchemeHandler,
-    init as init_schemes, open, readdir, register_scheme,
+    ConsoleScheme, DirectoryResource, FileScheme, KeyboardResource, KeyboardScheme, OpenError,
+    SchemeHandler, init as init_schemes, open, readdir, register_scheme,
 };
 pub use spawn_handle::SpawnHandle;
 pub use surface::{
@@ -180,7 +180,7 @@ pub enum LoadBinaryError {
 /// kernel task executor is running (e.g. boot) can use
 /// `executor::block_on_immediate`.
 pub async fn load_binary(uri: &str) -> Result<*const [u8], LoadBinaryError> {
-    let resource = open(uri).await.ok_or(LoadBinaryError::NotFound)?;
+    let resource = open(uri).await.map_err(|_| LoadBinaryError::NotFound)?;
     let vfs_file = resource
         .as_vfs_file()
         .ok_or(LoadBinaryError::NotReadable)?;

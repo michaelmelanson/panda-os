@@ -81,3 +81,21 @@ let screen = open("surface:/pci/display/0")?;
 |-------------|---------|
 | `scheme:/pci/class/index` | Open device by class/index with specific interface |
 | `scheme:/pci/BB:DD.F` | Open device by PCI address (legacy) |
+
+## Exclusive ownership
+
+Some devices are exclusively claimable: the kernel's claim table
+(`panda-kernel/src/devices/claims.rs`) allows at most one owner per device
+address at a time. An open that loses the race fails with `Busy`
+(`ErrorCode::Busy`); the claim is released when the owning handle is closed
+or its process exits (RAII — the claim guard lives inside the resource).
+
+| Operation | Claim |
+|-----------|-------|
+| `open("surface:/fb0")` | Claims the display device; a second concurrent open fails `Busy` |
+| `mount("ext2", ...)` | Claims the backing block device for the lifetime of the mount |
+| `open("block:/pci/storage/N")` | Claims the block device; fails `Busy` if it is mounted or already open |
+
+Note: the in-kernel compositor currently accesses the framebuffer without a
+claim; that bypass closes when the compositor moves to userspace (see
+`plans/userspace-compositor.md`).

@@ -1,3 +1,4 @@
+pub mod claims;
 pub mod virtio_block;
 pub mod virtio_gpu;
 mod virtio_hal;

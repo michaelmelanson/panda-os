@@ -47,7 +47,7 @@ pub fn handle_open(
     Box::pin(async move {
         debug!("handle_open future: opening {}", uri);
         match resource::open(&uri).await {
-            Some(resource) => {
+            Ok(resource) => {
                 debug!("handle_open future: opened {} successfully", uri);
                 let result = scheduler::with_current_process(|proc| {
                     let handle_id = proc.handles_mut().insert(Arc::from(resource)).ok()?;
@@ -74,9 +74,13 @@ pub fn handle_open(
                     }
                 }
             }
-            None => {
+            Err(resource::OpenError::NotFound) => {
                 info!("handle_open future: failed to open {}", uri);
                 SyscallResult::err(panda_abi::ErrorCode::NotFound)
+            }
+            Err(resource::OpenError::Busy) => {
+                info!("handle_open future: {} is exclusively claimed", uri);
+                SyscallResult::err(panda_abi::ErrorCode::Busy)
             }
         }
     })

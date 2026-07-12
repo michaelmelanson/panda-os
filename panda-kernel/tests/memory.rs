@@ -2,7 +2,6 @@
 #![no_main]
 
 use panda_kernel::memory;
-use x86_64::PhysAddr;
 
 panda_kernel::test_harness!(
     mmio_region_is_in_higher_half,

@@ -897,6 +897,8 @@ pub enum ErrorCode {
     IsDirectory = 20,
     /// Not a directory.
     NotDirectory = 21,
+    /// Resource is exclusively claimed by another owner.
+    Busy = 22,
 }
 
 impl ErrorCode {
@@ -937,6 +939,7 @@ impl ErrorCode {
             19 => Some(ErrorCode::NotEmpty),
             20 => Some(ErrorCode::IsDirectory),
             21 => Some(ErrorCode::NotDirectory),
+            22 => Some(ErrorCode::Busy),
             _ => None,
         }
     }
@@ -967,6 +970,7 @@ impl core::fmt::Display for ErrorCode {
             ErrorCode::NotEmpty => write!(f, "directory not empty"),
             ErrorCode::IsDirectory => write!(f, "is a directory"),
             ErrorCode::NotDirectory => write!(f, "not a directory"),
+            ErrorCode::Busy => write!(f, "resource busy"),
         }
     }
 }

@@ -64,6 +64,8 @@ members = [
   "userspace/tests/handle_limit_test",
   "userspace/tests/handle_transfer_test",
   "userspace/tests/handle_transfer_child",
+  "userspace/tests/claim_test",
+  "userspace/tests/claim_child",
   "crates/ring-buffer",
 ]
 

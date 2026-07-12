@@ -131,6 +131,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "claim_child"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
+name = "claim_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
 name = "const_fn"
 version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

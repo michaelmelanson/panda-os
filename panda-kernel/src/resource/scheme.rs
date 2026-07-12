@@ -16,6 +16,7 @@ use spinning_top::{RwSpinlock, Spinlock};
 use x86_64::instructions::port::Port;
 
 use crate::device_path;
+use crate::devices::claims::{ClaimGuard, ClaimOwner};
 use crate::devices::virtio_block;
 use crate::devices::virtio_keyboard::{self, VirtioKeyboard};
 use crate::process::waker::IoWaker;
@@ -26,11 +27,21 @@ use super::char_output::{CharOutError, CharacterOutput};
 use super::directory::{DirEntry, Directory};
 use super::event_source::{Event, EventSource, KeyEvent};
 
+/// Error returned when opening a resource via a scheme fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenError {
+    /// No resource exists at the given URI.
+    NotFound,
+    /// The resource exists but is exclusively claimed by another owner
+    /// (see `crate::devices::claims`).
+    Busy,
+}
+
 /// A handler for a resource scheme (e.g., "file", "console", "pci")
 #[async_trait]
 pub trait SchemeHandler: Send + Sync {
     /// Open a resource at the given path within this scheme
-    async fn open(&self, path: &str) -> Option<Box<dyn Resource>>;
+    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError>;
 
     /// List directory contents at the given path within this scheme
     async fn readdir(&self, _path: &str) -> Option<Vec<DirEntry>> {
@@ -49,12 +60,15 @@ pub fn register_scheme(name: &'static str, handler: Arc<dyn SchemeHandler>) {
 }
 
 /// Open a resource by URI (e.g., "file:/initrd/init" or "console:/serial/0")
-pub async fn open(uri: &str) -> Option<Box<dyn Resource>> {
-    let (scheme, path) = uri.split_once(':')?;
+pub async fn open(uri: &str) -> Result<Box<dyn Resource>, OpenError> {
+    let (scheme, path) = uri.split_once(':').ok_or(OpenError::NotFound)?;
     // Clone the handler to avoid holding the lock across await
     let handler: Arc<dyn SchemeHandler> = {
         let schemes = SCHEMES.read();
-        schemes.get(scheme).map(|h| Arc::clone(h))?
+        schemes
+            .get(scheme)
+            .map(|h| Arc::clone(h))
+            .ok_or(OpenError::NotFound)?
     };
     handler.open(path).await
 }
@@ -80,7 +94,7 @@ pub struct FileScheme;
 
 #[async_trait]
 impl SchemeHandler for FileScheme {
-    async fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
+    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError> {
         // Try it as a directory first. This resolves the path with a single
         // lookup: both ext2 and TarFs fail `readdir` with `NotFound` for a
         // path that names a file (or doesn't exist), so a non-directory
@@ -88,15 +102,15 @@ impl SchemeHandler for FileScheme {
         // separate `stat` call to decide which lookup to do.
         if let Ok(entries) = vfs::readdir(path).await {
             // Return a directory resource with VFS path for mutation support
-            return Some(Box::new(DirectoryResource::with_vfs_path(
+            return Ok(Box::new(DirectoryResource::with_vfs_path(
                 entries,
                 alloc::string::String::from(path),
             )));
         }
 
         // Open as a file
-        let file = vfs::open(path).await.ok()?;
-        Some(Box::new(VfsFileResource::new(file)))
+        let file = vfs::open(path).await.map_err(|_| OpenError::NotFound)?;
+        Ok(Box::new(VfsFileResource::new(file)))
     }
 
     async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
@@ -193,10 +207,10 @@ pub struct ConsoleScheme;
 
 #[async_trait]
 impl SchemeHandler for ConsoleScheme {
-    async fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
+    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError> {
         match path {
-            "/serial/0" => Some(Box::new(SerialConsoleResource::new(0x3f8))),
-            _ => None,
+            "/serial/0" => Ok(Box::new(SerialConsoleResource::new(0x3f8))),
+            _ => Err(OpenError::NotFound),
         }
     }
 
@@ -257,11 +271,11 @@ pub struct KeyboardScheme;
 
 #[async_trait]
 impl SchemeHandler for KeyboardScheme {
-    async fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
+    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError> {
         // Resolve path like "/pci/input/0" or "/pci/00:03.0"
-        let address = device_path::resolve(path)?;
-        let keyboard = virtio_keyboard::get_keyboard(&address)?;
-        Some(Box::new(KeyboardResource { keyboard }))
+        let address = device_path::resolve(path).ok_or(OpenError::NotFound)?;
+        let keyboard = virtio_keyboard::get_keyboard(&address).ok_or(OpenError::NotFound)?;
+        Ok(Box::new(KeyboardResource { keyboard }))
     }
 
     async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
@@ -336,17 +350,41 @@ pub struct SurfaceScheme;
 
 #[async_trait]
 impl SchemeHandler for SurfaceScheme {
-    async fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
+    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError> {
         match path {
             "/window" => {
                 let window = crate::compositor::create_window();
-                Some(Box::new(super::window::WindowResource { window }))
+                Ok(Box::new(super::window::WindowResource { window }))
             }
             "/fb0" => {
-                // Return the global framebuffer surface
-                super::get_framebuffer_surface().map(|s| Box::new(*s) as Box<dyn Resource>)
+                // The legacy "/fb0" path doesn't go through `device_path::resolve`
+                // (it isn't a "/pci/..." path), so resolve the display's
+                // DeviceAddress the same way a "/pci/display/0" open would:
+                // the first PCI device in the display class.
+                let address = crate::pci::get_device_by_class(
+                    crate::pci::DeviceClass::Display.code(),
+                    0,
+                )
+                .ok_or(OpenError::NotFound)?;
+                let claim = crate::devices::claims::claim(address, ClaimOwner::Display)
+                    .map_err(|_| OpenError::Busy)?;
+
+                // NOTE (compositor bypass): the in-kernel compositor
+                // (crate::compositor) reads and writes the framebuffer
+                // directly via `get_framebuffer_surface()`, without going
+                // through this scheme or this claim. That bypass is a known,
+                // temporary gap that closes once the compositor moves to
+                // userspace (see plans/userspace-compositor.md); until then,
+                // this claim only protects against concurrent *userspace*
+                // opens of "/fb0", not against the in-kernel compositor.
+                let surface =
+                    super::get_framebuffer_surface().ok_or(OpenError::NotFound)?;
+                Ok(Box::new(ClaimedFramebufferSurface {
+                    surface: *surface,
+                    _claim: claim,
+                }))
             }
-            _ => None,
+            _ => Err(OpenError::NotFound),
         }
     }
 
@@ -367,6 +405,26 @@ impl SchemeHandler for SurfaceScheme {
     }
 }
 
+/// A framebuffer surface opened via `surface:/fb0`, holding the display's
+/// exclusive claim for the lifetime of the returned handle.
+///
+/// Dropping this (on `close()`, or when a process's handle table is dropped
+/// at exit) releases the claim, so a second `surface:/fb0` open can succeed.
+struct ClaimedFramebufferSurface {
+    surface: super::FramebufferSurface,
+    _claim: ClaimGuard,
+}
+
+impl Resource for ClaimedFramebufferSurface {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        self.surface.handle_type()
+    }
+
+    fn as_surface(&self) -> Option<&dyn super::Surface> {
+        Some(&self.surface)
+    }
+}
+
 // =============================================================================
 // Block Scheme - block device access
 // =============================================================================
@@ -380,18 +438,27 @@ pub struct BlockScheme;
 
 #[async_trait]
 impl SchemeHandler for BlockScheme {
-    async fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
+    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError> {
         // Resolve path like "/pci/storage/0" or "/pci/00:04.0"
-        let address = device_path::resolve(path)?;
+        let address = device_path::resolve(path).ok_or(OpenError::NotFound)?;
+
+        // Claim the device before handing out raw access to it. If a
+        // filesystem is mounted on this device (see `vfs::mount_ext2`,
+        // which holds a `Mount`-tagged claim for as long as the mount is
+        // active), this fails with `Busy` instead of minting a second,
+        // unsynchronized writer underneath the mounted filesystem.
+        let claim = crate::devices::claims::claim(address.clone(), ClaimOwner::RawOpen)
+            .map_err(|_| OpenError::Busy)?;
 
         // Try virtio-blk registry (future: try AHCI, NVMe registries too)
-        let device = virtio_block::get_device(&address)?;
+        let device = virtio_block::get_device(&address).ok_or(OpenError::NotFound)?;
         let device: Arc<dyn super::BlockDevice> = Arc::new(device);
 
         // Wrap in a VFS file for async access
         let file: Box<dyn vfs::File> = Box::new(vfs::BlockDeviceFile::new(device));
-        Some(Box::new(BlockDeviceResource {
+        Ok(Box::new(BlockDeviceResource {
             file: Spinlock::new(file),
+            _claim: claim,
         }))
     }
 
@@ -403,8 +470,11 @@ impl SchemeHandler for BlockScheme {
 /// Resource wrapper for a block device.
 ///
 /// Block devices are exposed through the VFS file interface for async I/O.
+/// Holds the device's exclusive claim for the lifetime of this resource;
+/// dropping it (on `close()` or process exit) releases the claim.
 struct BlockDeviceResource {
     file: Spinlock<Box<dyn vfs::File>>,
+    _claim: ClaimGuard,
 }
 
 impl Resource for BlockDeviceResource {

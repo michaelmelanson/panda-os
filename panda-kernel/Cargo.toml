@@ -111,3 +111,7 @@ harness = false
 [[test]]
 name = "handle_transfer"
 harness = false
+
+[[test]]
+name = "claims"
+harness = false
