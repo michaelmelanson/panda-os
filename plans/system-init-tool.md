@@ -711,13 +711,24 @@ Implement the `Protocol` trait, message framing, handshake, and client/server wr
 
 ### Phase 4: Service scheme
 
-Add a kernel-side `service:` scheme that brokers channel connections. The path is a flat namespace — `service:/{name}` — where the name maps to a broker channel. The protocol framework from phase 3 provides the handshake that occurs after the channel is established.
+> **Re-scoped by `plans/ROADMAP.md` (M2, "typed schemes" decision).** There
+> is no `service:` name broker and no `OP_SERVICE_REGISTER`. Services
+> register *schemes* directly via the userspace scheme provider mechanism
+> (`OP_SCHEME_REGISTER`, roadmap M2.2): init registers a scheme (e.g.
+> `manager:`), and any process reaches it with an ordinary
+> `environment::open("manager:/...")` — indistinguishable from a
+> kernel-provided scheme. Discovery is `readdir("scheme:/")` (roadmap
+> M2.1). The protocol framework from phase 3 is unchanged: the handshake
+> runs over the channel/connection the provider mechanism establishes.
+> The remainder of this phase's original text is retained below only as
+> design history; implement against the provider mechanism instead.
 
-1. At boot, after init creates its mailbox, it registers a channel endpoint with the kernel via `OP_SERVICE_REGISTER`. The kernel stores this endpoint in the `service:` scheme handler.
-2. When any process opens `service:/manager`, the `ServiceScheme` handler creates a channel pair, sends one endpoint to init via the broker channel, returns the other to the caller.
-3. Init attaches each incoming connection to its mailbox. On first message, it performs the protocol handshake — verifying the UUID and negotiating capabilities.
-
-Initially only init registers. The design generalizes to per-process registration for the userspace driver migration.
+Original (superseded) design: a kernel-side `service:` scheme brokering
+channel connections in a flat `service:/{name}` namespace, registered via
+`OP_SERVICE_REGISTER`, with the kernel creating a channel pair per open and
+forwarding one endpoint to the registrant. The generalization it anticipated
+("per-process registration for the userspace driver migration") is exactly
+what `OP_SCHEME_REGISTER` provides.
 
 **Files:**
 - `panda-abi/src/lib.rs` — add `OP_SERVICE_REGISTER` operation code

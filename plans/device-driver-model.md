@@ -1,9 +1,17 @@
 # Userspace device driver model
 
+> **Naming re-scope (`plans/ROADMAP.md` M2, "typed schemes" decision).**
+> Wherever this plan says `OP_SERVICE_REGISTER("keyboard")` /
+> `service:/keyboard`, read: the driver registers a *scheme* via
+> `OP_SCHEME_REGISTER` (roadmap M2.2) — e.g. the keyboard driver registers
+> `keyboard:` (taking over the name from the kernel driver it replaces) and
+> clients keep opening `keyboard:/...` unchanged. There is no `service:`
+> namespace. Discovery is `readdir("scheme:/")`.
+
 ## Prerequisites
 
 - IOMMU support (`plans/iommu.md`) — must be complete before Phase 6. Phases 1–5 can proceed in parallel.
-- Service protocol framework (`plans/system-init-tool.md` Phase 3) — drivers register as services after initialisation.
+- Service protocol framework (`plans/system-init-tool.md` Phase 3) — drivers register their schemes after initialisation (see naming re-scope above).
 
 ## Problem
 
