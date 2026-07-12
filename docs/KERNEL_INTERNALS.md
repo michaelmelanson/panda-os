@@ -123,9 +123,11 @@ Each handle wraps an `Arc<dyn Resource>` plus a per-handle read offset for file-
 
 Resources are kernel objects accessible via handles, defined in `panda-kernel/src/resource/mod.rs`. The `Resource` trait uses dynamic dispatch through `as_*` methods—each resource implements whichever interfaces it supports.
 
-For example, a keyboard resource implements `as_event_source()` and `as_keyboard()`. A channel implements `as_channel()`. A file implements `as_vfs_file()`. Callers check which interfaces are available and use the appropriate one.
+For example, a keyboard resource implements `as_event_source()`. A channel implements `as_channel()`. A file implements `as_vfs_file()`. Callers check which interfaces are available and use the appropriate one.
 
-Resources can also provide a waker for blocking, report supported events for mailbox integration, and attach to mailboxes for event notification.
+Resources can also provide a waker for blocking, and participate in the generic event mechanism: `supported_events()` declares which `EVENT_*` flags a resource can generate, `poll_events()` reports currently-pending ones, and `attach_mailbox()` registers a mailbox to receive them. Keyboard, channel, and spawn-handle resources all attach through this one path (there are no per-type attach special cases).
+
+Shared handler boilerplate — reading strings from userspace, resolving a handle to a resource `Arc` for use inside a blocking `poll_fn`, and mailbox attachment on open/spawn — lives in `syscall/helpers.rs`.
 
 ## ELF loading and process startup
 
@@ -174,12 +176,14 @@ Kernel tasks are scheduled alongside userspace processes as `SchedulableEntity::
 | File | Description |
 |------|-------------|
 | `syscall/mod.rs` | Syscall dispatch, poll-once, copy-out |
+| `syscall/helpers.rs` | Shared handler boilerplate (read_user_str, resolve_resource, mailbox attach) |
 | `syscall/user_ptr.rs` | UserAccess, UserSlice, SyscallResult |
 | `syscall/entry.rs` | Assembly entry/exit |
+| `boot.rs` | Shared early-init + higher-half jump sequence |
 | `scheduler/mod.rs` | Process and task scheduling |
 | `process/mod.rs` | Process struct and lifecycle |
 | `process/state.rs` | SavedState for context switches |
-| `process/waker.rs` | Waker abstractions |
+| `process/waker.rs` | IoWaker and ProcessWaker |
 | `process/exec.rs` | return_from_syscall/interrupt |
 | `handle.rs` | Handle table |
 | `resource/mod.rs` | Resource trait and interfaces |

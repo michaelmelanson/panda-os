@@ -284,15 +284,15 @@ pub struct BlockDeviceFile {
 }
 ```
 
-## Synchronous Polling
+## Driving VFS futures before the scheduler runs
 
-For testing or contexts without a scheduler, `poll_immediate` polls a future once:
-
-```rust
-pub fn poll_immediate<T>(future: Pin<&mut impl Future<Output = T>>) -> Option<T>;
-```
-
-Returns `Some(result)` if the future completes immediately (e.g., TarFs), `None` if pending.
+VFS operations are async. At runtime they are driven by the kernel task
+executor via syscall futures. During early boot, before the scheduler and
+executor exist, `executor::block_on_immediate(future)` polls a future once
+with a no-op waker and panics if it is not immediately ready — valid only for
+in-memory filesystems like TarFs whose operations always resolve on the first
+poll. Boot uses this to load the init binary through the ordinary
+`resource::load_binary` path.
 
 ## Files
 
