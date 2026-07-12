@@ -58,6 +58,19 @@ pub enum FsError {
     IoError,
 }
 
+impl From<crate::resource::BlockError> for FsError {
+    /// Preserve the underlying block error's meaning rather than collapsing
+    /// every failure into a single variant.
+    fn from(err: crate::resource::BlockError) -> Self {
+        match err {
+            crate::resource::BlockError::InvalidOffset => FsError::InvalidOffset,
+            crate::resource::BlockError::NotWritable => FsError::NotWritable,
+            crate::resource::BlockError::NotReadable => FsError::NotReadable,
+            crate::resource::BlockError::IoError => FsError::IoError,
+        }
+    }
+}
+
 /// File metadata
 #[derive(Debug, Clone)]
 pub struct FileStat {
@@ -327,21 +340,13 @@ impl BlockDeviceFile {
 #[async_trait]
 impl File for BlockDeviceFile {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {
-        let n = self
-            .device
-            .read_at(self.pos, buf)
-            .await
-            .map_err(|_| FsError::NotReadable)?;
+        let n = self.device.read_at(self.pos, buf).await?;
         self.pos += n as u64;
         Ok(n)
     }
 
     async fn write(&mut self, buf: &[u8]) -> Result<usize, FsError> {
-        let n = self
-            .device
-            .write_at(self.pos, buf)
-            .await
-            .map_err(|_| FsError::NotWritable)?;
+        let n = self.device.write_at(self.pos, buf).await?;
         self.pos += n as u64;
         Ok(n)
     }

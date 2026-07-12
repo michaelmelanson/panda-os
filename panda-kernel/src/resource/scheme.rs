@@ -81,23 +81,17 @@ pub struct FileScheme;
 #[async_trait]
 impl SchemeHandler for FileScheme {
     async fn open(&self, path: &str) -> Option<Box<dyn Resource>> {
-        // Check if it's a directory first
-        if let Ok(stat) = vfs::stat(path).await {
-            if stat.is_dir {
-                // Return a directory resource with VFS path for mutation support
-                let entries = vfs::readdir(path).await.ok()?;
-                let dir_entries: Vec<DirEntry> = entries
-                    .into_iter()
-                    .map(|e| DirEntry {
-                        name: e.name,
-                        is_dir: e.is_dir,
-                    })
-                    .collect();
-                return Some(Box::new(DirectoryResource::with_vfs_path(
-                    dir_entries,
-                    alloc::string::String::from(path),
-                )));
-            }
+        // Try it as a directory first. This resolves the path with a single
+        // lookup: both ext2 and TarFs fail `readdir` with `NotFound` for a
+        // path that names a file (or doesn't exist), so a non-directory
+        // falls straight through to the file-open path below without a
+        // separate `stat` call to decide which lookup to do.
+        if let Ok(entries) = vfs::readdir(path).await {
+            // Return a directory resource with VFS path for mutation support
+            return Some(Box::new(DirectoryResource::with_vfs_path(
+                entries,
+                alloc::string::String::from(path),
+            )));
         }
 
         // Open as a file
@@ -106,16 +100,7 @@ impl SchemeHandler for FileScheme {
     }
 
     async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
-        let entries = vfs::readdir(path).await.ok()?;
-        Some(
-            entries
-                .into_iter()
-                .map(|e| DirEntry {
-                    name: e.name,
-                    is_dir: e.is_dir,
-                })
-                .collect(),
-        )
+        vfs::readdir(path).await.ok()
     }
 }
 

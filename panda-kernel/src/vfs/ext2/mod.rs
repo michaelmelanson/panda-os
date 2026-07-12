@@ -21,6 +21,7 @@ use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use async_trait::async_trait;
+use core::ops::ControlFlow;
 use spinning_top::RwSpinlock;
 
 use crate::executor::async_mutex::AsyncMutex;
@@ -85,10 +86,7 @@ async fn read_block_ptr(
     }
     let offset = block as u64 * block_size as u64 + index as u64 * 4;
     let mut buf = [0u8; 4];
-    device
-        .read_at(offset, &mut buf)
-        .await
-        .map_err(|_| FsError::NotReadable)?;
+    device.read_at(offset, &mut buf).await?;
     Ok(u32::from_le_bytes(buf))
 }
 
@@ -108,10 +106,7 @@ async fn write_block_ptr(
     }
     let offset = block as u64 * block_size as u64 + index as u64 * 4;
     let buf = value.to_le_bytes();
-    device
-        .write_at(offset, &buf)
-        .await
-        .map_err(|_| FsError::IoError)?;
+    device.write_at(offset, &buf).await?;
     Ok(())
 }
 
@@ -267,10 +262,7 @@ impl Ext2Fs {
         // The compile-time assert below ensures the buffer is large enough.
         const _: () = assert!(core::mem::size_of::<Inode>() <= 128);
         let mut buf = [0u8; 128];
-        self.device
-            .read_at(offset, &mut buf)
-            .await
-            .map_err(|_| FsError::NotReadable)?;
+        self.device.read_at(offset, &mut buf).await?;
 
         Ok(unsafe { core::ptr::read(buf.as_ptr() as *const Inode) })
     }
@@ -301,117 +293,111 @@ impl Ext2Fs {
         Ok(current)
     }
 
-    /// Find directory entry by name.
-    async fn find_entry(&self, dir: &Inode, name: &str) -> Result<u32, FsError> {
+    /// Walk every live (non-deleted) directory entry in `dir`, calling `f`
+    /// with the raw entry header and its (unvalidated-UTF-8) name bytes.
+    ///
+    /// This is the single iteration primitive shared by `find_entry`,
+    /// `list_dir`, and `is_dir_empty` — it owns the block-by-block scan and
+    /// the on-disk record validation so those callers only need to decide
+    /// what to do with each entry.
+    ///
+    /// Validation rules (matching ext2 on-disk invariants):
+    /// - `rec_len` must be at least the 8-byte header and must not extend
+    ///   past the end of the block. A violation means the rest of the block
+    ///   can't be trusted, so the scan of that block stops there (but other
+    ///   blocks are still scanned).
+    /// - `name_len` must fit within `rec_len`. A violation means just that
+    ///   one entry is untrustworthy, so it is skipped and the scan continues
+    ///   with the next entry.
+    /// - Deleted entries (`inode == 0`) are skipped without calling `f`.
+    ///
+    /// Returns `Ok(Some(value))` if `f` returns `ControlFlow::Break(value)`
+    /// for some entry (stopping the walk early), or `Ok(None)` if every
+    /// block is scanned without a break.
+    async fn for_each_dir_entry<T>(
+        &self,
+        dir: &Inode,
+        mut f: impl FnMut(&DirEntryRaw, &[u8]) -> ControlFlow<T>,
+    ) -> Result<Option<T>, FsError> {
         let size = dir.size();
         let block_len = self.block_size as usize;
         let dir_entry_size = core::mem::size_of::<DirEntryRaw>();
-        let mut offset = 0u64;
+        let num_blocks = size.div_ceil(self.block_size as u64) as u32;
         let mut block_buf = alloc::vec![0u8; block_len];
 
-        while offset < size {
-            let file_block = (offset / self.block_size as u64) as u32;
+        for file_block in 0..num_blocks {
             let block_num = self.get_block(dir, file_block).await?;
-
-            if block_num != 0 {
-                self.read_block(block_num, &mut block_buf).await?;
-
-                let mut pos = 0usize;
-                while pos < block_len {
-                    // Bounds check before reading DirEntryRaw
-                    if pos + dir_entry_size > block_len {
-                        break;
-                    }
-
-                    let entry: DirEntryRaw =
-                        unsafe { core::ptr::read(block_buf[pos..].as_ptr() as *const _) };
-
-                    // rec_len must be at least 8 (header size) and must not extend past block
-                    if entry.rec_len < 8 || pos + entry.rec_len as usize > block_len {
-                        log::warn!("ext2: invalid dir entry rec_len {} at offset {}", entry.rec_len, pos);
-                        break;
-                    }
-
-                    if entry.inode != 0 {
-                        let name_len = entry.name_len as usize;
-                        // Validate name_len fits within the record
-                        if name_len > entry.rec_len as usize - 8 || name_len > 255 {
-                            log::warn!("ext2: invalid dir entry name_len {} at offset {}", name_len, pos);
-                            pos += entry.rec_len as usize;
-                            continue;
-                        }
-                        if name_len == name.len() {
-                            let name_start = pos + 8;
-                            let entry_name = &block_buf[name_start..name_start + name_len];
-                            if entry_name == name.as_bytes() {
-                                return Ok(entry.inode);
-                            }
-                        }
-                    }
-                    pos += entry.rec_len as usize;
-                }
+            if block_num == 0 {
+                continue;
             }
-            offset += self.block_size as u64;
+
+            self.read_block(block_num, &mut block_buf).await?;
+
+            let mut pos = 0usize;
+            while pos < block_len {
+                // Bounds check before reading DirEntryRaw
+                if pos + dir_entry_size > block_len {
+                    break;
+                }
+
+                let entry: DirEntryRaw =
+                    unsafe { core::ptr::read(block_buf[pos..].as_ptr() as *const _) };
+
+                // rec_len must be at least 8 (header size) and must not extend past block
+                if entry.rec_len < 8 || pos + entry.rec_len as usize > block_len {
+                    log::warn!("ext2: invalid dir entry rec_len {} at offset {}", entry.rec_len, pos);
+                    break;
+                }
+
+                if entry.inode != 0 {
+                    let name_len = entry.name_len as usize;
+                    // Validate name_len fits within the record
+                    if name_len > entry.rec_len as usize - 8 {
+                        log::warn!("ext2: invalid dir entry name_len {} at offset {}", name_len, pos);
+                    } else {
+                        let name_start = pos + 8;
+                        let name_bytes = &block_buf[name_start..name_start + name_len];
+                        if let ControlFlow::Break(value) = f(&entry, name_bytes) {
+                            return Ok(Some(value));
+                        }
+                    }
+                }
+                pos += entry.rec_len as usize;
+            }
         }
-        Err(FsError::NotFound)
+        Ok(None)
+    }
+
+    /// Find directory entry by name.
+    async fn find_entry(&self, dir: &Inode, name: &str) -> Result<u32, FsError> {
+        let name_bytes = name.as_bytes();
+        let found = self
+            .for_each_dir_entry(dir, |entry, entry_name| {
+                if entry_name == name_bytes {
+                    ControlFlow::Break(entry.inode)
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .await?;
+        found.ok_or(FsError::NotFound)
     }
 
     /// List directory entries.
     async fn list_dir(&self, dir: &Inode) -> Result<Vec<DirEntry>, FsError> {
         let mut entries = Vec::new();
-        let size = dir.size();
-        let block_len = self.block_size as usize;
-        let dir_entry_size = core::mem::size_of::<DirEntryRaw>();
-        let mut offset = 0u64;
-        let mut block_buf = alloc::vec![0u8; block_len];
-
-        while offset < size {
-            let file_block = (offset / self.block_size as u64) as u32;
-            let block_num = self.get_block(dir, file_block).await?;
-
-            if block_num != 0 {
-                self.read_block(block_num, &mut block_buf).await?;
-
-                let mut pos = 0usize;
-                while pos < block_len {
-                    // Bounds check before reading DirEntryRaw
-                    if pos + dir_entry_size > block_len {
-                        break;
-                    }
-
-                    let entry: DirEntryRaw =
-                        unsafe { core::ptr::read(block_buf[pos..].as_ptr() as *const _) };
-
-                    // rec_len must be at least 8 (header size) and must not extend past block
-                    if entry.rec_len < 8 || pos + entry.rec_len as usize > block_len {
-                        log::warn!("ext2: invalid dir entry rec_len {} at offset {}", entry.rec_len, pos);
-                        break;
-                    }
-
-                    if entry.inode != 0 {
-                        let name_len = entry.name_len as usize;
-                        // Validate name_len fits within the record
-                        if name_len > entry.rec_len as usize - 8 || name_len > 255 {
-                            log::warn!("ext2: invalid dir entry name_len {} at offset {}", name_len, pos);
-                            pos += entry.rec_len as usize;
-                            continue;
-                        }
-                        let name_start = pos + 8;
-                        let name_bytes = &block_buf[name_start..name_start + name_len];
-                        if let Ok(name) = core::str::from_utf8(name_bytes) {
-                            if name != "." && name != ".." {
-                                entries.push(DirEntry {
-                                    name: String::from(name),
-                                    is_dir: entry.file_type == FT_DIR,
-                                });
-                            }
-                        }
-                    }
-                    pos += entry.rec_len as usize;
+        self.for_each_dir_entry(dir, |entry, name_bytes| {
+            if let Ok(name) = core::str::from_utf8(name_bytes) {
+                if name != "." && name != ".." {
+                    entries.push(DirEntry {
+                        name: String::from(name),
+                        is_dir: entry.file_type == FT_DIR,
+                    });
                 }
             }
-            offset += self.block_size as u64;
-        }
+            ControlFlow::<()>::Continue(())
+        })
+        .await?;
         Ok(entries)
     }
 
@@ -556,10 +542,7 @@ impl Ext2Fs {
             return Err(FsError::NotReadable);
         }
         let offset = block as u64 * self.block_size as u64;
-        self.device
-            .read_at(offset, buf)
-            .await
-            .map_err(|_| FsError::NotReadable)?;
+        self.device.read_at(offset, buf).await?;
         Ok(())
     }
 
@@ -585,10 +568,7 @@ impl Ext2Fs {
             return Err(FsError::IoError);
         }
         let offset = block as u64 * self.block_size as u64;
-        self.device
-            .write_at(offset, data)
-            .await
-            .map_err(|_| FsError::IoError)?;
+        self.device.write_at(offset, data).await?;
         Ok(())
     }
 
@@ -617,10 +597,7 @@ impl Ext2Fs {
             inode_table as u64 * self.block_size as u64 + index as u64 * self.inode_size as u64;
 
         let bytes = inode.to_bytes();
-        self.device
-            .write_at(offset, &bytes)
-            .await
-            .map_err(|_| FsError::IoError)?;
+        self.device.write_at(offset, &bytes).await?;
         Ok(())
     }
 
@@ -633,10 +610,7 @@ impl Ext2Fs {
             let m = self.mutable.read();
             m.superblock.to_bytes()
         };
-        self.device
-            .write_at(SUPERBLOCK_OFFSET, &bytes)
-            .await
-            .map_err(|_| FsError::IoError)?;
+        self.device.write_at(SUPERBLOCK_OFFSET, &bytes).await?;
         Ok(())
     }
 
@@ -666,10 +640,7 @@ impl Ext2Fs {
         };
         let offset = bgdt_offset + group_num as u64 * desc_size;
 
-        self.device
-            .write_at(offset, &bytes)
-            .await
-            .map_err(|_| FsError::IoError)?;
+        self.device.write_at(offset, &bytes).await?;
         Ok(())
     }
 

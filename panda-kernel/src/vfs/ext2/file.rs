@@ -109,11 +109,7 @@ impl Ext2File {
         let ptrs_per_block = (block_size / 4) as usize;
         let mut buf = vec![0u8; block_size as usize];
         let offset = block as u64 * block_size as u64;
-        self.fs
-            .device()
-            .read_at(offset, &mut buf)
-            .await
-            .map_err(|_| FsError::NotReadable)?;
+        self.fs.device().read_at(offset, &mut buf).await?;
 
         // Parse all pointers from the block
         let pointers: Vec<u32> = (0..ptrs_per_block)
@@ -159,8 +155,7 @@ impl File for Ext2File {
                 self.fs
                     .device()
                     .read_at(disk_off, &mut buf[done..done + chunk])
-                    .await
-                    .map_err(|_| FsError::NotReadable)?;
+                    .await?;
             }
 
             done += chunk;

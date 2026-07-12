@@ -2,14 +2,11 @@
 
 use alloc::string::String;
 
-/// A directory entry.
-#[derive(Debug, Clone)]
-pub struct DirEntry {
-    /// Entry name (not full path).
-    pub name: String,
-    /// Whether this entry is a directory.
-    pub is_dir: bool,
-}
+// The resource layer only ever needs a name and an is-dir flag for a
+// directory entry — exactly what `vfs::DirEntry` already provides — so we
+// reuse that type here rather than maintaining a duplicate struct that
+// scheme.rs would otherwise have to field-map to and from.
+pub use crate::vfs::DirEntry;
 
 /// Interface for directory listing.
 ///

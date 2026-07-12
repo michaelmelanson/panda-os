@@ -29,6 +29,7 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
+use core::ops::ControlFlow;
 
 use super::Ext2Fs;
 use super::guards::InodeGuard;
@@ -351,50 +352,17 @@ impl Ext2Fs {
     /// * `Ok(false)` - Directory contains entries other than `.` and `..`
     /// * `Err(_)` - I/O error reading directory blocks
     pub async fn is_dir_empty(&self, dir_inode: &Inode) -> Result<bool, FsError> {
-        let block_size = self.block_size() as usize;
-        let dir_size = dir_inode.size();
-        let num_blocks =
-            ((dir_size + self.block_size() as u64 - 1) / self.block_size() as u64) as u32;
-
-        let mut block_buf = vec![0u8; block_size];
-
-        for file_block in 0..num_blocks {
-            let block_num = self.get_block(dir_inode, file_block).await?;
-            if block_num == 0 {
-                continue;
-            }
-
-            self.read_block(block_num, &mut block_buf).await?;
-
-            let mut pos = 0usize;
-            while pos < block_size {
-                if pos + DIR_ENTRY_HEADER_SIZE > block_size {
-                    break;
+        let found_non_dot_entry = self
+            .for_each_dir_entry(dir_inode, |_entry, name_bytes| {
+                if name_bytes != b"." && name_bytes != b".." {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
                 }
+            })
+            .await?;
 
-                let entry: DirEntryRaw =
-                    unsafe { core::ptr::read(block_buf[pos..].as_ptr() as *const _) };
-
-                if entry.rec_len < 8 || pos + entry.rec_len as usize > block_size {
-                    break;
-                }
-
-                if entry.inode != 0 {
-                    let name_len = entry.name_len as usize;
-                    if name_len <= entry.rec_len as usize - 8 {
-                        let name = &block_buf[pos + 8..pos + 8 + name_len];
-                        // Skip "." and ".." entries
-                        if name != b"." && name != b".." {
-                            return Ok(false);
-                        }
-                    }
-                }
-
-                pos += entry.rec_len as usize;
-            }
-        }
-
-        Ok(true)
+        Ok(found_non_dot_entry.is_none())
     }
 }
 

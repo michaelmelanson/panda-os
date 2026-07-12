@@ -32,20 +32,20 @@ use panda_elf::{Elf64Phdr, ElfError};
 use x86_64::VirtAddr;
 
 use crate::memory::{self, Mapping, MemoryMappingOptions, USER_ADDR_MAX};
-use crate::process::ProcessError;
+use crate::process::ElfLoadError;
 
-/// Convert a `panda_elf::ElfError` into a `ProcessError`.
-impl From<ElfError> for ProcessError {
+/// Convert a `panda_elf::ElfError` into an `ElfLoadError`.
+impl From<ElfError> for ElfLoadError {
     fn from(e: ElfError) -> Self {
         match e {
-            ElfError::Not64Bit => ProcessError::Not64Bit,
-            ElfError::FileTooSmall => ProcessError::InvalidElf("file too small for ELF header"),
-            ElfError::InvalidMagic => ProcessError::InvalidElf("invalid ELF magic number"),
+            ElfError::Not64Bit => ElfLoadError::Not64Bit,
+            ElfError::FileTooSmall => ElfLoadError::InvalidElf("file too small for ELF header"),
+            ElfError::InvalidMagic => ElfLoadError::InvalidElf("invalid ELF magic number"),
             ElfError::UnsupportedEndianness => {
-                ProcessError::InvalidElf("unsupported ELF endianness (not little-endian)")
+                ElfLoadError::InvalidElf("unsupported ELF endianness (not little-endian)")
             }
-            ElfError::Overflow(msg) => ProcessError::InvalidElf(msg),
-            ElfError::OutOfBounds(msg) => ProcessError::InvalidElf(msg),
+            ElfError::Overflow(msg) => ElfLoadError::InvalidElf(msg),
+            ElfError::OutOfBounds(msg) => ElfLoadError::InvalidElf(msg),
         }
     }
 }
@@ -63,14 +63,14 @@ impl From<ElfError> for ProcessError {
 fn validate_segment_security(
     header: &Elf64Phdr,
     file_size: usize,
-) -> Result<u64, ProcessError> {
+) -> Result<u64, ElfLoadError> {
     // Validate p_vaddr is in userspace
     if header.p_vaddr > USER_ADDR_MAX {
         warn!(
             "ELF security: p_vaddr {:#x} exceeds USER_ADDR_MAX {:#x}",
             header.p_vaddr, USER_ADDR_MAX
         );
-        return Err(ProcessError::InvalidElf("ELF segment p_vaddr in kernel space"));
+        return Err(ElfLoadError::InvalidElf("ELF segment p_vaddr in kernel space"));
     }
 
     // Check for p_vaddr + p_memsz overflow and ensure it doesn't extend into kernel space
@@ -79,7 +79,7 @@ fn validate_segment_security(
             "ELF security: p_vaddr {:#x} + p_memsz {:#x} overflows",
             header.p_vaddr, header.p_memsz
         );
-        ProcessError::InvalidElf("ELF segment address + size overflows")
+        ElfLoadError::InvalidElf("ELF segment address + size overflows")
     })?;
 
     if segment_end > USER_ADDR_MAX {
@@ -87,7 +87,7 @@ fn validate_segment_security(
             "ELF security: segment end {:#x} exceeds USER_ADDR_MAX {:#x}",
             segment_end, USER_ADDR_MAX
         );
-        return Err(ProcessError::InvalidElf("ELF segment extends into kernel space"));
+        return Err(ElfLoadError::InvalidElf("ELF segment extends into kernel space"));
     }
 
     // Check for p_offset + p_filesz overflow
@@ -96,7 +96,7 @@ fn validate_segment_security(
             "ELF security: p_offset {:#x} + p_filesz {:#x} overflows",
             header.p_offset, header.p_filesz
         );
-        ProcessError::InvalidElf("ELF file offset + size overflows")
+        ElfLoadError::InvalidElf("ELF file offset + size overflows")
     })?;
 
     // Ensure p_offset + p_filesz is within file bounds
@@ -105,7 +105,7 @@ fn validate_segment_security(
             "ELF security: file offset {:#x} + filesz {:#x} = {:#x} exceeds file size {:#x}",
             header.p_offset, header.p_filesz, file_end, file_size
         );
-        return Err(ProcessError::InvalidElf("ELF segment offset exceeds file size"));
+        return Err(ElfLoadError::InvalidElf("ELF segment offset exceeds file size"));
     }
 
     Ok(segment_end)
@@ -116,7 +116,7 @@ fn validate_segment_security(
 /// Uses the `panda-elf` crate to parse only the ELF header and program headers,
 /// then maps PT_LOAD segments into the address space. Returns the entry point
 /// and the list of mappings created.
-pub fn load_elf(data: &[u8]) -> Result<(u64, Vec<Mapping>), ProcessError> {
+pub fn load_elf(data: &[u8]) -> Result<(u64, Vec<Mapping>), ElfLoadError> {
     let phdr_count = panda_elf::program_headers_count(data).unwrap_or(0);
     let mut phdr_buf = Vec::with_capacity(phdr_count);
     phdr_buf.resize_with(phdr_count, || panda_elf::Elf64Phdr {

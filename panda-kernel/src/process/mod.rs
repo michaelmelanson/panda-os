@@ -33,9 +33,9 @@ use crate::handle::HandleTable;
 use crate::memory::{self, Mapping, MappingBacking};
 use crate::scheduler::RTC;
 
-/// Errors that can occur when creating a process.
+/// Errors that can occur when loading an ELF binary for a new process.
 #[derive(Debug)]
-pub enum ProcessError {
+pub enum ElfLoadError {
     /// The ELF binary could not be parsed.
     InvalidElf(&'static str),
     /// The binary is 32-bit but only 64-bit is supported.
@@ -134,7 +134,7 @@ impl Process {
     /// Create a process from ELF data.
     ///
     /// Returns an error if the ELF binary is malformed or unsupported.
-    pub fn from_elf_data(context: Context, data: *const [u8]) -> Result<Self, ProcessError> {
+    pub fn from_elf_data(context: Context, data: *const [u8]) -> Result<Self, ElfLoadError> {
         let data = unsafe { data.as_ref().unwrap() };
 
         // Save current page table and switch to the new context's page table

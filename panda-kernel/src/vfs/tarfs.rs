@@ -6,7 +6,6 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use async_trait::async_trait;
@@ -95,15 +94,9 @@ impl Filesystem for TarFs {
             });
         }
 
-        // Check if it's a directory (any file starts with this path)
-        let dir_prefix = if path.is_empty() {
-            String::new()
-        } else {
-            format!("{}/", path)
-        };
-
+        // Check if it's a directory (any file lives under this path)
         for key in self.files.keys() {
-            if path.is_empty() || key.starts_with(&dir_prefix) {
+            if strip_dir_prefix(key, path).is_some() {
                 return Ok(FileStat {
                     size: 0,
                     is_dir: true,
@@ -121,21 +114,11 @@ impl Filesystem for TarFs {
     }
 
     async fn readdir(&self, path: &str) -> Result<Vec<DirEntry>, FsError> {
-        let prefix = if path.is_empty() {
-            String::new()
-        } else {
-            format!("{}/", path)
-        };
-
         let mut entries = Vec::new();
         let mut seen_dirs = BTreeMap::new();
 
         for key in self.files.keys() {
-            let relative = if prefix.is_empty() {
-                key.as_str()
-            } else if let Some(rel) = key.strip_prefix(&prefix) {
-                rel
-            } else {
+            let Some(relative) = strip_dir_prefix(key, path) else {
                 continue;
             };
 
@@ -172,6 +155,19 @@ impl Filesystem for TarFs {
             Ok(entries)
         }
     }
+}
+
+/// Return the portion of `key` after `path/`, if `key` lives under the
+/// directory `path`.
+///
+/// An empty `path` (the filesystem root) matches every key, returning the
+/// whole key. Compares components directly rather than allocating a
+/// `"{path}/"` prefix string just to call `starts_with`/`strip_prefix`.
+fn strip_dir_prefix<'a>(key: &'a str, path: &str) -> Option<&'a str> {
+    if path.is_empty() {
+        return Some(key);
+    }
+    key.strip_prefix(path)?.strip_prefix('/')
 }
 
 /// An open file in a TAR archive

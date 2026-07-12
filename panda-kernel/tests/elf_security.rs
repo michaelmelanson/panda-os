@@ -10,7 +10,7 @@ extern crate alloc;
 
 use alloc::vec;
 use panda_elf::{SIZEOF_EHDR, SIZEOF_PHDR, PT_LOAD, PF_R, PF_X};
-use panda_kernel::process::ProcessError;
+use panda_kernel::process::ElfLoadError;
 
 panda_kernel::test_harness!(
     test_reject_kernel_space_vaddr,
@@ -113,7 +113,7 @@ fn test_reject_kernel_space_vaddr() {
     let result = panda_kernel::process::elf::load_elf(&elf_data);
 
     match result {
-        Err(ProcessError::InvalidElf(msg)) => {
+        Err(ElfLoadError::InvalidElf(msg)) => {
             assert!(msg.contains("kernel space") || msg.contains("exceeds"));
         }
         _ => panic!("Expected InvalidElf error for kernel space vaddr"),
@@ -138,7 +138,7 @@ fn test_reject_vaddr_memsz_overflow() {
     let result = panda_kernel::process::elf::load_elf(&elf_data);
 
     match result {
-        Err(ProcessError::InvalidElf(msg)) => {
+        Err(ElfLoadError::InvalidElf(msg)) => {
             assert!(msg.contains("overflow") || msg.contains("exceeds"));
         }
         _ => panic!("Expected InvalidElf error for vaddr+memsz overflow"),
@@ -163,7 +163,7 @@ fn test_reject_vaddr_memsz_kernel_space() {
     let result = panda_kernel::process::elf::load_elf(&elf_data);
 
     match result {
-        Err(ProcessError::InvalidElf(msg)) => {
+        Err(ElfLoadError::InvalidElf(msg)) => {
             assert!(msg.contains("kernel space") || msg.contains("exceeds"));
         }
         _ => panic!("Expected InvalidElf error for segment extending into kernel space"),
@@ -188,7 +188,7 @@ fn test_reject_offset_filesz_overflow() {
     let result = panda_kernel::process::elf::load_elf(&elf_data);
 
     match result {
-        Err(ProcessError::InvalidElf(msg)) => {
+        Err(ElfLoadError::InvalidElf(msg)) => {
             assert!(msg.contains("overflow"));
         }
         _ => panic!("Expected InvalidElf error for offset+filesz overflow"),
@@ -213,7 +213,7 @@ fn test_reject_offset_exceeds_file_size() {
     let result = panda_kernel::process::elf::load_elf(&elf_data);
 
     match result {
-        Err(ProcessError::InvalidElf(msg)) => {
+        Err(ElfLoadError::InvalidElf(msg)) => {
             assert!(msg.contains("file size") || msg.contains("offset exceeds"));
         }
         _ => panic!("Expected InvalidElf error for offset exceeding file size"),
