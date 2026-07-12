@@ -1,0 +1,5 @@
+scheme_registry_test: starting
+scheme_registry_test: found all expected built-in schemes
+scheme_registry_test: open scheme:/file refused with NotFound
+scheme_registry_test: schemes = [block, console, file, keyboard, scheme, surface]
+PASS

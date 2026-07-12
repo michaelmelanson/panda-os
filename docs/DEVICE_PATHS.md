@@ -15,6 +15,28 @@ Where:
 - `class` is a human-readable PCI class name (storage, input, display, etc.)
 - `index` is the zero-based device index within that class
 
+## Enumerating schemes
+
+Registered scheme handlers are themselves enumerable via the `scheme:` meta-scheme:
+
+```
+readdir("scheme:/")   # -> ["block", "console", "file", "keyboard", "scheme", "surface"]
+```
+
+This lists the name of every scheme registered with `register_scheme` (see
+`panda-kernel/src/resource/scheme.rs`) — including `scheme` itself, since it's
+registered the same way as everything else. This is the enumerable
+replacement for the removed `*:` discovery hack.
+
+`scheme:/<name>` is reserved namespace: nothing is open-able there yet
+(`open` always fails `NotFound`), pending the userspace-provider metadata
+that a future milestone will attach to it (see
+`plans/device-driver-model.md`).
+
+Note this is distinct from `device_path::list`, which enumerates *devices*
+within a single scheme's `/pci/...` namespace (see below) — `scheme:/`
+enumerates the schemes themselves.
+
 ## PCI Class Names
 
 | Class Code | Name | Description |

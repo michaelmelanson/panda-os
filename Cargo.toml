@@ -66,6 +66,7 @@ members = [
   "userspace/tests/handle_transfer_child",
   "userspace/tests/claim_test",
   "userspace/tests/claim_child",
+  "userspace/tests/scheme_registry_test",
   "crates/ring-buffer",
 ]
 

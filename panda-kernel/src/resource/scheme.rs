@@ -9,6 +9,7 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use async_trait::async_trait;
@@ -49,14 +50,28 @@ pub trait SchemeHandler: Send + Sync {
     }
 }
 
-/// Global registry of scheme handlers
-static SCHEMES: RwSpinlock<BTreeMap<&'static str, Arc<dyn SchemeHandler>>> =
+/// Global registry of scheme handlers.
+///
+/// Keyed by owned `String` rather than `&'static str`: M2.2 (userspace
+/// providers) needs to register scheme names discovered at runtime, which
+/// don't have `'static` lifetimes. Callers registering compile-time scheme
+/// names (string literals) are unaffected — `register_scheme` accepts
+/// anything convertible to `String`.
+static SCHEMES: RwSpinlock<BTreeMap<String, Arc<dyn SchemeHandler>>> =
     RwSpinlock::new(BTreeMap::new());
 
-/// Register a scheme handler
-pub fn register_scheme(name: &'static str, handler: Arc<dyn SchemeHandler>) {
+/// Register a scheme handler.
+pub fn register_scheme(name: impl Into<String>, handler: Arc<dyn SchemeHandler>) {
     let mut schemes = SCHEMES.write();
-    schemes.insert(name, handler);
+    schemes.insert(name.into(), handler);
+}
+
+/// List the names of all currently registered schemes, sorted.
+///
+/// `BTreeMap` already iterates in key order, so this is sorted "for free" —
+/// no separate sort step needed.
+pub fn scheme_names() -> Vec<String> {
+    SCHEMES.read().keys().cloned().collect()
 }
 
 /// Open a resource by URI (e.g., "file:/initrd/init" or "console:/serial/0")
@@ -494,6 +509,42 @@ impl super::VfsFile for BlockDeviceResource {
 }
 
 // =============================================================================
+// Scheme Scheme - meta-scheme registry enumeration
+// =============================================================================
+
+/// Scheme handler for the `scheme:` meta-scheme.
+///
+/// This is the honest replacement for the removed `*:` discovery hack:
+/// `readdir("scheme:/")` lists the names of every registered scheme handler
+/// (including "scheme" itself, since it's registered the same way as
+/// everything else via `register_scheme`).
+///
+/// Nothing is open-able here yet: `scheme:/<name>` is reserved namespace for
+/// M2.2's userspace-provider metadata (e.g. which process backs a scheme,
+/// its capabilities). Until that lands, every `open` — including the root —
+/// fails `NotFound`.
+pub struct SchemeScheme;
+
+#[async_trait]
+impl SchemeHandler for SchemeScheme {
+    async fn open(&self, _path: &str) -> Result<Box<dyn Resource>, OpenError> {
+        Err(OpenError::NotFound)
+    }
+
+    async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
+        match path {
+            "/" => Some(
+                scheme_names()
+                    .into_iter()
+                    .map(|name| DirEntry { name, is_dir: false })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+}
+
+// =============================================================================
 // Initialization
 // =============================================================================
 
@@ -504,4 +555,5 @@ pub fn init() {
     register_scheme("keyboard", Arc::new(KeyboardScheme));
     register_scheme("surface", Arc::new(SurfaceScheme));
     register_scheme("block", Arc::new(BlockScheme));
+    register_scheme("scheme", Arc::new(SchemeScheme));
 }
