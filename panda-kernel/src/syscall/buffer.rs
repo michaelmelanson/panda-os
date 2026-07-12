@@ -197,6 +197,56 @@ pub fn handle_resize(
     }
 }
 
+/// Handle buffer map: map an already-existing `SharedBuffer` into the
+/// CURRENT process's address space (`OP_BUFFER_MAP`).
+///
+/// Unlike `OP_BUFFER_ALLOC`, this never creates a buffer — `handle_id` must
+/// already resolve to a `SharedBuffer` (e.g. received via
+/// `Channel::recv_with_handle`, or the caller's own buffer). Returns the
+/// newly mapped virtual address on success, `InvalidHandle` if `handle_id`
+/// doesn't resolve to a buffer.
+///
+/// # Idempotence policy
+///
+/// Mapping the same buffer more than once in the same process — including
+/// the allocating process, which already has the buffer mapped from
+/// `OP_BUFFER_ALLOC` — is **not** deduplicated: each call creates a new,
+/// independent mapping at a fresh vaddr range rather than returning an
+/// existing one. See `SharedBuffer::map_into_process` for the full
+/// rationale; `buffer_test` and `buffer_transfer_test` cover this.
+///
+/// # Lifetime
+///
+/// The mapping is registered with the process (`Process::add_mapping`), so
+/// it is unmapped automatically when the process exits — see
+/// `resource::buffer::SharedBuffer`'s "Cross-process mapping safety" doc
+/// comment for why this can never leave a dangling mapping into freed
+/// memory. Closing `handle_id` does NOT unmap this mapping — the mapping
+/// itself keeps the buffer's frames alive independent of the handle; that
+/// is deliberate future work (see the same doc comment).
+pub fn handle_map(handle_id: u64) -> SyscallFuture {
+    let result: Result<usize, panda_abi::ErrorCode> = scheduler::with_current_process(|proc| {
+        let buffer = {
+            let Some(handle) = proc.handles().get(handle_id) else {
+                return Err(panda_abi::ErrorCode::InvalidHandle);
+            };
+            let Some(buffer) = handle.resource_arc().as_shared_buffer() else {
+                return Err(panda_abi::ErrorCode::InvalidHandle);
+            };
+            buffer
+        };
+
+        buffer
+            .map_into_process(proc)
+            .map_err(|_| panda_abi::ErrorCode::IoError)
+    });
+
+    match result {
+        Ok(vaddr) => Box::pin(core::future::ready(SyscallResult::ok(vaddr as isize))),
+        Err(code) => Box::pin(core::future::ready(SyscallResult::err(code))),
+    }
+}
+
 /// Handle buffer free.
 pub fn handle_free(handle_id: u64) -> SyscallFuture {
     let result: Result<(), panda_abi::ErrorCode> = scheduler::with_current_process(|proc| {

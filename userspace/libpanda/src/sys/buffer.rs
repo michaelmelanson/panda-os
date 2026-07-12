@@ -19,6 +19,17 @@ pub fn alloc(size: usize, info: Option<&mut BufferAllocInfo>) -> isize {
     send(Handle::ENVIRONMENT, OP_BUFFER_ALLOC, size, info_ptr, 0, 0)
 }
 
+/// Map an already-existing buffer (e.g. one received via
+/// `Channel::recv_with_handle`) into the current process's address space.
+///
+/// Unlike `alloc`, this does not create a new buffer. Returns the mapped
+/// virtual address on success, or a negative error code (`InvalidHandle` if
+/// `handle` is not a buffer handle).
+#[inline(always)]
+pub fn map(handle: Handle) -> isize {
+    send(handle, OP_BUFFER_MAP, 0, 0, 0, 0)
+}
+
 /// Resize a buffer.
 ///
 /// If `info` is provided, writes the new buffer address and size to it.

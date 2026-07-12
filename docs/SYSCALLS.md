@@ -98,8 +98,30 @@ See `HandleType` in panda-abi for all type tags.
 | Operation | Code | Arguments | Returns |
 |-----------|------|-----------|---------|
 | `OP_BUFFER_ALLOC` | 0x4_0000 | (size, info_ptr) | buffer_handle |
+| `OP_BUFFER_MAP` | 0x4_0001 | () | vaddr or error |
 | `OP_BUFFER_RESIZE` | 0x4_0002 | (new_size, info_ptr) | 0 or error |
 | `OP_BUFFER_FREE` | 0x4_0003 | () | 0 or error |
+
+`OP_BUFFER_MAP`'s `handle` argument (the syscall's target handle, not one of
+the operation-specific registers) is the buffer to map — it maps an
+*already-existing* `SharedBuffer` into the calling process's own address
+space and returns the new virtual address, rather than allocating new
+memory. This is how a process makes a buffer handle it received via
+[channel handle transfer](#handle-transfer) actually usable: the handle
+alone is only meaningful in the process that allocated it (`OP_BUFFER_ALLOC`
+maps into the allocator at alloc time and records that one address) until
+the receiving process calls `OP_BUFFER_MAP` on it.
+
+Mapping is not deduplicated — calling `OP_BUFFER_MAP` again for a buffer
+already mapped in the calling process (including the allocating process
+itself) creates a second, independent mapping at a new address rather than
+returning the existing one. Each per-process mapping is torn down
+automatically when that process exits; it is not torn down by
+`OP_BUFFER_FREE` closing the handle used to create it (the mapping keeps the
+buffer's physical frames alive via its own reference, independent of any
+handle — see the `SharedBuffer` doc comment in
+`panda-kernel/src/resource/buffer.rs` for the full safety reasoning).
+Teaching handle-close to also unmap is future work.
 
 ### Buffer-based file operations (0x5_0000 - 0x5_FFFF)
 
@@ -252,6 +274,16 @@ process::exit(code) -> !;                       // Exit process
 process::getpid() -> u64;                       // Get process ID
 process::wait(child_handle) -> i32;             // Wait for child
 process::signal(handle, sig) -> isize;          // Send signal
+```
+
+### buffer
+
+```rust
+use libpanda::buffer::{self, Buffer};
+
+Buffer::alloc(size) -> Option<Buffer>;          // Allocate + map a new buffer
+buffer::map(handle) -> Result<usize>;           // Map an existing buffer (e.g. received
+                                                 // via handle transfer) into this process
 ```
 
 ### channel

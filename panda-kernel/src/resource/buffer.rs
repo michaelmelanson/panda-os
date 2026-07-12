@@ -3,7 +3,10 @@
 //! SharedBuffers are page-aligned memory regions that can be:
 //! - Mapped into userspace for direct access
 //! - Accessed by the kernel for zero-copy I/O
-//! - Transferred between processes (ownership moves)
+//! - Transferred between processes (a handle to the same buffer, via channel
+//!   handle transfer — see docs/SYSCALLS.md "Handle transfer")
+//! - Mapped into more than one process at once (`OP_BUFFER_MAP`, handled by
+//!   [`SharedBuffer::map_into_process`])
 //!
 //! # SMAP Safety
 //!
@@ -11,6 +14,34 @@
 //! to these pages requires `stac`/`clac` bracketing. Use the safe
 //! `with_slice` / `with_mut_slice` convenience methods instead of the raw
 //! `as_slice` / `as_mut_slice` methods which are unsafe.
+//!
+//! # Process-context safety (`as_slice` / `as_mut_slice` / `mapped_addr`)
+//!
+//! `SharedBuffer::user_vaddr` is fixed at allocation time and always refers
+//! to the *allocating* process's mapping — it does NOT change when
+//! `OP_BUFFER_MAP` creates additional mappings of the same frames in other
+//! processes (see "Cross-process mapping safety" below). `as_slice`,
+//! `as_mut_slice`, and `mapped_addr` all dereference/report `user_vaddr`
+//! directly, so they are only valid to call while the **allocating
+//! process's** page table is active (i.e. from within that process's own
+//! syscall context) — calling them while a *different* process's page table
+//! is active would read/write whatever happens to be mapped at that same
+//! numeric address in the wrong address space.
+//!
+//! Verified call sites (at the time this was written) all satisfy this:
+//! `syscall/buffer.rs::handle_read_buffer` / `handle_write_buffer` and
+//! `syscall/surface.rs::handle_blit` all resolve the buffer via
+//! `scheduler::with_current_process`/`proc.handles()`, i.e. from the
+//! handle table of whichever process is *currently running the syscall* —
+//! so a buffer's `with_slice`/`with_mut_slice` is only ever invoked from the
+//! process that owns the handle being dereferenced. Since a buffer handle
+//! only usefully resolves to a `SharedBuffer` in the process that
+//! allocated it or that received it via transfer/`OP_BUFFER_MAP`, and none
+//! of those call sites are reachable from `OP_BUFFER_MAP` itself (which
+//! never calls `as_slice`/`with_slice` — it maps frames directly via
+//! `SharedBuffer::map_page_range`), this invariant holds today. Any new
+//! caller of `as_slice`/`with_slice` must independently ensure it only runs
+//! while the allocating process is current.
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -95,6 +126,61 @@ pub trait BufferExt: Buffer {
 impl<T: Buffer + ?Sized> BufferExt for T {}
 
 /// A shared buffer backed by physical pages.
+///
+/// # Cross-process mapping safety
+///
+/// `frames` is this buffer's sole physical-memory identity. It is dropped
+/// (freeing the physical frames) only when the last `Arc<SharedBuffer>`
+/// strong reference goes away. Every *mapping* of those frames, in every
+/// process, holds its own clone of that `Arc`:
+///
+/// - The allocating process's own mapping (`_mapping`, backed by
+///   `MappingBacking::Mmio`) is a field *of* `SharedBuffer` itself — it
+///   necessarily lives exactly as long as the struct that owns `frames`, so
+///   it can neither outlive them nor be outlived by them.
+/// - Every other process's mapping, created via `OP_BUFFER_MAP` ->
+///   [`map_into_process`](SharedBuffer::map_into_process), is a `Mapping`
+///   stored in that process's own `Process::mappings`, backed by
+///   `MappingBacking::ExternalFrames(Arc<SharedBuffer>)`. That `Arc` clone
+///   is a strong reference, so `frames` cannot be freed while this
+///   `Mapping` exists — independent of what happens to the *handle* that
+///   was used to create the mapping.
+///
+/// Walking through the three ways a mapping's lifetime can end:
+///
+/// - **Handle close** (`OP_BUFFER_FREE`, or a transferred handle's table
+///   entry going away). This drops (at most) one `Arc<dyn Resource>` from
+///   one process's *handle table* — it does not touch `Process::mappings`
+///   in any process. If any `Mapping::ExternalFrames` (or the allocator's
+///   own `_mapping`, implicitly via `SharedBuffer` staying alive) still
+///   holds a clone, the buffer isn't dropped and every remaining mapping
+///   stays valid. This is why "a closed handle with a still-live mapping"
+///   is safe: the *mapping*, not the handle, is what keeps the memory
+///   alive. `OP_BUFFER_FREE` does not (yet) walk other processes' mappings
+///   to unmap them — teaching handle-close to unmap is future work.
+/// - **Process exit.** `Process::mappings` (and `SharedBuffer::_mapping`,
+///   for the allocating process, via normal struct-field drop order) is
+///   dropped when the `Process` is dropped. Dropping a `Mapping` drops its
+///   `MappingBacking`, which for `ExternalFrames` drops exactly the one
+///   `Arc<SharedBuffer>` clone that process was holding — other processes'
+///   mappings hold independent clones untouched by this.
+/// - **Other-process behaviour** (e.g. `OP_BUFFER_RESIZE`'s reallocation
+///   path replacing a handle's resource with a brand new `SharedBuffer`).
+///   This only swaps the `Arc` stored in one handle-table entry
+///   (`Handle::replace_resource`); it never mutates an existing
+///   `SharedBuffer`'s `frames` or reaches into any `Mapping` elsewhere. A
+///   process with a mapping into the *old* buffer keeps its own `Arc` to
+///   the *old* `SharedBuffer` alive (now unreachable via the resized
+///   handle, but still perfectly valid) — stale data, never a dangling
+///   pointer.
+///
+/// In short: the frame `Vec` is freed only when no `Arc<SharedBuffer>`
+/// survives, every live mapping (in every process, including the
+/// allocator's own) holds one, and a `Mapping`'s keepalive clone is itself
+/// a strong reference — so "the last `Arc` drops" and "a `Mapping` still
+/// references the frames" are mutually exclusive by construction. No
+/// interleaving of handle close, process exit, or another process's buffer
+/// operations can produce a mapping into freed memory.
 pub struct SharedBuffer {
     /// Physical frames backing this buffer.
     frames: Vec<Frame>,
@@ -151,9 +237,16 @@ impl SharedBuffer {
         Ok((buffer, mapped_addr))
     }
 
-    /// Map frames into userspace at the given virtual address.
-    /// Returns a Mapping that will unmap the region when dropped.
-    fn map_frames(frames: &[Frame], vaddr: VirtAddr) -> Mapping {
+    /// Map each frame individually into the CURRENT process's address space
+    /// (whichever page table is active — see the module-level "Process-context
+    /// safety" doc comment) at consecutive pages starting at `vaddr`.
+    ///
+    /// This only installs page-table entries; it does not construct a
+    /// `Mapping`. Callers wrap the resulting pages with whichever
+    /// `MappingBacking` matches their ownership model — see `map_frames`
+    /// (allocator's own mapping, `Mmio` backing) and `map_into_process`
+    /// (a second process's mapping, `ExternalFrames` backing).
+    fn map_page_range(frames: &[Frame], vaddr: VirtAddr) {
         let options = MemoryMappingOptions {
             user: true,
             executable: false,
@@ -170,10 +263,72 @@ impl SharedBuffer {
             core::mem::forget(page_mapping);
             current_vaddr += 4096u64;
         }
+    }
+
+    /// Map frames into userspace at the given virtual address.
+    /// Returns a Mapping that will unmap the region when dropped.
+    ///
+    /// Used only for the allocating process's own mapping, created at
+    /// `alloc()` time and stored in `self._mapping`. Uses `Mmio` backing
+    /// (frames are owned separately, by `self.frames`) rather than
+    /// `ExternalFrames`, since a keepalive here would be self-referential:
+    /// `SharedBuffer` would hold a `Mapping` whose backing holds an
+    /// `Arc<SharedBuffer>` back to itself, which would never drop. That
+    /// keepalive is unnecessary anyway — `_mapping` is a field *of*
+    /// `SharedBuffer`, so it already can't outlive `frames`.
+    fn map_frames(frames: &[Frame], vaddr: VirtAddr) -> Mapping {
+        Self::map_page_range(frames, vaddr);
 
         // Return a single Mapping covering the entire region
         // Using Mmio backing since frames are owned separately
         Mapping::new(vaddr, frames.len() * 4096, MappingBacking::Mmio)
+    }
+
+    /// Map this buffer's frames into `process` (the CURRENT process — the
+    /// caller must ensure `process` is the process whose page table is
+    /// active, since this installs page-table entries directly) at a
+    /// freshly allocated virtual address range, and registers the mapping
+    /// with `process` so it is torn down automatically on process exit.
+    ///
+    /// This is the kernel side of `OP_BUFFER_MAP`: unlike `alloc`, it does
+    /// not create a new buffer or take frames from anywhere — it creates an
+    /// additional view onto the *same* frames already owned by `self`.
+    ///
+    /// # Idempotence policy
+    ///
+    /// Calling this more than once for the same buffer in the same process
+    /// (including the allocating process, which already has the buffer
+    /// mapped from `alloc()`) is **not** deduplicated: each call allocates a
+    /// fresh vaddr range and creates an independent mapping. This keeps the
+    /// implementation simple — no per-process "which buffers are already
+    /// mapped" tracking is needed — at the cost of burning extra buffer
+    /// vaddr space (reclaimed at process exit) if a caller maps the same
+    /// buffer redundantly. See `syscall/buffer.rs::handle_map` for the
+    /// syscall-level documentation of this policy, and
+    /// `buffer_test.rs`/`buffer_transfer_test` for coverage.
+    ///
+    /// See the struct-level "Cross-process mapping safety" doc comment for
+    /// why the resulting mapping can never dangle.
+    pub fn map_into_process(self: &Arc<Self>, process: &mut Process) -> Result<usize, BufferError> {
+        let num_pages = self.frames.len();
+
+        let vaddr = process
+            .alloc_buffer_vaddr(num_pages)
+            .ok_or(BufferError::AllocationFailed)?;
+
+        Self::map_page_range(&self.frames, vaddr);
+
+        // Keepalive: clone the Arc so the frames cannot be freed while this
+        // process's mapping exists, regardless of what happens to whatever
+        // handle was used to reach this buffer. See the struct doc comment.
+        let mapping = Mapping::new(
+            vaddr,
+            num_pages * 4096,
+            MappingBacking::ExternalFrames(self.clone()),
+        );
+        process.add_mapping(mapping);
+
+        Ok(vaddr.as_u64() as usize)
     }
 }
 

@@ -234,6 +234,7 @@ fn build_future(
 
         // Buffer operations
         OP_BUFFER_ALLOC => Ok(buffer::handle_alloc(ua, arg0, arg1)),
+        OP_BUFFER_MAP => Ok(buffer::handle_map(handle)),
         OP_BUFFER_RESIZE => Ok(buffer::handle_resize(ua, handle, arg0, arg1)),
         OP_BUFFER_FREE => Ok(buffer::handle_free(handle)),
 

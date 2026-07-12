@@ -100,8 +100,11 @@ pub struct Process {
     context: Context,
     sp: VirtAddr,
     ip: VirtAddr,
-    /// Memory mappings for this process (code, data, stack). Dropped on process exit.
-    #[allow(dead_code)]
+    /// Memory mappings for this process (code, data, stack, and any
+    /// cross-process buffer mappings created via `OP_BUFFER_MAP`). Dropped
+    /// on process exit, which is exactly what tears down `OP_BUFFER_MAP`
+    /// mappings automatically — see `add_mapping` and
+    /// `resource::buffer::SharedBuffer`.
     mappings: Vec<Mapping>,
     handles: HandleTable,
     /// Saved CPU state when process is preempted. Only valid when state is Runnable.
@@ -311,6 +314,17 @@ impl Process {
         self.heap.resize(new_size);
 
         self.brk()
+    }
+
+    /// Register a memory mapping with this process so it is torn down
+    /// automatically when the process exits (i.e. when this `Process` is
+    /// dropped, `mappings` is dropped, which drops each `Mapping`).
+    ///
+    /// Used by `OP_BUFFER_MAP` to attach a cross-process `SharedBuffer`
+    /// mapping to the CURRENT process — the same mechanism that already
+    /// tears down the ELF-load mappings (code/data segments) on exit.
+    pub fn add_mapping(&mut self, mapping: Mapping) {
+        self.mappings.push(mapping);
     }
 
     /// Allocate a virtual address range for a buffer.

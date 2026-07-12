@@ -3,10 +3,29 @@
 //! Shared buffers provide page-aligned memory regions that can be efficiently
 //! shared between userspace and kernel for zero-copy I/O operations.
 
+use crate::error::{self, Result};
 use crate::handle::Handle;
 use crate::sys;
 use core::slice;
 use panda_abi::BufferAllocInfo;
+
+/// Map an already-existing shared buffer (e.g. one received via
+/// `Channel::recv_with_handle` from another process) into the current
+/// process's address space.
+///
+/// Unlike `Buffer::alloc`, this does not create a new buffer or take
+/// ownership of `handle` — the caller remains responsible for the handle's
+/// lifetime (and the returned mapping is *not* automatically unmapped by
+/// closing the handle; it lives until the process exits — see
+/// docs/SYSCALLS.md "Buffer operations").
+///
+/// Returns the mapped virtual address. Calling this more than once for the
+/// same buffer (in this or any other process) creates additional,
+/// independent mappings rather than reusing one — see the kernel-side
+/// `SharedBuffer::map_into_process` doc comment for why.
+pub fn map(handle: Handle) -> Result<usize> {
+    error::from_syscall(sys::buffer::map(handle))
+}
 
 /// A shared buffer for zero-copy I/O operations.
 ///

@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::any::Any;
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::VirtAddr;
 
@@ -14,6 +15,26 @@ pub enum MappingBacking {
     /// Demand-paged region - frames allocated on page fault, freed by walking page tables.
     /// Used for heap regions that can grow/shrink dynamically.
     DemandPaged,
+    /// Frames owned elsewhere (e.g. a `SharedBuffer` shared across processes
+    /// via `OP_BUFFER_MAP`), mapped into *this* address space as a second
+    /// (or third, ...) view onto memory some other object already owns.
+    ///
+    /// Unmapping behaves like `Mmio` (the page-table entries for this
+    /// process are torn down, the physical frames are not touched here).
+    /// The `Arc<dyn Any + Send + Sync>` is a type-erased *keepalive*: it is
+    /// a strong reference to whatever owns the frames, held for exactly the
+    /// lifetime of this `Mapping`. This guarantees the frames cannot be
+    /// freed (their owner's last strong reference cannot drop) while this
+    /// virtual mapping into them still exists — so no process can ever
+    /// observe a mapped-but-freed page. `Any` is used (rather than naming
+    /// `SharedBuffer` directly) so this low-level `memory` module doesn't
+    /// need to depend on the higher-level `resource` module; the concrete
+    /// type is irrelevant to unmap/drop, only that dropping it can release
+    /// the frames.
+    ///
+    /// See `resource::buffer::SharedBuffer` for the full cross-process
+    /// mapping safety reasoning.
+    ExternalFrames(Arc<dyn Any + Send + Sync>),
 }
 
 struct MappingInner {
@@ -27,10 +48,17 @@ impl Drop for MappingInner {
     fn drop(&mut self) {
         let size = self.size_bytes.load(Ordering::Acquire) as usize;
         match &self.backing {
-            MappingBacking::Frames(_) | MappingBacking::Mmio => {
+            MappingBacking::Frames(_)
+            | MappingBacking::Mmio
+            | MappingBacking::ExternalFrames(_) => {
                 // Unmap the virtual address region
                 unmap_region(self.base_virt, size);
-                // Backing frames are dropped automatically by Vec's Drop
+                // Frames: backing frames are dropped automatically by Vec's Drop.
+                // ExternalFrames: the keepalive Arc is dropped when `self.backing`
+                // is dropped after this function returns (see the variant's doc
+                // comment) — i.e. strictly *after* the unmap above, so the frames
+                // are never observably freed before this mapping stops pointing
+                // at them.
             }
             MappingBacking::DemandPaged => {
                 // Walk page tables to find and free any mapped pages

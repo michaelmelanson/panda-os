@@ -1,0 +1,8 @@
+Buffer transfer test: starting
+Buffer transfer test: wrote pattern
+Buffer transfer test: sent buffer handle to child
+Buffer transfer test: child signalled done
+Buffer transfer test: observed child's writes (shared memory confirmed)
+Buffer transfer test: child exited successfully
+Buffer transfer test: buffer still usable after child exit
+PASS

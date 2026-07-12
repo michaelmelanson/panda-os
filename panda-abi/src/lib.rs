@@ -263,6 +263,12 @@ pub enum Operation {
     // Buffer operations (0x4_0000 - 0x4_FFFF)
     /// Allocate a shared buffer: (size, info_ptr) -> buffer_handle or error
     BufferAlloc = 0x4_0000,
+    /// Map an already-existing buffer (e.g. received via channel handle
+    /// transfer) into the CURRENT process's address space: (buffer_handle) -> vaddr or error.
+    /// See docs/SYSCALLS.md "Buffer operations" and
+    /// `panda-kernel/src/resource/buffer.rs` for the cross-process mapping
+    /// safety reasoning.
+    BufferMap = 0x4_0001,
     /// Resize a buffer: (buffer_handle, new_size, info_ptr) -> 0 or error
     BufferResize = 0x4_0002,
     /// Free a buffer: (buffer_handle) -> 0 or error
@@ -343,6 +349,7 @@ impl Operation {
             0x8_0002 => Some(Self::DirectoryMkdir),
             0x8_0003 => Some(Self::DirectoryRmdir),
             0x4_0000 => Some(Self::BufferAlloc),
+            0x4_0001 => Some(Self::BufferMap),
             0x4_0002 => Some(Self::BufferResize),
             0x4_0003 => Some(Self::BufferFree),
             0x5_0000 => Some(Self::FileReadBuffer),
@@ -450,6 +457,8 @@ pub const OP_DIRECTORY_RMDIR: u32 = Operation::DirectoryRmdir as u32;
 /// Allocate a shared buffer: (size, info_ptr) -> buffer_handle or error
 /// If info_ptr is non-zero, writes BufferAllocInfo (addr, size) to that address.
 pub const OP_BUFFER_ALLOC: u32 = Operation::BufferAlloc as u32;
+/// Map an already-existing buffer into the current process: (buffer_handle) -> vaddr or error.
+pub const OP_BUFFER_MAP: u32 = Operation::BufferMap as u32;
 /// Resize a buffer: (buffer_handle, new_size, info_ptr) -> 0 or error
 /// If info_ptr is non-zero, writes BufferAllocInfo (addr, size) to that address.
 pub const OP_BUFFER_RESIZE: u32 = Operation::BufferResize as u32;
