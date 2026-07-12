@@ -13,6 +13,7 @@ use x86_64::VirtAddr;
 
 use crate::scheduler;
 
+use super::helpers::{downcast_or_invalid, resolve_resource};
 use super::poll_fn;
 use super::user_ptr::{SyscallFuture, SyscallResult};
 
@@ -25,20 +26,10 @@ pub fn handle_get_pid() -> SyscallFuture {
 ///
 /// Blocks until the target process exits, then returns its exit code.
 pub fn handle_wait(handle_id: u64) -> SyscallFuture {
-    let resource = scheduler::with_current_process(|proc| {
-        let handle = proc.handles().get(handle_id)?;
-        if handle.as_process().is_some() {
-            Some(handle.resource_arc())
-        } else {
-            None
-        }
-    });
+    let resource = resolve_resource(handle_id, |h| h.as_process().is_some());
 
     Box::pin(poll_fn(move |_cx| {
-        let Some(ref resource) = resource else {
-            return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
-        };
-        let Some(process_iface) = resource.as_process() else {
+        let Some(process_iface) = downcast_or_invalid(&resource, |r| r.as_process()) else {
             return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
 

@@ -13,6 +13,7 @@ mod entry;
 mod environment;
 mod file;
 pub mod gdt;
+mod helpers;
 mod mailbox;
 mod process;
 mod surface;

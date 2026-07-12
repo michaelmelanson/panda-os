@@ -10,9 +10,10 @@ use core::task::Poll;
 use log::debug;
 use panda_abi::{CHANNEL_NONBLOCK, HandleType};
 
-use crate::resource::{ChannelError, Resource};
+use crate::resource::ChannelError;
 use crate::scheduler;
 
+use super::helpers::{downcast_or_invalid, resolve_resource};
 use super::poll_fn;
 use super::user_ptr::{SyscallError, SyscallFuture, SyscallResult, UserAccess, UserPtr, UserSlice};
 
@@ -76,20 +77,6 @@ pub fn handle_create(ua: &UserAccess, out_handles_ptr: usize) -> SyscallFuture {
     Box::pin(core::future::ready(SyscallResult::ok(code)))
 }
 
-/// Get the channel endpoint from a handle, returning a cloned Arc.
-/// This allows us to call methods on the channel outside of with_current_process.
-fn get_channel(handle: u64) -> Option<Arc<dyn Resource>> {
-    scheduler::with_current_process(|proc| {
-        let h = proc.handles().get(handle)?;
-        // Check that it's actually a channel
-        if h.as_channel().is_some() {
-            Some(h.resource_arc())
-        } else {
-            None
-        }
-    })
-}
-
 /// Handle channel send operation.
 /// Sends a message to the channel peer.
 ///
@@ -117,15 +104,12 @@ pub fn handle_send(
     // Copy message data from userspace NOW, while page table is active.
     let msg = ua.read(UserSlice::new(buf_ptr, buf_len))?;
 
-    let resource = get_channel(handle);
+    let resource = resolve_resource(handle, |h| h.as_channel().is_some());
 
     // Future only captures msg (Vec<u8>) and resource (Arc).
     // ua is NOT captured — compiler enforces this since UserAccess is !Send.
     Ok(Box::pin(poll_fn(move |_cx| {
-        let Some(ref resource) = resource else {
-            return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
-        };
-        let Some(channel) = resource.as_channel() else {
+        let Some(channel) = downcast_or_invalid(&resource, |r| r.as_channel()) else {
             return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
 
@@ -172,13 +156,10 @@ pub fn handle_recv(handle: u64, buf_ptr: usize, buf_len: usize, flags: usize) ->
         handle, buf_len, flags
     );
 
-    let resource = get_channel(handle);
+    let resource = resolve_resource(handle, |h| h.as_channel().is_some());
 
     Box::pin(poll_fn(move |_cx| {
-        let Some(ref resource) = resource else {
-            return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
-        };
-        let Some(channel) = resource.as_channel() else {
+        let Some(channel) = downcast_or_invalid(&resource, |r| r.as_channel()) else {
             return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
 

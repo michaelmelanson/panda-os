@@ -10,6 +10,7 @@ use panda_abi::HandleType;
 use crate::resource::Mailbox;
 use crate::scheduler;
 
+use super::helpers::{downcast_or_invalid, resolve_resource};
 use super::poll_fn;
 use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr};
 
@@ -52,20 +53,10 @@ pub fn handle_wait(_ua: &UserAccess, mailbox_handle: u64, out_ptr: usize) -> Sys
         core::mem::size_of::<panda_abi::MailboxEventResult>(),
     );
 
-    let resource = scheduler::with_current_process(|proc| {
-        let handle = proc.handles().get(mailbox_handle)?;
-        if handle.as_mailbox().is_some() {
-            Some(handle.resource_arc())
-        } else {
-            None
-        }
-    });
+    let resource = resolve_resource(mailbox_handle, |h| h.as_mailbox().is_some());
 
     Box::pin(poll_fn(move |_cx| {
-        let Some(ref resource) = resource else {
-            return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
-        };
-        let Some(mailbox) = resource.as_mailbox() else {
+        let Some(mailbox) = downcast_or_invalid(&resource, |r| r.as_mailbox()) else {
             return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
 

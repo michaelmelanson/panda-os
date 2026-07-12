@@ -12,6 +12,7 @@ use crate::{
     resource, scheduler,
 };
 
+use super::helpers::{attach_to_mailbox, complete_mailbox_attach, read_user_str};
 use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr};
 
 /// Handle environment open operation.
@@ -33,13 +34,9 @@ pub fn handle_open(
     let mailbox_handle = mailbox_handle as u64;
     let event_mask = event_mask as u32;
 
-    let uri = match ua.read_str(uri_ptr, uri_len) {
+    let uri = match read_user_str(ua, uri_ptr, uri_len) {
         Ok(u) => u,
-        Err(_) => {
-            return Box::pin(core::future::ready(SyscallResult::err(
-                panda_abi::ErrorCode::InvalidArgument,
-            )));
-        }
+        Err(e) => return e,
     };
 
     debug!(
@@ -56,17 +53,11 @@ pub fn handle_open(
                     let handle_id = proc.handles_mut().insert(Arc::from(resource)).ok()?;
 
                     // Attach to mailbox if requested
-                    if mailbox_handle != 0 && event_mask != 0 {
-                        if let Some(mailbox_h) = proc.handles().get(mailbox_handle) {
-                            if let Some(mailbox) = mailbox_h.as_mailbox() {
-                                mailbox.attach(handle_id, event_mask);
-
-                                if let Some(opened_h) = proc.handles().get(handle_id) {
-                                    let mailbox_ref =
-                                        resource::MailboxRef::new(mailbox, handle_id);
-                                    opened_h.attach_mailbox(mailbox_ref);
-                                }
-                            }
+                    if event_mask != 0 {
+                        if let Some(mailbox) =
+                            attach_to_mailbox(proc, mailbox_handle, handle_id, event_mask)
+                        {
+                            complete_mailbox_attach(proc, mailbox, handle_id);
                         }
                     }
 
@@ -105,22 +96,14 @@ pub fn handle_mount(
     mountpoint_ptr: usize,
     mountpoint_len: usize,
 ) -> SyscallFuture {
-    let fstype = match ua.read_str(fstype_ptr, fstype_len) {
+    let fstype = match read_user_str(ua, fstype_ptr, fstype_len) {
         Ok(s) => s,
-        Err(_) => {
-            return Box::pin(core::future::ready(SyscallResult::err(
-                panda_abi::ErrorCode::InvalidArgument,
-            )));
-        }
+        Err(e) => return e,
     };
 
-    let mountpoint = match ua.read_str(mountpoint_ptr, mountpoint_len) {
+    let mountpoint = match read_user_str(ua, mountpoint_ptr, mountpoint_len) {
         Ok(s) => s,
-        Err(_) => {
-            return Box::pin(core::future::ready(SyscallResult::err(
-                panda_abi::ErrorCode::InvalidArgument,
-            )));
-        }
+        Err(e) => return e,
     };
 
     info!("handle_mount: fstype={}, mountpoint={}", fstype, mountpoint);
@@ -175,13 +158,9 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
         params.path_ptr, params.path_len, mailbox_handle, event_mask, stdin_handle, stdout_handle
     );
 
-    let uri = match ua.read_str(params.path_ptr, params.path_len) {
+    let uri = match read_user_str(ua, params.path_ptr, params.path_len) {
         Ok(u) => u,
-        Err(_) => {
-            return Box::pin(core::future::ready(SyscallResult::err(
-                panda_abi::ErrorCode::InvalidArgument,
-            )));
-        }
+        Err(e) => return e,
     };
 
     debug!("SPAWN: uri={}", uri);
@@ -262,16 +241,11 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
             let handle_id = proc.handles_mut().insert(Arc::new(spawn_handle)).ok()?;
 
             // Attach to mailbox if requested
-            if mailbox_handle != 0 && event_mask != 0 {
-                if let Some(mailbox_h) = proc.handles().get(mailbox_handle) {
-                    if let Some(mailbox) = mailbox_h.as_mailbox() {
-                        mailbox.attach(handle_id, event_mask);
-
-                        if let Some(spawn_h) = proc.handles().get(handle_id) {
-                            let mailbox_ref = resource::MailboxRef::new(mailbox, handle_id);
-                            spawn_h.attach_mailbox(mailbox_ref);
-                        }
-                    }
+            if event_mask != 0 {
+                if let Some(mailbox) =
+                    attach_to_mailbox(proc, mailbox_handle, handle_id, event_mask)
+                {
+                    complete_mailbox_attach(proc, mailbox, handle_id);
                 }
             }
 
@@ -287,13 +261,9 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
 /// Handle environment log operation.
 pub fn handle_log(ua: &UserAccess, msg_ptr: usize, msg_len: usize) -> SyscallFuture {
     debug!("LOG: msg_ptr={:#x}, msg_len={}", msg_ptr, msg_len);
-    let msg = match ua.read_str(msg_ptr, msg_len) {
+    let msg = match read_user_str(ua, msg_ptr, msg_len) {
         Ok(m) => m,
-        Err(_) => {
-            return Box::pin(core::future::ready(SyscallResult::err(
-                panda_abi::ErrorCode::InvalidArgument,
-            )));
-        }
+        Err(e) => return e,
     };
     info!("LOG: {msg}");
     Box::pin(core::future::ready(SyscallResult::ok(0)))
@@ -329,13 +299,9 @@ pub(super) fn fs_error_code(e: crate::vfs::FsError) -> panda_abi::ErrorCode {
 /// For `file:` URIs, the returned directory handle supports create/unlink
 /// operations via the VFS path.
 pub fn handle_opendir(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> SyscallFuture {
-    let uri = match ua.read_str(uri_ptr, uri_len) {
+    let uri = match read_user_str(ua, uri_ptr, uri_len) {
         Ok(u) => u,
-        Err(_) => {
-            return Box::pin(core::future::ready(SyscallResult::err(
-                panda_abi::ErrorCode::InvalidArgument,
-            )));
-        }
+        Err(e) => return e,
     };
 
     Box::pin(async move {

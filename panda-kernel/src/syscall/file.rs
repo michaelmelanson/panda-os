@@ -17,6 +17,22 @@ use super::VfsFileWrapper;
 use super::poll_fn;
 use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr, UserSlice};
 
+/// Resolve `handle_id` to a VFS file, if it is one.
+///
+/// A single handle-table lookup: checks `as_vfs_file()` and, if it matches, clones
+/// the resource `Arc` and wraps it in `VfsFileWrapper` so it can be held as
+/// `Arc<dyn VfsFile>` outside the process lock.
+fn get_vfs_file(handle_id: u64) -> Option<Arc<dyn VfsFile>> {
+    scheduler::with_current_process(|proc| {
+        let handle = proc.handles().get(handle_id)?;
+        if handle.as_vfs_file().is_some() {
+            Some(Arc::new(VfsFileWrapper(handle.resource_arc())) as Arc<dyn VfsFile>)
+        } else {
+            None
+        }
+    })
+}
+
 /// Handle file read operation.
 ///
 /// For VFS files, this is async and may yield to the scheduler if I/O is needed.
@@ -31,21 +47,7 @@ pub fn handle_read(
     let dst = UserSlice::new(buf_ptr, buf_len);
 
     // First, check if this is a VFS file (which needs async handling)
-    let vfs_file: Option<Arc<dyn VfsFile>> = scheduler::with_current_process(|proc| {
-        proc.handles()
-            .get(handle_id)
-            .and_then(|h| h.as_vfs_file())
-            .map(|_| proc.handles().get(handle_id).unwrap().resource_arc())
-    })
-    .and_then(|res| {
-        if res.as_vfs_file().is_some() {
-            Some(Arc::new(VfsFileWrapper(res)) as Arc<dyn VfsFile>)
-        } else {
-            None
-        }
-    });
-
-    if let Some(vfs_file) = vfs_file {
+    if let Some(vfs_file) = get_vfs_file(handle_id) {
         handle_read_vfs(handle_id, buf_len, dst, vfs_file)
     } else {
         // Sync path for non-VFS resources (blocks, event sources, etc.)
@@ -204,21 +206,7 @@ pub fn handle_write(
     buf_len: usize,
 ) -> SyscallFuture {
     // Check if this is a VFS file (which needs async handling)
-    let vfs_file: Option<Arc<dyn VfsFile>> = scheduler::with_current_process(|proc| {
-        proc.handles()
-            .get(handle_id)
-            .and_then(|h| h.as_vfs_file())
-            .map(|_| proc.handles().get(handle_id).unwrap().resource_arc())
-    })
-    .and_then(|res| {
-        if res.as_vfs_file().is_some() {
-            Some(Arc::new(VfsFileWrapper(res)) as Arc<dyn VfsFile>)
-        } else {
-            None
-        }
-    });
-
-    if let Some(vfs_file) = vfs_file {
+    if let Some(vfs_file) = get_vfs_file(handle_id) {
         handle_write_vfs(ua, handle_id, buf_ptr, buf_len, vfs_file)
     } else {
         // Sync path for non-VFS resources (char output, etc.)
@@ -329,21 +317,7 @@ pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> Syscal
     let whence = (offset_hi >> 32) as u32;
 
     // Check if this is a VFS file
-    let vfs_file: Option<Arc<dyn VfsFile>> = scheduler::with_current_process(|proc| {
-        proc.handles()
-            .get(handle_id)
-            .and_then(|h| h.as_vfs_file())
-            .map(|_| proc.handles().get(handle_id).unwrap().resource_arc())
-    })
-    .and_then(|res| {
-        if res.as_vfs_file().is_some() {
-            Some(Arc::new(VfsFileWrapper(res)) as Arc<dyn VfsFile>)
-        } else {
-            None
-        }
-    });
-
-    let Some(vfs_file) = vfs_file else {
+    let Some(vfs_file) = get_vfs_file(handle_id) else {
         return Box::pin(core::future::ready(SyscallResult::err(
             panda_abi::ErrorCode::InvalidHandle,
         )));
@@ -427,21 +401,7 @@ pub fn handle_stat(handle_id: u64, stat_ptr: usize) -> SyscallFuture {
     let dst = UserSlice::new(stat_ptr, core::mem::size_of::<FileStat>());
 
     // Check if this is a VFS file
-    let vfs_file: Option<Arc<dyn VfsFile>> = scheduler::with_current_process(|proc| {
-        proc.handles()
-            .get(handle_id)
-            .and_then(|h| h.as_vfs_file())
-            .map(|_| proc.handles().get(handle_id).unwrap().resource_arc())
-    })
-    .and_then(|res| {
-        if res.as_vfs_file().is_some() {
-            Some(Arc::new(VfsFileWrapper(res)) as Arc<dyn VfsFile>)
-        } else {
-            None
-        }
-    });
-
-    if let Some(vfs_file) = vfs_file {
+    if let Some(vfs_file) = get_vfs_file(handle_id) {
         // Async stat for VFS files
         Box::pin(async move {
             let file_lock = vfs_file.file();
