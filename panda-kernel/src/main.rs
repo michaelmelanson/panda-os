@@ -8,16 +8,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use ::uefi::{Status, entry};
 use log::info;
 use panda_kernel::{
-    executor, memory,
+    boot, executor, memory,
     process::{Context, Process},
-    resource, scheduler,
-    syscall::gdt::SYSCALL_STACK,
-    uefi, vfs,
+    resource, scheduler, uefi, vfs,
 };
 use spinning_top::Spinlock;
-
-/// ACPI2 RSDP address, stored before higher-half jump for use after.
-static ACPI2_RSDP: AtomicU64 = AtomicU64::new(0);
 
 /// Initrd data pointer, stored before higher-half jump.
 static INITRD_DATA: AtomicU64 = AtomicU64::new(0);
@@ -39,25 +34,15 @@ fn main() -> Status {
     INITRD_DATA.store(initrd_ptr as u64, Ordering::SeqCst);
     INITRD_LEN.store(initrd_len as u64, Ordering::SeqCst);
 
-    // Early init: memory subsystem, physical window, kernel relocation
-    let acpi2_rsdp = panda_kernel::init();
-    ACPI2_RSDP.store(acpi2_rsdp.as_u64(), Ordering::SeqCst);
-
-    // Get the boot stack address (top of SYSCALL_STACK)
-    let boot_stack_top = SYSCALL_STACK.inner.as_ptr() as u64 + SYSCALL_STACK.inner.len() as u64;
-
-    // Jump to higher-half execution
-    unsafe {
-        memory::jump_to_higher_half(boot_stack_top, higher_half_continuation);
-    }
+    // Early init, then jump to higher-half execution
+    unsafe { boot::init_and_jump(higher_half_continuation) }
 }
 
 /// Continuation function called after jumping to higher-half.
 /// This runs from the relocated kernel at higher-half addresses.
 unsafe extern "C" fn higher_half_continuation() -> ! {
     // Continue initialization with ACPI, syscall, interrupts, etc.
-    let acpi2_rsdp = x86_64::PhysAddr::new(ACPI2_RSDP.load(Ordering::SeqCst));
-    panda_kernel::init_after_higher_half_jump(acpi2_rsdp);
+    boot::init_higher_half();
 
     // Reconstruct initrd pointer - map via PhysicalMapping
     // The identity-mapped address IS the physical address, so we can use it directly

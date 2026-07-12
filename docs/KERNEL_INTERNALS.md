@@ -91,7 +91,7 @@ Wakers enable async I/O by letting devices wake blocked processes. They're defin
 
 ### Device wakers
 
-The `Waker` struct has a signaled flag and an optional waiting process ID. Blocking syscall futures call `waker.set_waiting(pid)` on each `Pending` return to register the current process. When the device has data (typically in an interrupt handler), it calls `wake()`, which sets the signaled flag and moves the waiting process to Runnable. The scheduler then polls the future again.
+The `IoWaker` struct has a signaled flag and an optional waiting process ID. Blocking syscall futures call `waker.set_waiting(pid)` on each `Pending` return to register the current process. When the device has data (typically in an interrupt handler), it calls `wake()`, which sets the signaled flag and moves the waiting process to Runnable. The scheduler then polls the future again.
 
 The `is_signaled()` method allows checking without blocking, and `clear()` resets the flag after consuming data.
 

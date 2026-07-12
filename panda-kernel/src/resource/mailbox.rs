@@ -8,7 +8,7 @@ use alloc::sync::{Arc, Weak};
 use spinning_top::Spinlock;
 
 use crate::handle::HandleId;
-use crate::process::waker::Waker;
+use crate::process::waker::IoWaker;
 use crate::resource::Resource;
 
 /// A mailbox that aggregates events from attached handles.
@@ -25,7 +25,26 @@ struct MailboxInner {
     pending: VecDeque<(HandleId, u32)>,
 
     /// Waker for process blocked on wait().
-    waker: Arc<Waker>,
+    waker: Arc<IoWaker>,
+}
+
+impl MailboxInner {
+    /// Post an event for `handle_id` if it is attached and the event matches
+    /// the attached mask, waking the blocked waiter if so.
+    ///
+    /// Shared by `Mailbox::post_event` and `MailboxRef::post_event` — the
+    /// mask filter, bounded push, and wake are identical for both.
+    fn post_event(&mut self, handle_id: HandleId, events: u32) {
+        // Check if handle is attached and filter by mask.
+        // The mask determines which event TYPES to accept (bits 0-7),
+        // but we deliver the full event including any encoded data (e.g., key codes).
+        if let Some(&mask) = self.attached.get(&handle_id) {
+            if events & mask != 0 {
+                push_event_bounded(&mut self.pending, handle_id, events);
+                self.waker.wake();
+            }
+        }
+    }
 }
 
 impl Mailbox {
@@ -35,7 +54,7 @@ impl Mailbox {
             inner: Arc::new(Spinlock::new(MailboxInner {
                 attached: BTreeMap::new(),
                 pending: VecDeque::new(),
-                waker: Waker::new(),
+                waker: IoWaker::new(),
             })),
         })
     }
@@ -65,18 +84,7 @@ impl Mailbox {
     /// the oldest event is dropped to make room. This is safe because mailbox
     /// events are level-triggered flags, not individual messages.
     pub fn post_event(&self, handle_id: HandleId, events: u32) {
-        let mut inner = self.inner.lock();
-
-        // Check if handle is attached and filter by mask.
-        // The mask determines which event TYPES to accept,
-        // but we deliver the full event including any encoded data.
-        if let Some(&mask) = inner.attached.get(&handle_id) {
-            if events & mask != 0 {
-                push_event_bounded(&mut inner.pending, handle_id, events);
-                // Wake the waiting process
-                inner.waker.wake();
-            }
-        }
+        self.inner.lock().post_event(handle_id, events);
     }
 
     /// Wait for the next event (blocking).
@@ -101,7 +109,7 @@ impl Mailbox {
     }
 
     /// Get the waker for blocking operations.
-    pub fn waker(&self) -> Arc<Waker> {
+    pub fn waker(&self) -> Arc<IoWaker> {
         let inner = self.inner.lock();
         inner.waker.clone()
     }
@@ -119,7 +127,7 @@ impl Default for Mailbox {
             inner: Arc::new(Spinlock::new(MailboxInner {
                 attached: BTreeMap::new(),
                 pending: VecDeque::new(),
-                waker: Waker::new(),
+                waker: IoWaker::new(),
             })),
         }
     }
@@ -130,7 +138,7 @@ impl Resource for Mailbox {
         panda_abi::HandleType::Mailbox
     }
 
-    fn waker(&self) -> Option<Arc<Waker>> {
+    fn waker(&self) -> Option<Arc<IoWaker>> {
         Some(self.waker())
     }
 
@@ -191,19 +199,7 @@ impl MailboxRef {
     /// the oldest event is dropped to make room.
     pub fn post_event(&self, events: u32) {
         if let Some(inner) = self.inner.upgrade() {
-            let mut inner = inner.lock();
-
-            // Check if handle is attached and filter by mask.
-            // The mask determines which event TYPES to accept (bits 0-7),
-            // but we deliver the full event including any encoded data (e.g., key codes).
-            if let Some(&mask) = inner.attached.get(&self.handle_id) {
-                // Check if any requested event type is present
-                if events & mask != 0 {
-                    // Deliver the full event, not the masked version
-                    push_event_bounded(&mut inner.pending, self.handle_id, events);
-                    inner.waker.wake();
-                }
-            }
+            inner.lock().post_event(self.handle_id, events);
         }
     }
 }

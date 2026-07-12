@@ -6,7 +6,7 @@ use alloc::sync::Arc;
 
 use crate::process::ProcessId;
 use crate::process::info::ProcessInfo;
-use crate::process::waker::Waker;
+use crate::process::waker::IoWaker;
 use crate::resource::process::{Process, ProcessError};
 use crate::resource::{ChannelEndpoint, MailboxRef, Resource};
 
@@ -47,7 +47,7 @@ impl Resource for SpawnHandle {
         Some(self)
     }
 
-    fn waker(&self) -> Option<Arc<Waker>> {
+    fn waker(&self) -> Option<Arc<IoWaker>> {
         // Return the process waker for blocking on exit
         Some(self.process_info.waker().clone())
     }
@@ -97,7 +97,7 @@ impl Process for SpawnHandle {
         Err(ProcessError::NotSupported)
     }
 
-    fn waker(&self) -> Arc<Waker> {
+    fn waker(&self) -> Arc<IoWaker> {
         self.process_info.waker().clone()
     }
 }

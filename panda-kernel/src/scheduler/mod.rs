@@ -346,12 +346,7 @@ pub(super) fn start_timer_with_deadline() {
 }
 
 pub fn add_process(process: Process) {
-    let mut scheduler = SCHEDULER.write();
-    // Invariant: scheduler must be initialised before processes can be added.
-    let scheduler = scheduler
-        .as_mut()
-        .expect("Scheduler has not been initialized");
-    scheduler.add(process);
+    with_scheduler_mut(|scheduler| scheduler.add(process));
 }
 
 /// Acquire a write lock on the scheduler and pass a mutable reference to `f`.
@@ -605,20 +600,19 @@ pub unsafe fn exec_next_runnable() -> ! {
 /// Dropping a process may trigger channel close notifications that wake other
 /// processes, which requires the scheduler lock.
 pub fn remove_process(pid: ProcessId) {
-    let process = {
-        let mut scheduler = SCHEDULER.write();
-        // Invariant: scheduler must be initialised before processes can be removed.
-        let scheduler = scheduler
-            .as_mut()
-            .expect("Scheduler has not been initialized");
-        scheduler.remove_process(pid)
-    };
-    // Process is dropped here, outside the lock
+    // with_scheduler_mut's internal guard is dropped before it returns, so the
+    // process is guaranteed to be dropped outside the scheduler lock here.
+    let process = with_scheduler_mut(|scheduler| scheduler.remove_process(pid));
     drop(process);
 }
 
 /// Get the currently running process ID.
 pub fn current_process_id() -> ProcessId {
+    // Deliberately not routed through `with_scheduler_mut`: this is a
+    // read-only query and takes `SCHEDULER.read()` rather than `.write()`, so
+    // it doesn't exclude other concurrent readers. `with_scheduler_mut` only
+    // offers a write lock, and upgrading this to a write lock would be an
+    // unnecessary (and unrelated) behavioural change.
     let scheduler = SCHEDULER.read();
     // Invariant: scheduler must be initialised before querying process ID.
     let scheduler = scheduler
@@ -645,12 +639,7 @@ where
     let flags = x86_64::instructions::interrupts::are_enabled();
     x86_64::instructions::interrupts::disable();
 
-    let result = {
-        let mut scheduler = SCHEDULER.write();
-        // Invariant: scheduler must be initialised before calling with_current_process.
-        let scheduler = scheduler
-            .as_mut()
-            .expect("Scheduler has not been initialized");
+    let result = with_scheduler_mut(|scheduler| {
         let pid = scheduler.current_process_id();
         // Invariant: current_process is always set to a valid PID in exec_next_runnable
         // before dispatching to any code that calls with_current_process.
@@ -659,7 +648,7 @@ where
             .get_mut(&pid)
             .expect("Current process not found");
         f(process)
-    };
+    });
 
     // Restore interrupt state
     if flags {
@@ -686,13 +675,10 @@ unsafe fn suspend_current(
     setup: impl FnOnce(&mut Process, ProcessId),
     new_state: ProcessState,
 ) -> ! {
-    {
-        let mut scheduler = SCHEDULER.write();
-        // Invariant: scheduler must be initialised before suspending processes.
-        let scheduler = scheduler
-            .as_mut()
-            .expect("Scheduler has not been initialized");
-
+    // with_scheduler_mut's internal guard is dropped before it returns, so the
+    // scheduler lock is released here, before exec_next_runnable() (which
+    // re-acquires it) is called below.
+    with_scheduler_mut(|scheduler| {
         let pid = scheduler.current_process_id();
         // Invariant: current process is always valid when called from an active
         // syscall path (yield or block). The process cannot have been removed
@@ -707,8 +693,7 @@ unsafe fn suspend_current(
 
         // Change to the new state
         scheduler.change_state(pid, new_state);
-    }
-    // Lock dropped
+    });
 
     // Switch to next process
     unsafe {
@@ -742,17 +727,13 @@ pub unsafe fn yield_current(
 /// If the process no longer exists (e.g., it was removed while a waker was
 /// in flight), this is a no-op. This is expected behaviour and not an error.
 pub fn wake_process(pid: ProcessId) {
-    let mut scheduler = SCHEDULER.write();
-    // Invariant: scheduler must be initialised before waking processes.
-    let scheduler = scheduler
-        .as_mut()
-        .expect("Scheduler has not been initialized");
-
-    // Only wake if the process exists and is blocked
-    if let Some(process) = scheduler.processes.get(&pid) {
-        if process.state() == ProcessState::Blocked {
-            scheduler.change_state(pid, ProcessState::Runnable);
-            debug!("Woke process {:?}", pid);
+    with_scheduler_mut(|scheduler| {
+        // Only wake if the process exists and is blocked
+        if let Some(process) = scheduler.processes.get(&pid) {
+            if process.state() == ProcessState::Blocked {
+                scheduler.change_state(pid, ProcessState::Runnable);
+                debug!("Woke process {:?}", pid);
+            }
         }
-    }
+    });
 }

@@ -2,9 +2,7 @@
 //!
 //! This module is only compiled when the `testing` feature is enabled.
 
-use crate::{
-    QemuExitCode, exit_qemu, init, init_after_higher_half_jump, memory, print, println, syscall,
-};
+use crate::{QemuExitCode, boot, exit_qemu, memory, print, println};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Trait for test functions that can print their name.
@@ -21,7 +19,6 @@ impl<T: Fn() + Sync> Testable for T {
 }
 
 // Statics for passing data across higher-half jump
-static ACPI2_RSDP: AtomicU64 = AtomicU64::new(0);
 static TESTS_PTR: AtomicU64 = AtomicU64::new(0);
 static TESTS_LEN: AtomicU64 = AtomicU64::new(0);
 
@@ -34,22 +31,12 @@ pub fn init_and_run_tests(tests: &'static [&'static dyn Testable]) -> ! {
     TESTS_PTR.store(tests.as_ptr() as u64, Ordering::SeqCst);
     TESTS_LEN.store(tests.len() as u64, Ordering::SeqCst);
 
-    // Early init
-    let acpi2_rsdp = init();
-    ACPI2_RSDP.store(acpi2_rsdp.as_u64(), Ordering::SeqCst);
-
-    // Get boot stack and jump
-    let boot_stack_top = syscall::gdt::SYSCALL_STACK.inner.as_ptr() as u64
-        + syscall::gdt::SYSCALL_STACK.inner.len() as u64;
-
-    unsafe {
-        memory::jump_to_higher_half(boot_stack_top, test_continuation);
-    }
+    // Early init, then jump to higher-half execution
+    unsafe { boot::init_and_jump(test_continuation) }
 }
 
 unsafe extern "C" fn test_continuation() -> ! {
-    let acpi2_rsdp = x86_64::PhysAddr::new(ACPI2_RSDP.load(Ordering::SeqCst));
-    init_after_higher_half_jump(acpi2_rsdp);
+    boot::init_higher_half();
 
     // Reconstruct tests slice - translate from identity-mapped to higher-half
     // The tests slice is in the kernel image which is now at higher-half

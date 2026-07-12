@@ -1,11 +1,11 @@
 //! Waker abstraction for blocking I/O.
 //!
-//! A `Waker` allows a process to block waiting for an event (like keyboard input)
+//! An `IoWaker` allows a process to block waiting for an event (like keyboard input)
 //! and be woken up when data is available. The scheduler is device-agnostic -
 //! it only knows about wakers, not what device they're associated with.
 //!
 //! This module provides two types of wakers:
-//! - `Waker`: For device-level blocking I/O (keyboard, etc.)
+//! - `IoWaker`: For device-level blocking I/O (keyboard, etc.)
 //! - `ProcessWaker`: For Rust `Future` polling - creates a `core::task::Waker`
 
 use alloc::sync::Arc;
@@ -21,14 +21,14 @@ use crate::scheduler;
 /// Devices create wakers and return them via `FsError::WouldBlock`.
 /// The syscall layer then blocks the process on the waker.
 /// When the device has data, it calls `wake()` to unblock the process.
-pub struct Waker {
+pub struct IoWaker {
     /// Whether the waker has been signaled (data available)
     signaled: AtomicBool,
     /// Process waiting on this waker (if any)
     waiting: Spinlock<Option<ProcessId>>,
 }
 
-impl Waker {
+impl IoWaker {
     /// Create a new waker
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -63,7 +63,7 @@ impl Waker {
     }
 }
 
-impl Default for Waker {
+impl Default for IoWaker {
     fn default() -> Self {
         Self {
             signaled: AtomicBool::new(false),

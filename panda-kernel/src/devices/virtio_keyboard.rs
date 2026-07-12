@@ -16,7 +16,7 @@ use crate::{
     device_address::DeviceAddress,
     interrupts::{self, IrqHandlerFunc},
     pci::device::PciDevice,
-    process::waker::Waker,
+    process::waker::IoWaker,
     resource::MailboxRef,
 };
 
@@ -85,7 +85,7 @@ impl<const N: usize> RingBuffer<N> {
 pub struct VirtioKeyboard {
     device: VirtIOInput<VirtioHal, PciTransport>,
     buffer: RingBuffer<64>,
-    waker: Arc<Waker>,
+    waker: Arc<IoWaker>,
     address: DeviceAddress,
     /// Mailboxes attached to this keyboard for event delivery.
     mailboxes: Vec<MailboxRef>,
@@ -103,7 +103,7 @@ impl VirtioKeyboard {
     }
 
     /// Get the waker for this keyboard
-    pub fn waker(&self) -> Arc<Waker> {
+    pub fn waker(&self) -> Arc<IoWaker> {
         self.waker.clone()
     }
 
@@ -195,7 +195,7 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
     let keyboard = VirtioKeyboard {
         device,
         buffer: RingBuffer::new(),
-        waker: Waker::new(),
+        waker: IoWaker::new(),
         address: address.clone(),
         mailboxes: Vec::new(),
     };

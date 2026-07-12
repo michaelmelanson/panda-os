@@ -18,7 +18,7 @@ use x86_64::instructions::port::Port;
 use crate::device_path;
 use crate::devices::virtio_block;
 use crate::devices::virtio_keyboard::{self, VirtioKeyboard};
-use crate::process::waker::Waker;
+use crate::process::waker::IoWaker;
 use crate::vfs;
 
 use super::Resource;
@@ -299,7 +299,7 @@ impl Resource for KeyboardResource {
         Some(self)
     }
 
-    fn waker(&self) -> Option<Arc<Waker>> {
+    fn waker(&self) -> Option<Arc<IoWaker>> {
         Some(self.keyboard.lock().waker())
     }
 
@@ -337,7 +337,7 @@ impl EventSource for KeyboardResource {
         })
     }
 
-    fn waker(&self) -> Arc<Waker> {
+    fn waker(&self) -> Arc<IoWaker> {
         self.keyboard.lock().waker()
     }
 }

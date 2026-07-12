@@ -2,7 +2,7 @@
 
 use alloc::sync::Arc;
 
-use crate::process::waker::Waker;
+use crate::process::waker::IoWaker;
 
 /// An event from an event source.
 #[derive(Debug, Clone)]
@@ -30,5 +30,5 @@ pub trait EventSource: Send + Sync {
     fn poll(&self) -> Option<Event>;
 
     /// Get a waker for blocking until an event is available.
-    fn waker(&self) -> Arc<Waker>;
+    fn waker(&self) -> Arc<IoWaker>;
 }

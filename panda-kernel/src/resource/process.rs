@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 
 use crate::process::ProcessId;
-use crate::process::waker::Waker;
+use crate::process::waker::IoWaker;
 
 /// Interface for process handles.
 ///
@@ -24,7 +24,7 @@ pub trait Process: Send + Sync {
     }
 
     /// Get a waker for blocking until the process exits.
-    fn waker(&self) -> Arc<Waker>;
+    fn waker(&self) -> Arc<IoWaker>;
 }
 
 /// Errors that can occur during process operations.

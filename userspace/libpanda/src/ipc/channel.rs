@@ -98,36 +98,21 @@ impl Channel {
 
     /// Send a message (blocking if queue is full).
     pub fn send(&self, msg: &[u8]) -> Result<()> {
-        let result = sys::channel::send_msg(self.handle.into(), msg);
-        if result < 0 {
-            Err(error::from_code(result))
-        } else {
-            Ok(())
-        }
+        send(self.handle.into(), msg)
     }
 
     /// Try to send a message (non-blocking).
     ///
     /// Returns `Err(ErrorCode::WouldBlock)` if the queue is full.
     pub fn try_send(&self, msg: &[u8]) -> Result<()> {
-        let result = sys::channel::try_send_msg(self.handle.into(), msg);
-        if result < 0 {
-            Err(error::from_code(result))
-        } else {
-            Ok(())
-        }
+        try_send(self.handle.into(), msg)
     }
 
     /// Receive a message (blocking if queue is empty).
     ///
     /// Returns the number of bytes received.
     pub fn recv(&self, buf: &mut [u8]) -> Result<usize> {
-        let result = sys::channel::recv_msg(self.handle.into(), buf);
-        if result < 0 {
-            Err(error::from_code(result))
-        } else {
-            Ok(result as usize)
-        }
+        recv(self.handle.into(), buf)
     }
 
     /// Try to receive a message (non-blocking).
@@ -135,14 +120,14 @@ impl Channel {
     /// Returns `Ok(Some(len))` if a message was received, `Ok(None)` if the
     /// queue is empty, or `Err` on error.
     pub fn try_recv(&self, buf: &mut [u8]) -> Result<Option<usize>> {
-        let result = sys::channel::try_recv_msg(self.handle.into(), buf);
-        if result == -1 {
-            // Would block - no message available
-            Ok(None)
-        } else if result < 0 {
-            Err(error::from_code(result))
-        } else {
-            Ok(Some(result as usize))
+        match try_recv(self.handle.into(), buf) {
+            Ok(len) => Ok(Some(len)),
+            // An empty queue is an expected condition for try_recv, not an
+            // error. (This previously tested for a raw -1 return, which is
+            // NotFound, not WouldBlock (-9) — so the empty case leaked out
+            // as Err(WouldBlock) instead of Ok(None).)
+            Err(panda_abi::ErrorCode::WouldBlock) => Ok(None),
+            Err(e) => Err(e),
         }
     }
 

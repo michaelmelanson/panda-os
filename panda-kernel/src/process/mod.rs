@@ -17,7 +17,7 @@ pub use context::Context;
 pub use exec::{return_from_deferred_syscall, return_from_interrupt, return_from_syscall};
 pub use info::ProcessInfo;
 pub use state::{InterruptFrame, SavedGprs, SavedState};
-pub use waker::{ProcessWaker, Waker};
+pub use waker::{IoWaker, ProcessWaker};
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;

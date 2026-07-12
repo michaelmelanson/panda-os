@@ -12,7 +12,7 @@ use core::fmt;
 
 use panda_abi::HandleType;
 
-use crate::process::waker::Waker;
+use crate::process::waker::IoWaker;
 use crate::resource::{
     Buffer, CharacterOutput, Directory, EventSource, ProcessInterface, Resource, Surface, VfsFile,
 };
@@ -120,7 +120,7 @@ impl Handle {
     }
 
     /// Get a waker for blocking on this handle.
-    pub fn waker(&self) -> Option<Arc<Waker>> {
+    pub fn waker(&self) -> Option<Arc<IoWaker>> {
         self.resource.waker()
     }
 

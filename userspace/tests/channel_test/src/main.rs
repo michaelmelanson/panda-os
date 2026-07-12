@@ -18,6 +18,22 @@ libpanda::main! {
         return 1;
     };
 
+    // try_recv on an open but empty channel must report empty as Ok(None),
+    // not an error. (Done before any exchange so the peer is still alive —
+    // a closed channel is a genuine error, distinguishable from empty.)
+    let mut buf = [0u8; 64];
+    match channel.try_recv(&mut buf) {
+        Ok(None) => environment::log("Channel test: try_recv empty returned Ok(None)"),
+        Ok(Some(_)) => {
+            environment::log("FAIL: try_recv returned data on empty channel");
+            return 1;
+        }
+        Err(_) => {
+            environment::log("FAIL: try_recv on empty channel returned an error");
+            return 1;
+        }
+    }
+
     environment::log("Channel test: child spawned, sending ping...");
 
     // Send a message to the child
@@ -29,7 +45,6 @@ libpanda::main! {
     environment::log("Channel test: ping sent, waiting for pong...");
 
     // Receive response from child
-    let mut buf = [0u8; 64];
     match channel.recv(&mut buf) {
         Ok(len) => {
             if len == 4 && &buf[..4] == b"pong" {

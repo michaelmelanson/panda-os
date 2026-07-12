@@ -10,7 +10,7 @@ use spinning_top::{RwSpinlock, Spinlock};
 use crate::process::ProcessId;
 use crate::resource::MailboxRef;
 
-use super::waker::Waker;
+use super::waker::IoWaker;
 
 /// External process information accessible via handles.
 ///
@@ -24,7 +24,7 @@ pub struct ProcessInfo {
     /// Exit code, set when process terminates. None while running.
     exit_code: RwSpinlock<Option<i32>>,
     /// Waker to notify when process exits (for wait() syscall)
-    waker: Arc<Waker>,
+    waker: Arc<IoWaker>,
     /// Mailboxes to notify when process exits
     exit_mailboxes: Spinlock<Vec<MailboxRef>>,
 }
@@ -35,7 +35,7 @@ impl ProcessInfo {
         Self {
             pid,
             exit_code: RwSpinlock::new(None),
-            waker: Waker::new(),
+            waker: IoWaker::new(),
             exit_mailboxes: Spinlock::new(Vec::new()),
         }
     }
@@ -72,7 +72,7 @@ impl ProcessInfo {
     }
 
     /// Get the waker for blocking on process exit.
-    pub fn waker(&self) -> &Arc<Waker> {
+    pub fn waker(&self) -> &Arc<IoWaker> {
         &self.waker
     }
 }

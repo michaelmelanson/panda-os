@@ -10,7 +10,7 @@ use spinning_top::Spinlock;
 
 use panda_abi::{DEFAULT_QUEUE_CAPACITY, MAX_MESSAGE_SIZE};
 
-use crate::process::waker::Waker;
+use crate::process::waker::IoWaker;
 use crate::resource::{MailboxRef, Resource};
 
 /// Error type for channel operations.
@@ -42,7 +42,7 @@ struct ChannelHalf {
     /// Is this side closed?
     closed: bool,
     /// Waker for this side (woken when peer sends or closes).
-    waker: Arc<Waker>,
+    waker: Arc<IoWaker>,
     /// Mailbox reference for this side.
     mailbox: Option<MailboxRef>,
 }
@@ -52,7 +52,7 @@ impl ChannelHalf {
         Self {
             queue: VecDeque::new(),
             closed: false,
-            waker: Waker::new(),
+            waker: IoWaker::new(),
             mailbox: None,
         }
     }
@@ -232,7 +232,7 @@ impl ChannelEndpoint {
     }
 
     /// Get the waker for this endpoint.
-    pub fn waker(&self) -> Arc<Waker> {
+    pub fn waker(&self) -> Arc<IoWaker> {
         let mut shared = self.shared.lock();
         let (ours, _) = shared.halves(self.side);
         ours.waker.clone()
@@ -264,7 +264,7 @@ impl Resource for ChannelEndpoint {
         panda_abi::HandleType::Channel
     }
 
-    fn waker(&self) -> Option<Arc<crate::process::waker::Waker>> {
+    fn waker(&self) -> Option<Arc<crate::process::waker::IoWaker>> {
         Some(self.waker())
     }
 

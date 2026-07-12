@@ -14,6 +14,7 @@ extern crate alloc;
 
 pub mod acpi;
 pub mod apic;
+pub mod boot;
 pub mod compositor;
 pub mod device_address;
 pub mod device_path;

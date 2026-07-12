@@ -41,7 +41,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use spinning_top::Spinlock;
 
-use crate::process::waker::Waker;
+use crate::process::waker::IoWaker;
 use crate::vfs;
 
 /// A VFS file that can be accessed asynchronously.
@@ -90,7 +90,7 @@ pub trait Resource: Send + Sync {
     }
 
     /// Get a waker for blocking on this resource, if applicable.
-    fn waker(&self) -> Option<Arc<Waker>> {
+    fn waker(&self) -> Option<Arc<IoWaker>> {
         None
     }
 

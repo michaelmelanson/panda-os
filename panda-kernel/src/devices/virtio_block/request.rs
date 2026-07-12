@@ -5,7 +5,7 @@ use virtio_drivers::device::blk::{BlkReq as BlockRequest, BlkResp as BlockRespon
 
 use crate::memory::dma::DmaBuffer;
 use crate::process::ProcessId;
-use crate::process::waker::Waker;
+use crate::process::waker::IoWaker;
 
 use super::VirtioToken;
 
@@ -31,7 +31,7 @@ pub(super) struct PendingBlockRequest {
     /// Process ID of the requesting process.
     pub process_id: ProcessId,
     /// Waker for the blocked process.
-    pub waker: Arc<Waker>,
+    pub waker: Arc<IoWaker>,
     /// DMA buffer owned by kernel.
     pub dma_buffer: DmaBuffer,
     /// Virtio request header.
@@ -49,7 +49,7 @@ pub(super) struct QueuedBlockRequest {
     /// Process ID of the requesting process.
     pub process_id: ProcessId,
     /// Waker for the blocked process.
-    pub waker: Arc<Waker>,
+    pub waker: Arc<IoWaker>,
     /// DMA buffer with data (for writes, contains data to write).
     pub dma_buffer: DmaBuffer,
 }
