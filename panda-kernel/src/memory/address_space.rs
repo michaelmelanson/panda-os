@@ -19,7 +19,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use goblin::pe::PE;
 use log::{debug, info};
 use uefi::mem::memory_map::MemoryMapOwned;
-use x86_64::structures::paging::page_table::PageTableLevel;
+use x86_64::structures::paging::page_table::{PageTableEntry, PageTableLevel};
 use x86_64::structures::paging::{PageTable, PageTableFlags, PhysFrame};
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -85,6 +85,39 @@ pub const KERNEL_IMAGE_BASE: u64 = 0xffff_c000_0000_0000;
 /// Imported from syscall::user_ptr.
 pub const USER_ADDR_MAX: u64 = 0x0000_7fff_ffff_ffff;
 
+/// Get the child page table referenced by `entry`, allocating and installing a
+/// freshly-allocated one via `alloc_frame` if the entry is not yet present.
+///
+/// The new entry is marked `PRESENT | WRITABLE` (an intermediate page table
+/// entry; leaf entries are set separately by the caller). `alloc_frame` must
+/// return an already-zeroed frame.
+///
+/// Used only during early-boot address-space setup, before the recursive
+/// mapping is available, where callers walk PML4 -> PML1 via raw physical
+/// pointers. Callers are responsible for ensuring write protection is already
+/// disabled (e.g. via an enclosing `without_write_protection` call) before
+/// calling this for a not-yet-present entry.
+///
+/// # Safety
+/// The physical address held by `entry`, if present, must be safely
+/// dereferenceable as a `*mut PageTable` (i.e. covered by an active identity
+/// or heap mapping) at the call site.
+unsafe fn get_or_create_table(
+    entry: &mut PageTableEntry,
+    alloc_frame: impl FnOnce() -> PhysFrame,
+) -> *mut PageTable {
+    if entry.flags().contains(PageTableFlags::PRESENT) {
+        entry.addr().as_u64() as *mut PageTable
+    } else {
+        let frame = alloc_frame();
+        entry.set_addr(
+            frame.start_address(),
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
+        );
+        frame.start_address().as_u64() as *mut PageTable
+    }
+}
+
 /// Map the kernel heap region at KERNEL_HEAP_BASE.
 ///
 /// This maps the given physical memory to virtual addresses starting at `KERNEL_HEAP_BASE`,
@@ -109,47 +142,20 @@ pub unsafe fn map_heap_region(phys_base: u64, size: u64) {
             // Get PML4 entry
             let pml4_index = virt_addr.page_table_index(PageTableLevel::Four);
             let pml4_entry = &mut pml4[pml4_index];
-            let pml3 = if pml4_entry.flags().contains(PageTableFlags::PRESENT) {
-                unsafe { &mut *(pml4_entry.addr().as_u64() as *mut PageTable) }
-            } else {
-                let frame = allocate_early_frame();
-                let table = frame.start_address().as_u64() as *mut PageTable;
-                pml4_entry.set_addr(
-                    frame.start_address(),
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                );
-                unsafe { &mut *table }
-            };
+            let pml3 =
+                unsafe { &mut *get_or_create_table(pml4_entry, allocate_early_frame) };
 
             // Get PML3 entry
             let pml3_index = virt_addr.page_table_index(PageTableLevel::Three);
             let pml3_entry = &mut pml3[pml3_index];
-            let pml2 = if pml3_entry.flags().contains(PageTableFlags::PRESENT) {
-                unsafe { &mut *(pml3_entry.addr().as_u64() as *mut PageTable) }
-            } else {
-                let frame = allocate_early_frame();
-                let table = frame.start_address().as_u64() as *mut PageTable;
-                pml3_entry.set_addr(
-                    frame.start_address(),
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                );
-                unsafe { &mut *table }
-            };
+            let pml2 =
+                unsafe { &mut *get_or_create_table(pml3_entry, allocate_early_frame) };
 
             // Get PML2 entry
             let pml2_index = virt_addr.page_table_index(PageTableLevel::Two);
             let pml2_entry = &mut pml2[pml2_index];
-            let pml1 = if pml2_entry.flags().contains(PageTableFlags::PRESENT) {
-                unsafe { &mut *(pml2_entry.addr().as_u64() as *mut PageTable) }
-            } else {
-                let frame = allocate_early_frame();
-                let table = frame.start_address().as_u64() as *mut PageTable;
-                pml2_entry.set_addr(
-                    frame.start_address(),
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                );
-                unsafe { &mut *table }
-            };
+            let pml1 =
+                unsafe { &mut *get_or_create_table(pml2_entry, allocate_early_frame) };
 
             // Map 4KB page at PML1 level
             let pml1_index = virt_addr.page_table_index(PageTableLevel::One);
@@ -242,75 +248,41 @@ unsafe fn map_kernel_to_higher_half(kernel_info: &KernelImageInfo) -> VirtAddr {
 
     let pml4 = unsafe { &mut *current_page_table() };
 
-    // Map each 4KB page of the kernel to higher-half
-    for offset in (0..aligned_size).step_by(4096) {
-        let phys_addr = PhysAddr::new(image_base_phys + offset as u64);
-        let virt_addr = VirtAddr::new(KERNEL_IMAGE_BASE + offset as u64);
+    // Map each 4KB page of the kernel to higher-half.
+    // `allocate_frame_raw()` returns already-zeroed frames (via alloc_zeroed),
+    // so no separate zeroing step is needed for newly-created intermediate tables.
+    without_write_protection(|| {
+        for offset in (0..aligned_size).step_by(4096) {
+            let phys_addr = PhysAddr::new(image_base_phys + offset as u64);
+            let virt_addr = VirtAddr::new(KERNEL_IMAGE_BASE + offset as u64);
 
-        // Get PML4 entry
-        let pml4_index = virt_addr.page_table_index(PageTableLevel::Four);
-        let pml4_entry = &mut pml4[pml4_index];
-        let pml3 = if pml4_entry.flags().contains(PageTableFlags::PRESENT) {
-            unsafe { &mut *(pml4_entry.addr().as_u64() as *mut PageTable) }
-        } else {
-            let frame = allocate_frame_raw();
-            let table = unsafe { &mut *(frame.start_address().as_u64() as *mut PageTable) };
-            unsafe { core::ptr::write_bytes(table, 0, 1) };
-            without_write_protection(|| {
-                pml4_entry.set_addr(
-                    frame.start_address(),
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                );
-            });
-            table
-        };
+            // Get PML4 entry
+            let pml4_index = virt_addr.page_table_index(PageTableLevel::Four);
+            let pml4_entry = &mut pml4[pml4_index];
+            let pml3 =
+                unsafe { &mut *get_or_create_table(pml4_entry, allocate_frame_raw) };
 
-        // Get PML3 entry
-        let pml3_index = virt_addr.page_table_index(PageTableLevel::Three);
-        let pml3_entry = &mut pml3[pml3_index];
-        let pml2 = if pml3_entry.flags().contains(PageTableFlags::PRESENT) {
-            unsafe { &mut *(pml3_entry.addr().as_u64() as *mut PageTable) }
-        } else {
-            let frame = allocate_frame_raw();
-            let table = unsafe { &mut *(frame.start_address().as_u64() as *mut PageTable) };
-            unsafe { core::ptr::write_bytes(table, 0, 1) };
-            without_write_protection(|| {
-                pml3_entry.set_addr(
-                    frame.start_address(),
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                );
-            });
-            table
-        };
+            // Get PML3 entry
+            let pml3_index = virt_addr.page_table_index(PageTableLevel::Three);
+            let pml3_entry = &mut pml3[pml3_index];
+            let pml2 =
+                unsafe { &mut *get_or_create_table(pml3_entry, allocate_frame_raw) };
 
-        // Get PML2 entry
-        let pml2_index = virt_addr.page_table_index(PageTableLevel::Two);
-        let pml2_entry = &mut pml2[pml2_index];
-        let pml1 = if pml2_entry.flags().contains(PageTableFlags::PRESENT) {
-            unsafe { &mut *(pml2_entry.addr().as_u64() as *mut PageTable) }
-        } else {
-            let frame = allocate_frame_raw();
-            let table = unsafe { &mut *(frame.start_address().as_u64() as *mut PageTable) };
-            unsafe { core::ptr::write_bytes(table, 0, 1) };
-            without_write_protection(|| {
-                pml2_entry.set_addr(
-                    frame.start_address(),
-                    PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
-                );
-            });
-            table
-        };
+            // Get PML2 entry
+            let pml2_index = virt_addr.page_table_index(PageTableLevel::Two);
+            let pml2_entry = &mut pml2[pml2_index];
+            let pml1 =
+                unsafe { &mut *get_or_create_table(pml2_entry, allocate_frame_raw) };
 
-        // Set PML1 entry (4KB page)
-        let pml1_index = virt_addr.page_table_index(PageTableLevel::One);
-        let pml1_entry = &mut pml1[pml1_index];
-        without_write_protection(|| {
+            // Set PML1 entry (4KB page)
+            let pml1_index = virt_addr.page_table_index(PageTableLevel::One);
+            let pml1_entry = &mut pml1[pml1_index];
             pml1_entry.set_addr(
                 phys_addr,
                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
             );
-        });
-    }
+        }
+    });
 
     x86_64::instructions::tlb::flush_all();
 

@@ -7,7 +7,7 @@
 
 use core::alloc::Layout;
 
-use x86_64::structures::paging::PhysFrame;
+use x86_64::structures::paging::{PageTableFlags, PhysFrame};
 
 mod address;
 mod address_space;
@@ -45,6 +45,26 @@ pub struct MemoryMappingOptions {
     pub user: bool,
     pub executable: bool,
     pub writable: bool,
+}
+
+impl MemoryMappingOptions {
+    /// Translate these options into the equivalent `PageTableFlags`.
+    ///
+    /// Always includes `PRESENT`. Adds `USER_ACCESSIBLE` if `user`, `WRITABLE`
+    /// if `writable`, and `NO_EXECUTE` unless `executable`.
+    pub fn to_flags(self) -> PageTableFlags {
+        let mut flags = PageTableFlags::PRESENT;
+        if self.user {
+            flags |= PageTableFlags::USER_ACCESSIBLE;
+        }
+        if self.writable {
+            flags |= PageTableFlags::WRITABLE;
+        }
+        if !self.executable {
+            flags |= PageTableFlags::NO_EXECUTE;
+        }
+        flags
+    }
 }
 
 /// Size of memory reserved for early page table allocations before heap is ready.

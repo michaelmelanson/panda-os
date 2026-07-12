@@ -103,16 +103,7 @@ pub fn update_permissions(
         "virtual address must be page-aligned"
     );
 
-    let mut flags = PageTableFlags::PRESENT;
-    if options.user {
-        flags |= PageTableFlags::USER_ACCESSIBLE;
-    }
-    if options.writable {
-        flags |= PageTableFlags::WRITABLE;
-    }
-    if !options.executable {
-        flags |= PageTableFlags::NO_EXECUTE;
-    }
+    let flags = options.to_flags();
 
     for i in (0..size_bytes).step_by(4096) {
         let virt_addr = base_virt_addr + i as u64;
@@ -185,16 +176,7 @@ fn map_inner(
             continue;
         }
 
-        let mut flags = PageTableFlags::PRESENT;
-        if options.user {
-            flags |= PageTableFlags::USER_ACCESSIBLE;
-        }
-        if options.writable {
-            flags |= PageTableFlags::WRITABLE;
-        }
-        if !options.executable {
-            flags |= PageTableFlags::NO_EXECUTE;
-        }
+        let flags = options.to_flags();
 
         let (entry, _level) = page_table_entry(PageTableLevel::One, virt_addr, flags);
         let entry = unsafe { &mut *entry };
@@ -230,16 +212,7 @@ pub fn allocate_and_map(
 
     let aligned_size = (size_bytes + 4095) & !4095;
 
-    let mut flags = PageTableFlags::PRESENT;
-    if options.user {
-        flags |= PageTableFlags::USER_ACCESSIBLE;
-    }
-    if options.writable {
-        flags |= PageTableFlags::WRITABLE;
-    }
-    if !options.executable {
-        flags |= PageTableFlags::NO_EXECUTE;
-    }
+    let flags = options.to_flags();
 
     // Calculate the 2MB-aligned regions for huge page usage.
     // Layout: [head 4KB pages] [2MB huge pages] [tail 4KB pages]
@@ -460,6 +433,21 @@ pub fn unmap_region(base_virt: VirtAddr, size_bytes: usize) {
 
 /// Unmap a single page and free empty intermediate page tables.
 pub fn unmap_page(virt_addr: VirtAddr) {
+    unmap_and_gc(virt_addr, false);
+}
+
+/// Unmap a single page, walking L4 -> L1 via the recursive mapping, and free any
+/// intermediate page tables that become empty as a result. Handles the 2MB
+/// huge-page case at L2.
+///
+/// If `free_leaf` is true, the leaf frame found at L1 is also deallocated (used
+/// by demand paging, which owns its leaf frames outside of RAII tracking).
+///
+/// Huge-page leaves are never deallocated here regardless of `free_leaf`: huge
+/// pages are always backed by an RAII `Frame` allocated in `allocate_and_map`,
+/// so freeing them here would double-free. This mirrors the historical
+/// behaviour of both call sites this routine replaces.
+pub(super) fn unmap_and_gc(virt_addr: VirtAddr, free_leaf: bool) {
     let levels = [
         PageTableLevel::Four,
         PageTableLevel::Three,
@@ -467,9 +455,7 @@ pub fn unmap_page(virt_addr: VirtAddr) {
         PageTableLevel::One,
     ];
 
-    // Walk down to find the depth we can reach
-    let mut max_depth = 0;
-    for (i, level) in levels.iter().enumerate() {
+    for level in levels.iter() {
         let table = unsafe { recursive::table_for_addr(virt_addr, *level) };
         let index = virt_addr.page_table_index(*level);
         let entry = &table[index];
@@ -478,7 +464,23 @@ pub fn unmap_page(virt_addr: VirtAddr) {
             return; // Already unmapped
         }
 
-        max_depth = i;
+        if *level == PageTableLevel::One {
+            let frame_addr = entry.addr();
+
+            let table = unsafe { recursive::table_for_addr_mut(virt_addr, *level) };
+            without_write_protection(|| {
+                table[index].set_unused();
+            });
+            tlb::flush(virt_addr);
+
+            if free_leaf {
+                let frame = PhysFrame::from_start_address(frame_addr).unwrap();
+                unsafe {
+                    deallocate_frame_raw(frame);
+                }
+            }
+            break;
+        }
 
         // Handle huge pages at level 2
         if *level == PageTableLevel::Two && entry.flags().contains(PageTableFlags::HUGE_PAGE) {
@@ -489,20 +491,6 @@ pub fn unmap_page(virt_addr: VirtAddr) {
             tlb::flush(virt_addr);
             return;
         }
-
-        if *level == PageTableLevel::One {
-            break;
-        }
-    }
-
-    // Clear the L1 entry
-    if max_depth == 3 {
-        let l1_table = unsafe { recursive::table_for_addr_mut(virt_addr, PageTableLevel::One) };
-        let l1_index = virt_addr.page_table_index(PageTableLevel::One);
-        without_write_protection(|| {
-            l1_table[l1_index].set_unused();
-        });
-        tlb::flush(virt_addr);
     }
 
     // Walk back up and free empty intermediate tables

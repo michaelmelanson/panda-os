@@ -7,17 +7,10 @@
 //! Frames allocated for demand paging are managed by page tables directly
 //! (not RAII guards) and freed via `free_region()` when the process exits.
 
-use log::debug;
-use x86_64::{
-    PhysAddr, VirtAddr,
-    instructions::tlb,
-    structures::paging::{PageTableFlags, PhysFrame, page_table::PageTableLevel},
-};
+use x86_64::{PhysAddr, VirtAddr};
 
-use super::paging::map_external;
-use super::write_protection::without_write_protection;
-use super::recursive;
-use super::{MemoryMappingOptions, deallocate_frame_raw};
+use super::paging::{map_external, unmap_and_gc};
+use super::MemoryMappingOptions;
 
 /// Free a region by walking page tables, deallocating mapped frames, and clearing PTEs.
 ///
@@ -34,91 +27,7 @@ pub fn free_region(base_virt: VirtAddr, size_bytes: usize) {
 ///
 /// Unlike `unmap_page`, this also deallocates the physical frame.
 fn free_page(virt_addr: VirtAddr) {
-    let levels = [
-        PageTableLevel::Four,
-        PageTableLevel::Three,
-        PageTableLevel::Two,
-        PageTableLevel::One,
-    ];
-
-    // Walk down to find the L1 entry
-    for level in levels.iter() {
-        let table = unsafe { recursive::table_for_addr(virt_addr, *level) };
-        let index = virt_addr.page_table_index(*level);
-        let entry = &table[index];
-
-        if !entry.flags().contains(PageTableFlags::PRESENT) {
-            return; // Not mapped, nothing to free
-        }
-
-        if *level == PageTableLevel::One {
-            // Found L1 entry - get the frame address before clearing
-            let frame_addr = entry.addr();
-            let frame = PhysFrame::from_start_address(frame_addr).unwrap();
-
-            // Clear the entry
-            let table = unsafe { recursive::table_for_addr_mut(virt_addr, *level) };
-            without_write_protection(|| {
-                table[index].set_unused();
-            });
-            tlb::flush(virt_addr);
-
-            // Deallocate the frame
-            unsafe {
-                deallocate_frame_raw(frame);
-            }
-            break;
-        }
-
-        // Handle huge pages at level 2 (not expected for heap, but handle anyway)
-        if *level == PageTableLevel::Two && entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-            let table = unsafe { recursive::table_for_addr_mut(virt_addr, *level) };
-            without_write_protection(|| {
-                table[index].set_unused();
-            });
-            tlb::flush(virt_addr);
-            // Note: huge page frame deallocation not implemented
-            return;
-        }
-    }
-
-    // Walk back up and free empty intermediate tables
-    for level in [
-        PageTableLevel::One,
-        PageTableLevel::Two,
-        PageTableLevel::Three,
-    ] {
-        let child_table = unsafe { recursive::table_for_addr(virt_addr, level) };
-
-        let is_empty = child_table
-            .iter()
-            .all(|entry| !entry.flags().contains(PageTableFlags::PRESENT));
-
-        if !is_empty {
-            break;
-        }
-
-        // Safe to unwrap: levels 1, 2, 3 all have a higher level
-        let parent_level = level.next_higher_level().unwrap();
-        let parent_table = unsafe { recursive::table_for_addr_mut(virt_addr, parent_level) };
-        let parent_index = virt_addr.page_table_index(parent_level);
-
-        let child_frame_addr = parent_table[parent_index].addr();
-        let child_frame = PhysFrame::from_start_address(child_frame_addr).unwrap();
-
-        without_write_protection(|| {
-            parent_table[parent_index].set_unused();
-        });
-
-        unsafe {
-            deallocate_frame_raw(child_frame);
-        }
-
-        debug!(
-            "Freed empty page table at {:?} (level {:?})",
-            child_frame_addr, level
-        );
-    }
+    unmap_and_gc(virt_addr, true);
 }
 
 /// Try to handle a page fault for userspace heap demand paging.
