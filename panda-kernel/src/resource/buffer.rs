@@ -42,6 +42,15 @@
 //! `proc.free_buffer_vaddr` — a non-owner's free still drops the handle
 //! (and, if it was the last reference, the buffer itself) but skips
 //! reclaiming vaddr space that belongs to a different process's allocator.
+//! `handle_resize` rejects non-owners outright with
+//! `ErrorCode::PermissionDenied` before touching anything — unlike free, a
+//! non-owner resize has no safe partial behaviour: it calls
+//! `mapped_addr`/`with_slice`/`with_mut_slice`, and its reallocation path
+//! additionally calls `proc.free_buffer_vaddr` on the old vaddr and
+//! `handle.replace_resource` to swap in a new `SharedBuffer`, which would
+//! both corrupt the caller's own vaddr allocator and silently change the
+//! buffer the actual owner sees.
+//!
 //! `OP_BUFFER_MAP` (`handle_map`) is deliberately exempt: it is specifically
 //! the sanctioned way for a non-owner to get a valid mapping of a
 //! transferred buffer, and it never calls `as_slice`/`with_slice` — it maps

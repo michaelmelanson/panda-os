@@ -92,6 +92,34 @@ pub fn handle_resize(
     } else {
         None
     };
+    // Resize is an owner-only operation: `buffer.mapped_addr()` /
+    // `with_slice` / `with_mut_slice` below are only meaningful in the
+    // allocating process's address space, and the reallocation path
+    // additionally calls `proc.free_buffer_vaddr` and
+    // `handle.replace_resource` — reclaiming vaddr space and swapping the
+    // resource behind a handle the caller doesn't own would corrupt the
+    // caller's own allocator state and silently change the buffer the
+    // actual owner sees. A process that merely received the handle via
+    // transfer must not be able to reach any of this.
+    let owner_check = scheduler::with_current_process(|proc| {
+        let handle = proc.handles().get(handle_id)?;
+        let buffer = handle.resource_arc().as_shared_buffer()?;
+        Some(buffer.owner() == proc.id())
+    });
+    match owner_check {
+        Some(true) => {}
+        Some(false) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::PermissionDenied,
+            )));
+        }
+        None => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidHandle,
+            )));
+        }
+    }
+
     let result = scheduler::with_current_process(|proc| {
         // Try in-place resize first
         let resize_result = {

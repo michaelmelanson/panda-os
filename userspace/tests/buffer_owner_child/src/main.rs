@@ -76,7 +76,24 @@ libpanda::main! {
     }
     environment::log("Buffer owner child: write from non-owned buffer refused");
 
-    // Test 3: OP_BUFFER_FREE on a transferred handle must drop only the
+    // Test 3: OP_BUFFER_RESIZE on a non-owned buffer must fail cleanly. If
+    // it instead dereferences (or reallocates/replaces) the allocator's
+    // vaddr in OUR address space, it would touch `own`'s memory directly, or
+    // (on the reallocation path) call `free_buffer_vaddr` on OUR allocator
+    // with the parent's vaddr — poisoning it for the next allocation below,
+    // just like the free-safety check above.
+    let resize_result = sys::buffer::resize(transferred, BUFFER_SIZE * 2, None);
+    if resize_result >= 0 {
+        environment::log("FAIL: resize of non-owned buffer succeeded");
+        return 1;
+    }
+    if own.as_slice().iter().any(|&b| b != CHILD_MARKER) {
+        environment::log("FAIL: resize of non-owned buffer corrupted our own buffer");
+        return 1;
+    }
+    environment::log("Buffer owner child: resize of non-owned buffer refused");
+
+    // Test 4: OP_BUFFER_FREE on a transferred handle must drop only the
     // handle — never reclaim the allocator's vaddr range into OUR vaddr
     // allocator. If it does, the next allocation below is placed on top of
     // `own`, and writing it corrupts `own`.
