@@ -28,20 +28,26 @@
 //! is active would read/write whatever happens to be mapped at that same
 //! numeric address in the wrong address space.
 //!
-//! Verified call sites (at the time this was written) all satisfy this:
-//! `syscall/buffer.rs::handle_read_buffer` / `handle_write_buffer` and
-//! `syscall/surface.rs::handle_blit` all resolve the buffer via
-//! `scheduler::with_current_process`/`proc.handles()`, i.e. from the
-//! handle table of whichever process is *currently running the syscall* —
-//! so a buffer's `with_slice`/`with_mut_slice` is only ever invoked from the
-//! process that owns the handle being dereferenced. Since a buffer handle
-//! only usefully resolves to a `SharedBuffer` in the process that
-//! allocated it or that received it via transfer/`OP_BUFFER_MAP`, and none
-//! of those call sites are reachable from `OP_BUFFER_MAP` itself (which
-//! never calls `as_slice`/`with_slice` — it maps frames directly via
-//! `SharedBuffer::map_page_range`), this invariant holds today. Any new
-//! caller of `as_slice`/`with_slice` must independently ensure it only runs
-//! while the allocating process is current.
+//! Enforced call sites: `syscall/buffer.rs::handle_read_buffer` /
+//! `handle_write_buffer` compare `SharedBuffer::owner()` against
+//! `scheduler::current_process_id()` before touching the buffer's slice at
+//! all, and reject the call with `ErrorCode::PermissionDenied` on mismatch —
+//! so `with_slice`/`with_mut_slice` are only ever reached from the
+//! allocating process, regardless of whether the caller merely holds a
+//! *transferred* handle to the buffer (M1.1 handle transfer installs the
+//! `SharedBuffer` resource into the receiver's handle table without
+//! requiring `OP_BUFFER_MAP`, so a non-owning process can otherwise reach
+//! these call sites with a valid-looking `handle_id`). `handle_free`
+//! performs the same ownership check before reclaiming `user_vaddr` via
+//! `proc.free_buffer_vaddr` — a non-owner's free still drops the handle
+//! (and, if it was the last reference, the buffer itself) but skips
+//! reclaiming vaddr space that belongs to a different process's allocator.
+//! `OP_BUFFER_MAP` (`handle_map`) is deliberately exempt: it is specifically
+//! the sanctioned way for a non-owner to get a valid mapping of a
+//! transferred buffer, and it never calls `as_slice`/`with_slice` — it maps
+//! frames directly via `SharedBuffer::map_page_range`. Any new caller of
+//! `as_slice`/`with_slice` must independently enforce (or knowingly not
+//! enforce) this ownership check.
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -51,7 +57,7 @@ use x86_64::VirtAddr;
 
 use crate::memory::{self, Frame, Mapping, MappingBacking, MemoryMappingOptions, map_external};
 use crate::memory::smap;
-use crate::process::Process;
+use crate::process::{Process, ProcessId};
 
 use super::Resource;
 
@@ -194,6 +200,10 @@ pub struct SharedBuffer {
     _mapping: Mapping,
     /// Weak self-reference for returning Arc<SharedBuffer> from trait methods.
     self_ref: Weak<SharedBuffer>,
+    /// The process that allocated this buffer — the only process in which
+    /// `user_vaddr` is meaningful. See the module-level "Process-context
+    /// safety" doc comment.
+    owner: ProcessId,
 }
 
 impl SharedBuffer {
@@ -226,15 +236,25 @@ impl SharedBuffer {
 
         let mapped_addr = user_vaddr.as_u64() as usize;
 
+        let owner = process.id();
+
         let buffer = Arc::new_cyclic(|weak| Self {
             frames,
             logical_size: AtomicUsize::new(size),
             user_vaddr,
             _mapping: mapping,
             self_ref: weak.clone(),
+            owner,
         });
 
         Ok((buffer, mapped_addr))
+    }
+
+    /// The process that allocated this buffer. `user_vaddr` (and therefore
+    /// `as_slice`/`as_mut_slice`/`mapped_addr`) is only meaningful while
+    /// this process's page table is active.
+    pub fn owner(&self) -> ProcessId {
+        self.owner
     }
 
     /// Map each frame individually into the CURRENT process's address space

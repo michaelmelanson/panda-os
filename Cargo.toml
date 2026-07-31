@@ -69,6 +69,8 @@ members = [
   "userspace/tests/scheme_registry_test",
   "userspace/tests/buffer_transfer_test",
   "userspace/tests/buffer_transfer_child",
+  "userspace/tests/buffer_owner_test",
+  "userspace/tests/buffer_owner_child",
   "crates/ring-buffer",
 ]
 

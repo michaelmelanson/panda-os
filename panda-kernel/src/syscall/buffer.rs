@@ -250,26 +250,38 @@ pub fn handle_map(handle_id: u64) -> SyscallFuture {
 /// Handle buffer free.
 pub fn handle_free(handle_id: u64) -> SyscallFuture {
     let result: Result<(), panda_abi::ErrorCode> = scheduler::with_current_process(|proc| {
-        // Get buffer's virtual address and size before removing
-        let (vaddr, num_pages) = {
+        // Get buffer's virtual address and size before removing, and check
+        // whether the current process is the owner: `vaddr` (`user_vaddr`)
+        // only belongs to the current process's vaddr allocator if it is —
+        // for a merely-transferred handle, reclaiming it via
+        // `free_buffer_vaddr` below would corrupt the current process's own
+        // allocator state.
+        let reclaim = {
             let Some(handle) = proc.handles().get(handle_id) else {
                 return Err(panda_abi::ErrorCode::InvalidHandle);
             };
-            let Some(buffer) = handle.as_buffer() else {
+            let Some(buffer) = handle.resource_arc().as_shared_buffer() else {
                 return Err(panda_abi::ErrorCode::InvalidHandle);
             };
-            let vaddr = x86_64::VirtAddr::new(buffer.mapped_addr() as u64);
-            let num_pages = (buffer.size() + 4095) / 4096;
-            (vaddr, num_pages)
+            if buffer.owner() == proc.id() {
+                let vaddr = x86_64::VirtAddr::new(buffer.mapped_addr() as u64);
+                let num_pages = (buffer.size() + 4095) / 4096;
+                Some((vaddr, num_pages))
+            } else {
+                None
+            }
         };
 
-        // Remove the handle (drops the buffer, unmapping pages)
+        // Remove the handle (drops the buffer, unmapping pages, if this was
+        // the last reference)
         if proc.handles_mut().remove(handle_id).is_none() {
             return Err(panda_abi::ErrorCode::InvalidHandle);
         }
 
-        // Free the virtual address space
-        proc.free_buffer_vaddr(vaddr, num_pages);
+        // Free the virtual address space — only if we're the owner.
+        if let Some((vaddr, num_pages)) = reclaim {
+            proc.free_buffer_vaddr(vaddr, num_pages);
+        }
 
         Ok(())
     });
@@ -295,6 +307,15 @@ pub fn handle_read_buffer(file_handle_id: u64, buffer_handle_id: u64) -> Syscall
             )));
         }
     };
+
+    // `user_vaddr` (dereferenced below via `with_mut_slice`) is only
+    // meaningful in the allocating process's address space — a process that
+    // merely received this handle via transfer must not be able to reach it.
+    if buffer_arc.owner() != scheduler::current_process_id() {
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::PermissionDenied,
+        )));
+    }
 
     // Get VFS file and current offset
     let (vfs_file, file_offset) = match scheduler::with_current_process(|proc| {
@@ -358,17 +379,32 @@ pub fn handle_write_buffer(
 ) -> SyscallFuture {
     // Get buffer data (copy to owned Vec since we need it in async block).
     // SMAP: use with_slice to access user-mapped buffer pages.
-    let (buffer_data, write_len) = match scheduler::with_current_process(|proc| {
+    let write_result = scheduler::with_current_process(|proc| {
         let buffer_handle = proc.handles().get(buffer_handle_id)?;
-        let buffer = buffer_handle.as_buffer()?;
-        buffer.with_slice(|buf_slice| {
+        let buffer = buffer_handle.resource_arc().as_shared_buffer()?;
+
+        // `user_vaddr` (dereferenced below via `with_slice`) is only
+        // meaningful in the allocating process's address space — a process
+        // that merely received this handle via transfer must not be able to
+        // reach it.
+        if buffer.owner() != proc.id() {
+            return Some(Err(()));
+        }
+
+        Some(Ok(buffer.with_slice(|buf_slice| {
             let write_len = len.min(buf_slice.len());
             let mut data = alloc::vec![0u8; write_len];
             data.copy_from_slice(&buf_slice[..write_len]);
-            Some((data, write_len))
-        })
-    }) {
-        Some(info) => info,
+            (data, write_len)
+        })))
+    });
+    let (buffer_data, write_len) = match write_result {
+        Some(Ok(info)) => info,
+        Some(Err(())) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::PermissionDenied,
+            )));
+        }
         None => {
             return Box::pin(core::future::ready(SyscallResult::err(
                 panda_abi::ErrorCode::InvalidHandle,

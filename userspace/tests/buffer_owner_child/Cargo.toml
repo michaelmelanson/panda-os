@@ -1,0 +1,7 @@
+[package]
+name = "buffer_owner_child"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+libpanda = { workspace = true }

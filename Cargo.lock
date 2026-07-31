@@ -90,6 +90,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "buffer_owner_child"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
+name = "buffer_owner_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
 name = "buffer_test"
 version = "0.1.0"
 dependencies = [
