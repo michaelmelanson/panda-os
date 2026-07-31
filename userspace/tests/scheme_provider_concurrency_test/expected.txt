@@ -1,0 +1,18 @@
+# Regression test for the AsyncLock lost-wakeup bug: multiple clients
+# concurrently contending on the same userspace scheme provider must all
+# get a response, none may hang.
+# @unordered
+scheme_provider_concurrency_test: starting
+scheme_provider_concurrency_test: provider registered conc scheme
+scheme_provider_concurrency_test: spawned 3 concurrent clients
+# @barrier
+scheme_provider_conc_client_child: round trip matched
+scheme_provider_conc_client_child: round trip matched
+scheme_provider_conc_client_child: round trip matched
+scheme_provider_concurrency_test: client completed
+scheme_provider_concurrency_test: client completed
+scheme_provider_concurrency_test: client completed
+# @barrier
+scheme_provider_concurrency_test: all concurrent clients completed successfully
+scheme_provider_concurrency_test: provider exited
+PASS

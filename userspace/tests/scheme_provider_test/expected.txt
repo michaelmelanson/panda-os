@@ -1,0 +1,12 @@
+scheme_provider_test: starting
+scheme_provider_child: starting
+scheme_provider_child: registered echo scheme
+scheme_provider_test: child registered echo scheme
+scheme_provider_test: unknown path correctly refused with NotFound
+scheme_provider_test: opened echo:/echo
+scheme_provider_test: echo round-trip matched
+scheme_provider_test: readdir listing matched
+scheme_provider_child: told to exit, exiting without further replies
+scheme_provider_test: child exited
+scheme_provider_test: read after provider exit failed cleanly as expected
+PASS

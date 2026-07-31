@@ -144,6 +144,11 @@ impl Handle {
         self.resource.as_mailbox()
     }
 
+    /// Get this handle's resource as a scheme provider proxy resource (M2.2).
+    pub fn as_scheme_proxy(&self) -> Option<&crate::resource::SchemeProxyResource> {
+        self.resource.as_scheme_proxy()
+    }
+
     /// Get supported events for this resource.
     pub fn supported_events(&self) -> u32 {
         self.resource.supported_events()

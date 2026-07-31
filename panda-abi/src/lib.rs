@@ -13,6 +13,7 @@ extern crate alloc;
 
 pub mod encoding;
 pub mod path;
+pub mod scheme_protocol;
 pub mod terminal;
 pub mod value;
 
@@ -314,6 +315,14 @@ pub enum Operation {
     /// that receives the transferred handle id (0 if the message carried no
     /// attachment). See docs/SYSCALLS.md "Handle transfer".
     ChannelRecv = 0x7_1002,
+
+    // Scheme operations (0x9_0000 - 0x9_FFFF)
+    /// Register a userspace scheme provider: (name_ptr, name_len) -> provider_handle or error.
+    /// The returned handle is an ordinary Channel handle: the provider serves
+    /// requests with the existing OP_CHANNEL_SEND/OP_CHANNEL_RECV syscalls.
+    /// See docs/SYSCALLS.md "Scheme provider operations" and
+    /// `panda_abi::scheme_protocol` for the request/response wire format.
+    SchemeRegister = 0x9_0000,
 }
 
 impl Operation {
@@ -365,6 +374,7 @@ impl Operation {
             0x7_1000 => Some(Self::ChannelCreate),
             0x7_1001 => Some(Self::ChannelSend),
             0x7_1002 => Some(Self::ChannelRecv),
+            0x9_0000 => Some(Self::SchemeRegister),
             _ => None,
         }
     }
@@ -521,6 +531,10 @@ pub const OP_CHANNEL_CREATE: u32 = Operation::ChannelCreate as u32;
 pub const OP_CHANNEL_SEND: u32 = Operation::ChannelSend as u32;
 /// Receive a message from a channel: (buf_ptr, buf_len, flags, out_handle_ptr) -> msg_len or error
 pub const OP_CHANNEL_RECV: u32 = Operation::ChannelRecv as u32;
+
+// Scheme operations (0x9_0000 - 0x9_FFFF)
+/// Register a userspace scheme provider: (name_ptr, name_len) -> provider_handle or error.
+pub const OP_SCHEME_REGISTER: u32 = Operation::SchemeRegister as u32;
 
 // =============================================================================
 // Constants

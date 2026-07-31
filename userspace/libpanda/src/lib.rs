@@ -43,6 +43,7 @@ pub mod keyboard;
 pub mod mailbox;
 pub mod print;
 pub mod process;
+pub mod scheme;
 pub mod startup;
 pub mod stdio;
 pub mod terminal;

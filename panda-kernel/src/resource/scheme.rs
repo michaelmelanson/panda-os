@@ -74,6 +74,40 @@ pub fn scheme_names() -> Vec<String> {
     SCHEMES.read().keys().cloned().collect()
 }
 
+/// Register a userspace-provided scheme backed by `kernel_endpoint` (see
+/// `syscall::scheme::handle_register` / `OP_SCHEME_REGISTER`).
+///
+/// Rejects an empty name or a name that is already registered — checked and
+/// inserted under a single write-lock scope so there's no
+/// check-then-insert race with a concurrent registration of the same name.
+pub fn register_user_scheme(
+    name: String,
+    kernel_endpoint: super::ChannelEndpoint,
+) -> Result<(), panda_abi::ErrorCode> {
+    if name.is_empty() {
+        return Err(panda_abi::ErrorCode::InvalidArgument);
+    }
+    let mut schemes = SCHEMES.write();
+    if schemes.contains_key(&name) {
+        return Err(panda_abi::ErrorCode::AlreadyExists);
+    }
+    schemes.insert(name, Arc::new(UserSchemeProvider::new(kernel_endpoint)));
+    Ok(())
+}
+
+/// Remove a scheme registered via [`register_user_scheme`], if present.
+///
+/// This is strictly an internal rollback helper for `syscall::scheme::handle_register`'s
+/// `TooManyHandles` failure path (registration succeeds, then the provider's
+/// handle-table insert fails, leaving the scheme registered but with no
+/// process able to reach the dropped provider endpoint). It is deliberately
+/// **not** a general-purpose scheme-unregistration feature — that was
+/// explicitly deferred out of M2.2's scope — hence `pub(crate)` rather than
+/// a syscall or public API.
+pub(crate) fn unregister_scheme_if_present(name: &str) {
+    SCHEMES.write().remove(name);
+}
+
 /// Open a resource by URI (e.g., "file:/initrd/init" or "console:/serial/0")
 pub async fn open(uri: &str) -> Result<Box<dyn Resource>, OpenError> {
     let (scheme, path) = uri.split_once(':').ok_or(OpenError::NotFound)?;
@@ -540,6 +574,369 @@ impl SchemeHandler for SchemeScheme {
                     .collect(),
             ),
             _ => None,
+        }
+    }
+}
+
+// =============================================================================
+// User scheme provider — routes scheme requests to a userspace process
+// over a channel (M2.2).
+// =============================================================================
+
+/// A minimal async mutual-exclusion lock built on the same "poll, if busy
+/// register waiter and return Pending" idiom the rest of the kernel uses for
+/// process blocking (see `syscall/channel.rs`'s handlers).
+///
+/// This backs the v1 "one request in flight per provider" concurrency
+/// scope described on [`ProviderState::round_trip`]: it is deliberately not
+/// a fair queue, just a spin-and-retry lock, which is fine given the
+/// kernel's single-core cooperative scheduling.
+///
+/// Unlike [`IoWaker`] (which tracks a single waiting process — fine for its
+/// original one-device/one-waiter use cases), this lock can have multiple
+/// concurrent waiters: several client processes can all be blocked trying to
+/// reach the same userspace scheme provider at once. So waiters are tracked
+/// in a `Vec` rather than a single slot, and release wakes *all* of them,
+/// letting them re-race the `compare_exchange` when re-polled. This is a
+/// "thundering herd" on release, but with this kernel's single-core
+/// cooperative scheduling the herd is bounded (by the number of genuine
+/// waiters) and harmless — and simpler than a real FIFO queue, which this
+/// lock doesn't need or attempt to be.
+struct AsyncLock {
+    busy: core::sync::atomic::AtomicBool,
+    waiters: Spinlock<Vec<crate::process::ProcessId>>,
+}
+
+impl AsyncLock {
+    fn new() -> Self {
+        Self {
+            busy: core::sync::atomic::AtomicBool::new(false),
+            waiters: Spinlock::new(Vec::new()),
+        }
+    }
+
+    async fn acquire(&self) -> AsyncLockGuard<'_> {
+        core::future::poll_fn(|_cx| {
+            use core::sync::atomic::Ordering;
+            if self
+                .busy
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                core::task::Poll::Ready(())
+            } else {
+                let pid = crate::scheduler::current_process_id();
+                let mut waiters = self.waiters.lock();
+                // Dedup: the same process re-polling without a fresh wakeup
+                // shouldn't accumulate duplicate entries in the wake-all set.
+                if !waiters.contains(&pid) {
+                    waiters.push(pid);
+                }
+                core::task::Poll::Pending
+            }
+        })
+        .await;
+        AsyncLockGuard { lock: self }
+    }
+}
+
+struct AsyncLockGuard<'a> {
+    lock: &'a AsyncLock,
+}
+
+impl Drop for AsyncLockGuard<'_> {
+    fn drop(&mut self) {
+        self.lock.busy.store(false, core::sync::atomic::Ordering::Release);
+        let waiters: Vec<_> = core::mem::take(&mut *self.lock.waiters.lock());
+        for pid in waiters {
+            crate::scheduler::wake_process(pid);
+        }
+    }
+}
+
+/// Errors from a provider round trip, distinct from the wire-level
+/// `panda_abi::ErrorCode` the provider itself reports for a given request:
+/// these describe the round trip failing to happen at all.
+#[derive(Debug, Clone, Copy)]
+enum ProviderError {
+    /// The provider process has exited (or otherwise closed its endpoint of
+    /// the channel) — see docs/SYSCALLS.md "Scheme provider operations":
+    /// pending and future requests must fail cleanly rather than hang.
+    Disconnected,
+    /// The provider sent something that didn't decode as a valid response.
+    Protocol,
+}
+
+fn provider_error_to_error_code(err: ProviderError) -> panda_abi::ErrorCode {
+    match err {
+        ProviderError::Disconnected => panda_abi::ErrorCode::IoError,
+        ProviderError::Protocol => panda_abi::ErrorCode::Protocol,
+    }
+}
+
+/// Shared state for one registered userspace scheme provider.
+struct ProviderState {
+    /// The kernel's endpoint of the channel; the provider process holds the
+    /// other endpoint and serves requests with the ordinary
+    /// `OP_CHANNEL_SEND`/`OP_CHANNEL_RECV` syscalls it already has.
+    kernel_endpoint: super::ChannelEndpoint,
+    /// Serializes request/response round trips to this provider (v1 scope:
+    /// single request in flight at a time — see `round_trip`).
+    lock: AsyncLock,
+    next_request_id: core::sync::atomic::AtomicU64,
+}
+
+impl ProviderState {
+    fn new(kernel_endpoint: super::ChannelEndpoint) -> Self {
+        Self {
+            kernel_endpoint,
+            lock: AsyncLock::new(),
+            next_request_id: core::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    fn next_request_id(&self) -> u64 {
+        self.next_request_id
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Send `request` and wait for the matching response.
+    ///
+    /// **v1 concurrency scope**: this holds `self.lock` for the whole
+    /// send-then-receive round trip, so two callers hitting the same
+    /// provider concurrently queue behind each other here rather than being
+    /// multiplexed by `request_id`. Future work: a `request_id`-keyed
+    /// pending-response map plus a router task would let independent
+    /// requests to the same provider proceed concurrently; not implemented
+    /// here, deliberately, to keep this correct and easy to reason about.
+    ///
+    /// `request_id` is still threaded through the wire format even though
+    /// v1 doesn't need it for correlation *within a single round trip* — it
+    /// pays for itself in exactly the situation handled below: a
+    /// fire-and-forget `Close` (see `SchemeProxyResource`'s `Drop`) can
+    /// leave an orphaned response in the queue ahead of a later request's
+    /// real response. Any response whose `request_id` doesn't match this
+    /// call's own is silently discarded and the receive retried, rather
+    /// than being misdelivered to the wrong caller.
+    async fn round_trip(&self, request_id: u64, request: &[u8]) -> Result<Vec<u8>, ProviderError> {
+        let _guard = self.lock.acquire().await;
+
+        self.kernel_endpoint
+            .send(request)
+            .map_err(|_| ProviderError::Disconnected)?;
+
+        loop {
+            let mut buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+            let len = core::future::poll_fn(|_cx| match self.kernel_endpoint.recv(&mut buf) {
+                Ok(len) => core::task::Poll::Ready(Ok(len)),
+                Err(super::ChannelError::QueueEmpty) => {
+                    self.kernel_endpoint
+                        .waker()
+                        .set_waiting(crate::scheduler::current_process_id());
+                    core::task::Poll::Pending
+                }
+                Err(super::ChannelError::PeerClosed) => {
+                    core::task::Poll::Ready(Err(ProviderError::Disconnected))
+                }
+                Err(_) => core::task::Poll::Ready(Err(ProviderError::Protocol)),
+            })
+            .await?;
+            buf.truncate(len);
+
+            if buf.len() < 9 {
+                return Err(ProviderError::Protocol);
+            }
+            let response_id = u64::from_le_bytes(buf[1..9].try_into().unwrap());
+            if response_id == request_id {
+                return Ok(buf);
+            }
+            // Orphaned response (see doc comment above) — keep waiting for
+            // the one that actually matches this call.
+        }
+    }
+}
+
+/// `SchemeHandler` that routes `open`/`readdir` to a userspace provider
+/// process over a channel, per `panda_abi::scheme_protocol`.
+pub struct UserSchemeProvider {
+    state: Arc<ProviderState>,
+}
+
+impl UserSchemeProvider {
+    fn new(kernel_endpoint: super::ChannelEndpoint) -> Self {
+        Self {
+            state: Arc::new(ProviderState::new(kernel_endpoint)),
+        }
+    }
+}
+
+#[async_trait]
+impl SchemeHandler for UserSchemeProvider {
+    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError> {
+        use panda_abi::scheme_protocol::{Request, Response};
+
+        let request_id = self.state.next_request_id();
+        let mut req_buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let Some(n) = (Request::Open { request_id, path }).encode(&mut req_buf) else {
+            return Err(OpenError::NotFound);
+        };
+        req_buf.truncate(n);
+
+        let resp = self
+            .state
+            .round_trip(request_id, &req_buf)
+            .await
+            .map_err(|_| OpenError::NotFound)?;
+
+        match Response::decode(&resp) {
+            Some(Response::OpenOk { resource_id, .. }) => Ok(Box::new(SchemeProxyResource {
+                provider: Arc::clone(&self.state),
+                resource_id,
+            })),
+            Some(Response::OpenErr { error, .. }) if error == panda_abi::ErrorCode::Busy => {
+                Err(OpenError::Busy)
+            }
+            _ => Err(OpenError::NotFound),
+        }
+    }
+
+    async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
+        use panda_abi::scheme_protocol::{Request, Response};
+
+        let request_id = self.state.next_request_id();
+        let mut req_buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let n = (Request::Readdir { request_id, path }).encode(&mut req_buf)?;
+        req_buf.truncate(n);
+
+        let resp = self.state.round_trip(request_id, &req_buf).await.ok()?;
+
+        match Response::decode(&resp) {
+            Some(Response::ReaddirOk { raw, .. }) => {
+                let entries = panda_abi::scheme_protocol::ReaddirEntriesIter::new(raw)?;
+                Some(
+                    entries
+                        .map(|e| DirEntry {
+                            name: String::from(e.name),
+                            is_dir: e.is_dir,
+                        })
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A client's open handle to a resource served by a userspace scheme
+/// provider. Not VFS-backed — `read`/`write` round-trip to the provider
+/// process directly (see `syscall/file.rs`'s scheme-proxy branch).
+pub struct SchemeProxyResource {
+    provider: Arc<ProviderState>,
+    /// Opaque to the kernel: minted by the provider in its `OpenOk` reply
+    /// and echoed back on every subsequent request for this resource.
+    resource_id: u64,
+}
+
+impl SchemeProxyResource {
+    /// Read up to `len` bytes (capped by the caller to
+    /// `panda_abi::scheme_protocol::MAX_TRANSFER_SIZE`, which is guaranteed
+    /// to fit in one response frame).
+    pub async fn read(&self, len: usize) -> Result<Vec<u8>, panda_abi::ErrorCode> {
+        use panda_abi::scheme_protocol::{Request, Response};
+
+        let request_id = self.provider.next_request_id();
+        let mut req_buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let Some(n) = (Request::Read {
+            request_id,
+            resource_id: self.resource_id,
+            len: len as u32,
+        })
+        .encode(&mut req_buf) else {
+            return Err(panda_abi::ErrorCode::InvalidArgument);
+        };
+        req_buf.truncate(n);
+
+        let resp = self
+            .provider
+            .round_trip(request_id, &req_buf)
+            .await
+            .map_err(provider_error_to_error_code)?;
+
+        match Response::decode(&resp) {
+            Some(Response::ReadOk { data, .. }) => Ok(data.to_vec()),
+            Some(Response::ReadErr { error, .. }) => Err(error),
+            _ => Err(panda_abi::ErrorCode::Protocol),
+        }
+    }
+
+    /// Write `data` (capped by the caller to
+    /// `panda_abi::scheme_protocol::MAX_TRANSFER_SIZE`).
+    pub async fn write(&self, data: &[u8]) -> Result<usize, panda_abi::ErrorCode> {
+        use panda_abi::scheme_protocol::{Request, Response};
+
+        let request_id = self.provider.next_request_id();
+        let mut req_buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let Some(n) = (Request::Write {
+            request_id,
+            resource_id: self.resource_id,
+            data,
+        })
+        .encode(&mut req_buf) else {
+            return Err(panda_abi::ErrorCode::InvalidArgument);
+        };
+        req_buf.truncate(n);
+
+        let resp = self
+            .provider
+            .round_trip(request_id, &req_buf)
+            .await
+            .map_err(provider_error_to_error_code)?;
+
+        match Response::decode(&resp) {
+            Some(Response::WriteOk { written, .. }) => Ok(written as usize),
+            Some(Response::WriteErr { error, .. }) => Err(error),
+            _ => Err(panda_abi::ErrorCode::Protocol),
+        }
+    }
+}
+
+impl Resource for SchemeProxyResource {
+    fn handle_type(&self) -> panda_abi::HandleType {
+        // Accessed like a file (read/write/close) by the client.
+        panda_abi::HandleType::File
+    }
+
+    fn as_scheme_proxy(&self) -> Option<&SchemeProxyResource> {
+        Some(self)
+    }
+}
+
+impl Drop for SchemeProxyResource {
+    /// Best-effort, fire-and-forget `Close` notification to the provider —
+    /// see docs/SYSCALLS.md "Scheme provider operations" for why this
+    /// doesn't (and, being a synchronous `Drop`, can't) await the
+    /// provider's ack: `ProviderState::round_trip`'s orphan-response
+    /// handling makes that safe, discarding this `Close`'s ack if it
+    /// arrives ahead of some later, unrelated request's real response.
+    ///
+    /// Covers both explicit `close()` (dropping the handle-table entry) and
+    /// implicit close on process exit (dropping the whole handle table) —
+    /// same code path either way, so there's no separate cleanup needed for
+    /// the "provider must not leak resources" requirement.
+    fn drop(&mut self) {
+        use panda_abi::scheme_protocol::Request;
+
+        let request_id = self.provider.next_request_id();
+        let mut buf = [0u8; 32];
+        if let Some(n) = (Request::Close {
+            request_id,
+            resource_id: self.resource_id,
+        })
+        .encode(&mut buf)
+        {
+            // Ignore send failure: if the provider is gone or its inbound
+            // queue is full, there's nothing more we can do from `Drop`.
+            let _ = self.provider.kernel_endpoint.send(&buf[..n]);
         }
     }
 }

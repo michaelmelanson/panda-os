@@ -1,0 +1,8 @@
+[package]
+name = "scheme_provider_concurrency_test"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+libpanda = { workspace = true }
+panda-abi = { path = "../../../panda-abi" }

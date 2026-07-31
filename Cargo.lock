@@ -723,6 +723,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "scheme_provider_child"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
+name = "scheme_provider_conc_client_child"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
+name = "scheme_provider_conc_provider_child"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
+name = "scheme_provider_concurrency_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
+name = "scheme_provider_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "scheme_registry_test"
 version = "0.1.0"
 dependencies = [

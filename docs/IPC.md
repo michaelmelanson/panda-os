@@ -244,3 +244,114 @@ libpanda::main! {
     0
 }
 ```
+
+## Scheme provider protocol (M2.2)
+
+A userspace process becomes a scheme provider with `OP_SCHEME_REGISTER`
+(`libpanda::scheme::SchemeProvider::register`), which returns an ordinary
+channel handle. The kernel routes `open`/`readdir`/`read`/`write`/`close`
+against `<name>:...` to that channel as request/response frames; the
+provider serves them with the same `Channel::recv`/`Channel::send` it would
+use for any other channel. This section documents the wire format a driver
+author needs; see `panda-abi/src/scheme_protocol.rs` for the authoritative
+encode/decode implementation and `docs/SYSCALLS.md` "Scheme provider
+operations" for the syscall-level contract and v1 scope limitations
+(single request in flight per provider, no unregistration, no
+`scheme:/<name>` metadata).
+
+### Request frame
+
+```text
+byte 0:      kind (u8): 1=Open, 2=Readdir, 3=Read, 4=Write, 5=Close
+bytes 1..9:  request_id (u64 LE) — minted by the kernel
+bytes 9..:   kind-specific payload
+```
+
+| Kind | Payload |
+|------|---------|
+| `Open` | `path_len: u16`, then `path` bytes (UTF-8) |
+| `Readdir` | `path_len: u16`, then `path` bytes (UTF-8) |
+| `Read` | `resource_id: u64`, `len: u32` |
+| `Write` | `resource_id: u64`, `data_len: u32`, then `data` bytes |
+| `Close` | `resource_id: u64` |
+
+`resource_id` is minted by the provider in its `Open` response and is
+opaque to the kernel — it only ever echoes it back on later requests for
+that same resource.
+
+### Response frame
+
+```text
+byte 0:      kind (u8) — same as the request it answers
+bytes 1..9:  request_id (u64 LE), echoed verbatim from the request
+byte 9:      status (u8): 0=ok, 1=err
+bytes 10..:  status- and kind-specific payload
+```
+
+On `status=1` (error), the payload is a single `ErrorCode` byte (see
+`panda_abi::ErrorCode`'s discriminants; unrecognized bytes collapse to
+`IoError`, since a provider is untrusted input). On `status=0` (ok):
+
+| Kind | Ok payload |
+|------|------------|
+| `Open` | `resource_id: u64` |
+| `Readdir` | `count: u16`, then `count` packed entries: `name_len: u8`, `is_dir: u8`, `name` bytes (UTF-8) |
+| `Read` | `data_len: u32`, then `data` bytes |
+| `Write` | `written: u32` |
+| `Close` | *(empty)* |
+
+Every frame — request or response — must fit in one `MAX_MESSAGE_SIZE`
+(4 KiB) channel message; there is no fragmentation. `Readdir` responses in
+particular are not paginated: a directory listing that doesn't fit in one
+frame is a hard error (`MessageTooLarge` from the encoder), not something
+this protocol currently handles.
+
+### `request_id` echo requirement
+
+The provider **must** echo the request's `request_id` back verbatim in its
+response. v1 only ever has one request in flight per provider (requests
+are serialized kernel-side — see docs/SYSCALLS.md), so this isn't needed
+for correlating concurrent requests yet. It's still required because a
+`Close` triggered by a client dropping its handle is sent fire-and-forget,
+without the kernel waiting for the ack — so that ack can arrive interleaved
+ahead of a later, unrelated request's real response. The kernel discards
+any response whose `request_id` doesn't match the request currently
+awaiting one, rather than misdelivering it. Sending a wrong or stale
+`request_id` will cause the kernel to hang waiting for the real response
+(or, worse, silently swallow it as an orphan) — always copy it from the
+request you're answering.
+
+### Provider exit
+
+If the provider process exits (or otherwise closes its endpoint) while a
+request is outstanding, or before a later request is sent, that request
+fails with `ErrorCode::IoError` rather than hanging. The scheme name stays
+registered (pointing at a now-permanently-disconnected provider) — v1 does
+not automatically unregister on provider exit.
+
+### Minimal provider example
+
+```rust
+use libpanda::scheme::SchemeProvider;
+use panda_abi::scheme_protocol::Request;
+use panda_abi::{ErrorCode, MAX_MESSAGE_SIZE};
+
+let provider = SchemeProvider::register("echo").unwrap();
+let mut buf = [0u8; MAX_MESSAGE_SIZE];
+loop {
+    let request = match provider.recv(&mut buf) {
+        Ok(r) => r,
+        Err(_) => break, // kernel's endpoint closed
+    };
+    match request {
+        Request::Open { request_id, path } if path == "/echo" => {
+            let _ = provider.reply_open_ok(request_id, 1);
+        }
+        Request::Open { request_id, .. } => {
+            let _ = provider.reply_open_err(request_id, ErrorCode::NotFound);
+        }
+        // ... Readdir, Read, Write, Close ...
+        _ => {}
+    }
+}
+```

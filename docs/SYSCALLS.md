@@ -160,6 +160,49 @@ Teaching handle-close to also unmap is future work.
 Callers that pass 0 for both get bit-for-bit the original plain send/recv
 behaviour.
 
+### Scheme provider operations (0x9_0000 - 0x9_FFFF)
+
+| Operation | Code | Arguments | Returns |
+|-----------|------|-----------|---------|
+| `OP_SCHEME_REGISTER` | 0x9_0000 | (name_ptr, name_len) | provider endpoint handle or error |
+
+`OP_SCHEME_REGISTER` is the M2.2 primitive that lets a userspace process
+become the backing implementation for a scheme (`display:`, `keyboard:`,
+whatever), indistinguishable to clients from a kernel-side scheme like
+`file:`. It creates a channel pair, registers a `SchemeHandler` under `name`
+in the kernel's scheme registry (`panda-kernel/src/resource/scheme.rs`) that
+holds one endpoint, and returns a handle to the other endpoint — an
+ordinary Channel handle. The registering process serves requests with the
+existing `OP_CHANNEL_SEND`/`OP_CHANNEL_RECV` syscalls; there is no separate
+"provider" syscall surface. `panda_abi::scheme_protocol` documents the
+request/response wire format in detail; `libpanda::scheme::SchemeProvider`
+wraps it in an ergonomic `register()` + `recv()`/`reply_*()` serve loop.
+
+Fails with `InvalidArgument` for an empty or non-UTF-8 name, `AlreadyExists`
+if the name is already registered, `TooManyHandles` if the caller's handle
+table is full.
+
+Once registered, `open`/`readdir`/`read`/`write`/`close` on `<name>:...`
+route through the same `resource::open`/`resource::readdir` paths as any
+other scheme, and `syscall/file.rs`'s read/write handlers recognize the
+resulting client-side resource (`resource::SchemeProxyResource`) and
+round-trip to the provider instead of going through the VFS.
+
+**v1 scope** (see `resource/scheme.rs` for the full reasoning):
+- One request in flight per provider at a time — concurrent callers into
+  the same provider queue behind each other kernel-side rather than being
+  multiplexed by `request_id`. The wire format still carries `request_id`
+  so a future `request_id`-keyed router can be added without an ABI change.
+- A provider that exits (or closes its endpoint) causes the next request to
+  fail cleanly with `IoError` rather than hang.
+- Closing a client handle (explicitly or via process exit) sends a
+  best-effort, fire-and-forget `Close` to the provider; unregistration of
+  the scheme name itself is not implemented.
+- Directory listings must fit in one `MAX_MESSAGE_SIZE` frame — no
+  pagination.
+- `scheme:/<name>` provider metadata (which process backs a scheme, its
+  capabilities) remains reserved, unimplemented namespace.
+
 ## Handle transfer
 
 A channel message may carry one attached handle — a kernel-level analogue of

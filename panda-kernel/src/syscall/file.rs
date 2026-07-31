@@ -33,6 +33,22 @@ fn get_vfs_file(handle_id: u64) -> Option<Arc<dyn VfsFile>> {
     })
 }
 
+/// Resolve `handle_id` to a userspace scheme provider's proxy resource
+/// (M2.2), if it is one. A scheme provider's resources are not VFS-backed
+/// (see `resource::SchemeProxyResource`'s doc comment), so this is a
+/// separate resolution path from `get_vfs_file` rather than being forced
+/// through it.
+fn get_scheme_proxy(handle_id: u64) -> Option<Arc<dyn crate::resource::Resource>> {
+    scheduler::with_current_process(|proc| {
+        let handle = proc.handles().get(handle_id)?;
+        if handle.as_scheme_proxy().is_some() {
+            Some(handle.resource_arc())
+        } else {
+            None
+        }
+    })
+}
+
 /// Handle file read operation.
 ///
 /// For VFS files, this is async and may yield to the scheduler if I/O is needed.
@@ -46,6 +62,12 @@ pub fn handle_read(
 ) -> SyscallFuture {
     let dst = UserSlice::new(buf_ptr, buf_len);
 
+    // Scheme-provider proxy resources round-trip to a userspace process
+    // instead of going through the VFS or the sync event-source path.
+    if let Some(resource) = get_scheme_proxy(handle_id) {
+        return handle_read_scheme_proxy(buf_len, dst, resource);
+    }
+
     // First, check if this is a VFS file (which needs async handling)
     if let Some(vfs_file) = get_vfs_file(handle_id) {
         handle_read_vfs(handle_id, buf_len, dst, vfs_file)
@@ -53,6 +75,27 @@ pub fn handle_read(
         // Sync path for non-VFS resources (blocks, event sources, etc.)
         handle_read_sync(handle_id, dst, flags)
     }
+}
+
+/// Read path for scheme-provider proxy resources (M2.2): round-trips a
+/// `Read` request to the provider process and writes back whatever it
+/// returns. `buf_len` is capped to `MAX_TRANSFER_SIZE` so the response is
+/// guaranteed to fit in one channel message.
+fn handle_read_scheme_proxy(
+    buf_len: usize,
+    dst: UserSlice,
+    resource: Arc<dyn crate::resource::Resource>,
+) -> SyscallFuture {
+    let buf_len = buf_len.min(panda_abi::scheme_protocol::MAX_TRANSFER_SIZE);
+    Box::pin(async move {
+        // Safety of unwrap: `resource` was resolved by `get_scheme_proxy`,
+        // which only returns handles where `as_scheme_proxy()` is `Some`.
+        let proxy = resource.as_scheme_proxy().unwrap();
+        match proxy.read(buf_len).await {
+            Ok(data) => SyscallResult::write_back(data.len() as isize, data, dst),
+            Err(code) => SyscallResult::err(code),
+        }
+    })
 }
 
 /// Async read path for VFS files.
@@ -205,6 +248,11 @@ pub fn handle_write(
     buf_ptr: usize,
     buf_len: usize,
 ) -> SyscallFuture {
+    // Scheme-provider proxy resources round-trip to a userspace process.
+    if let Some(resource) = get_scheme_proxy(handle_id) {
+        return handle_write_scheme_proxy(ua, buf_ptr, buf_len, resource);
+    }
+
     // Check if this is a VFS file (which needs async handling)
     if let Some(vfs_file) = get_vfs_file(handle_id) {
         handle_write_vfs(ua, handle_id, buf_ptr, buf_len, vfs_file)
@@ -212,6 +260,36 @@ pub fn handle_write(
         // Sync path for non-VFS resources (char output, etc.)
         handle_write_sync(ua, handle_id, buf_ptr, buf_len)
     }
+}
+
+/// Write path for scheme-provider proxy resources (M2.2): round-trips a
+/// `Write` request to the provider process. `buf_len` is capped to
+/// `MAX_TRANSFER_SIZE` so the request is guaranteed to fit in one channel
+/// message (a short write, like a capped VFS write — see `MAX_FILE_IO_SIZE`
+/// callers elsewhere in this file).
+fn handle_write_scheme_proxy(
+    ua: &UserAccess,
+    buf_ptr: usize,
+    buf_len: usize,
+    resource: Arc<dyn crate::resource::Resource>,
+) -> SyscallFuture {
+    let buf_len = buf_len.min(panda_abi::scheme_protocol::MAX_TRANSFER_SIZE);
+    let data = match ua.read(UserSlice::new(buf_ptr, buf_len)) {
+        Ok(d) => d,
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
+    };
+
+    Box::pin(async move {
+        let proxy = resource.as_scheme_proxy().unwrap();
+        match proxy.write(&data).await {
+            Ok(n) => SyscallResult::ok(n as isize),
+            Err(code) => SyscallResult::err(code),
+        }
+    })
 }
 
 /// Async write path for VFS files.

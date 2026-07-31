@@ -16,6 +16,7 @@ pub mod gdt;
 mod helpers;
 mod mailbox;
 mod process;
+mod scheme;
 mod surface;
 pub(crate) mod user_ptr;
 
@@ -282,6 +283,9 @@ fn build_future(
         OP_CHANNEL_CREATE => Ok(channel::handle_create(ua, arg0)),
         OP_CHANNEL_SEND => channel::handle_send(ua, handle, arg0, arg1, arg2, arg3 as u64),
         OP_CHANNEL_RECV => Ok(channel::handle_recv(handle, arg0, arg1, arg2, arg3)),
+
+        // Scheme operations
+        OP_SCHEME_REGISTER => Ok(scheme::handle_register(ua, arg0, arg1)),
 
         _ => {
             error!("Unknown operation: {:#x}", operation);
