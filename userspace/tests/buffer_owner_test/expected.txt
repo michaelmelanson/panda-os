@@ -1,10 +1,26 @@
+# @unordered
+#
+# "Buffer owner test: transferred buffer to child" (parent, after
+# send_with_handle returns) and "Buffer owner child: starting" (child, its
+# first statement) have no happens-before relationship: the scheduler is
+# free to run the freshly-spawned child before the parent's very next log
+# call. Under KVM this consistently came out one way; under CI's TCG-only
+# timing it consistently came out the other, and the strict ordered matcher
+# silently discarded the child's line as collateral when it over-matched
+# looking for the parent's line. Group the two in one unordered section so
+# either relative order passes; every other line is genuinely ordered
+# (each barrier's patterns can only depend on state established before it)
+# so those stay barrier-separated.
 Buffer owner test: starting
+# @barrier
 Buffer owner test: transferred buffer to child
 Buffer owner child: starting
+# @barrier
 Buffer owner child: received transferred buffer
 Buffer owner child: read into non-owned buffer refused
 Buffer owner child: write from non-owned buffer refused
 Buffer owner child: resize of non-owned buffer refused
 Buffer owner child: free of transferred handle is safe
+# @barrier
 Buffer owner test: parent buffer untouched
 PASS
