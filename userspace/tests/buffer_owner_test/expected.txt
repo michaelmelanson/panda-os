@@ -4,6 +4,7 @@ Buffer owner child: starting
 Buffer owner child: received transferred buffer
 Buffer owner child: read into non-owned buffer refused
 Buffer owner child: write from non-owned buffer refused
+Buffer owner child: resize of non-owned buffer refused
 Buffer owner child: free of transferred handle is safe
 Buffer owner test: parent buffer untouched
 PASS
