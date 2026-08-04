@@ -225,6 +225,32 @@ Rules:
 - `# @barrier` enforces that all patterns before it match log lines that appear before any patterns after it
 - Each pattern still must appear exactly once in the log
 
+**When you need this:** for every pair of adjacent lines in `expected.txt`,
+ask whether the *second* line is actually caused by the first — is there a
+real synchronization primitive (a channel `recv`, `process::wait`, an event
+wait) between them, or could the scheduler just as validly run them in the
+other order? If a child process's line isn't gated by receiving something
+from the parent first (e.g. it's logged before the child's first blocking
+call), its order relative to the parent's most recent log line is **not**
+guaranteed — group them with `@unordered`.
+
+This bit a real test: `buffer_owner_test`'s child deliberately does some
+work (allocating its own buffer) *before* touching its parent channel at
+all, specifically so its log line has no causal relationship to anything
+the parent has logged. `expected.txt` assumed a fixed order between the
+parent's post-send line and the child's first line anyway. The ordered
+matcher discards every log line up through a match once found, so on the
+timing where the child's unordered line came out *first* in the raw log,
+the matcher's search for the parent's (later) line silently swallowed the
+child's line as collateral — surfacing as "expected log not found" for a
+line that genuinely was there, just in the "wrong" position. This passed
+locally under every KVM-accelerated run and failed on every CI run (which
+has no KVM, so uses the much-slower TCG backend with different relative
+process-scheduling timing) — a hallmark of this specific bug: **one
+specific line missing, every other line from the same process present and
+correct, and it never reproduces locally.** See that failure investigation
+for the full story if you want the cautionary tale.
+
 Example from `preempt_test/expected.txt`:
 ```
 # @unordered
@@ -359,6 +385,38 @@ Nested PATCHED
 - Exit code 0: Test passed
 - Exit code non-zero: Test failed (QEMU exits immediately)
 - Timeout (60s default): Test failed
+
+### Debugging CI-only test failures
+
+CI runs QEMU without KVM (pure TCG software emulation, no `/dev/kvm` on
+GitHub Actions runners), which has meaningfully different scheduling timing
+from a local KVM-accelerated run. A failure that only reproduces in CI is
+usually not "impossible to debug locally" — it just needs the right theory.
+Check causes in roughly this order, cheapest first:
+
+1. **A missing-line, order-only mismatch in `expected.txt`.** Symptom: one
+   specific log line is reported missing, while every *other* line from the
+   same process is present and in the right relative order to each other.
+   This is almost always an unguarded ordering assumption between two lines
+   from different processes — see "When you need this" under Unordered mode
+   above. Check first: does the "missing" line's process reach it before or
+   after any blocking call? If before, and the preceding expected line
+   belongs to a *different* process, their relative order isn't guaranteed —
+   fix `expected.txt`, don't touch kernel code. This is a five-minute check
+   against a multi-hour kernel investigation, so rule it out before assuming
+   a concurrency bug in the kernel.
+2. **Force TCG locally to get closer to CI's timing.** Temporarily edit the
+   `-accel kvm -accel tcg` line in `scripts/run-qemu-test.sh` to `-accel tcg`
+   only, then run the failing test (or `make test`) several times in a loop.
+   Revert the edit before committing anything — it's a local diagnostic
+   change, not a real fix. Note this doesn't always reproduce CI's exact
+   failure even when the underlying cause is real and CI-reproducible; a
+   clean run under forced TCG is weak evidence of correctness, not proof.
+3. **A genuine kernel race**, only after 1 and 2 don't explain it. If you
+   land here: reproducing locally (even under forced TCG) is the bar for
+   confidence — "I read the code and this looks plausible" is not the same
+   as "I watched the bug happen and then watched it stop happening." Say
+   explicitly which kind of evidence you actually have when reporting a fix.
 
 ## Test infrastructure
 
