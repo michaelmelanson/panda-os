@@ -16,10 +16,21 @@ jobs:
         with:
           submodules: true
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 e2fsprogs imagemagick
+      # Every tool (rustc, cargo, qemu, debugfs, imagemagick, python3) comes
+      # from the flake's devShell, pinned by flake.lock -- the same toolchain
+      # a local `nix develop` gives you. This is deliberate: CI previously
+      # installed QEMU via `apt-get install qemu-system-x86` (Ubuntu's
+      # packaged build, several major versions behind the Nix-pinned one),
+      # which meant a test failure that only reproduced in CI could not be
+      # reproduced locally even when matching every other condition (accel
+      # mode, parallelism, CPU count) -- the two environments were never
+      # running the same software. See docs/TESTING.md "Debugging CI-only
+      # test failures" for the investigation this came out of.
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Cache Nix store
+        uses: DeterminateSystems/magic-nix-cache-action@main
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -27,19 +38,19 @@ jobs:
           shared-key: "ci"
 
       - name: Check Cargo.lock is up-to-date
-        run: cargo update --workspace --locked
+        run: nix develop -c cargo update --workspace --locked
 
       - name: Build kernel and userspace
-        run: make build
+        run: nix develop -c make build
 
       - name: Run unit tests
-        run: make unit-test
+        run: nix develop -c make unit-test
 
       - name: Run kernel tests
         env:
           MAX_PARALLEL: 4
           TEST_TIMEOUT: 120
-        run: make kernel-test
+        run: nix develop -c make kernel-test
 
       - name: Upload kernel test logs
         if: failure()
@@ -52,7 +63,7 @@ jobs:
         env:
           MAX_PARALLEL: 4
           TEST_TIMEOUT: 120
-        run: make userspace-test
+        run: nix develop -c make userspace-test
 
       - name: Upload userspace test logs
         if: failure()
