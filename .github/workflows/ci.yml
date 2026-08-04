@@ -32,25 +32,39 @@ jobs:
       - name: Cache Nix store
         uses: DeterminateSystems/magic-nix-cache-action@main
 
+      # Put the devShell's toolchain directly on PATH for every later step,
+      # instead of prefixing each `run:` with `nix develop -c`. This matters
+      # for more than convenience: Swatinem/rust-cache (next step) detects
+      # the active Rust toolchain by running `cargo`/`rustc` at the point
+      # it's invoked. If it ran before this step, it would find whatever
+      # Rust happens to be preinstalled on the runner image -- a different,
+      # unrelated toolchain from the pinned nightly one (rust-toolchain.toml)
+      # actually used to build -- key the cache on it, and then never get a
+      # real hit, silently rebuilding every dependency from scratch on every
+      # run. Exporting the real PATH first means rust-cache (and everything
+      # after it) sees the actual build toolchain.
+      - name: Add Nix devShell to PATH
+        run: nix develop --command bash -c 'echo "$PATH"' | tr ':' '\n' >> "$GITHUB_PATH"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "ci"
 
       - name: Check Cargo.lock is up-to-date
-        run: nix develop -c cargo update --workspace --locked
+        run: cargo update --workspace --locked
 
       - name: Build kernel and userspace
-        run: nix develop -c make build
+        run: make build
 
       - name: Run unit tests
-        run: nix develop -c make unit-test
+        run: make unit-test
 
       - name: Run kernel tests
         env:
           MAX_PARALLEL: 4
           TEST_TIMEOUT: 120
-        run: nix develop -c make kernel-test
+        run: make kernel-test
 
       - name: Upload kernel test logs
         if: failure()
@@ -63,7 +77,7 @@ jobs:
         env:
           MAX_PARALLEL: 4
           TEST_TIMEOUT: 120
-        run: nix develop -c make userspace-test
+        run: make userspace-test
 
       - name: Upload userspace test logs
         if: failure()
