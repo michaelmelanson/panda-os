@@ -1,5 +1,3 @@
 Surface test starting
-PASS: Opened framebuffer
-PASS: Got surface info
-PASS: Drew test pattern
-<<<SCREENSHOT_READY>>>
+PASS: fb0 refused with Busy (the compositor owns the display)
+PASS

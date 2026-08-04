@@ -1,6 +1,8 @@
 claim_test: starting
-claim_test: second fb0 open refused with Busy
+claim_test: second block open refused with Busy
 claim_test: reopen after close succeeded
-claim_test: fb0 open after child exit succeeded
+claim_test: block open after child exit succeeded
+claim_test: display open refused with Busy
+claim_test: fb0 open refused with Busy
 claim_test: raw open of mounted block device refused with Busy
 PASS

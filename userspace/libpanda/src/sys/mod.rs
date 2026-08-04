@@ -9,6 +9,7 @@ use core::arch::asm;
 
 pub mod buffer;
 pub mod channel;
+pub mod display;
 pub mod env;
 pub mod file;
 pub mod mailbox;
@@ -30,6 +31,7 @@ pub use panda_abi::{
     EVENT_CHANNEL_CLOSED,
     EVENT_CHANNEL_READABLE,
     EVENT_CHANNEL_WRITABLE,
+    EVENT_DISPLAY_CHANGED,
     EVENT_KEYBOARD_KEY,
     EVENT_PROCESS_EXITED,
     FILE_NONBLOCK,

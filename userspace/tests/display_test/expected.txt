@@ -1,0 +1,7 @@
+display_test: starting
+display_test: display open refused with Busy (compositor owns it)
+display_test: second open also refused with Busy
+display_test: nonexistent display index rejected with NotFound
+display_test: non-display device rejected with NotFound
+display_test: INFO/MAP/FLUSH on non-display handles rejected
+PASS

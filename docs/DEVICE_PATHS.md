@@ -20,7 +20,7 @@ Where:
 Registered scheme handlers are themselves enumerable via the `scheme:` meta-scheme:
 
 ```
-readdir("scheme:/")   # -> ["block", "console", "file", "keyboard", "scheme", "surface"]
+readdir("scheme:/")   # -> ["block", "console", "display", "file", "keyboard", "scheme", "surface"]
 ```
 
 This lists the name of every scheme registered with `register_scheme` (see
@@ -52,7 +52,7 @@ enumerates the schemes themselves.
 ```
 keyboard:/pci/input/0       # First input device, opened as keyboard
 block:/pci/storage/0        # First storage device, opened as block device
-surface:/pci/display/0      # First display, opened as surface
+display:/pci/display/0      # The display, opened for exclusive ownership
 
 # Legacy address format still supported
 block:/pci/00:04.0          # By raw PCI address
@@ -93,8 +93,8 @@ let disk = open("block:/pci/storage/0")?;
 // Open first input device as keyboard
 let kbd = open("keyboard:/pci/input/0")?;
 
-// Open first display as surface
-let screen = open("surface:/pci/display/0")?;
+// Take exclusive ownership of the display
+let screen = open("display:/pci/display/0")?;
 ```
 
 ## Summary
@@ -114,10 +114,14 @@ or its process exits (RAII — the claim guard lives inside the resource).
 
 | Operation | Claim |
 |-----------|-------|
-| `open("surface:/fb0")` | Claims the display device; a second concurrent open fails `Busy` |
+| `open("display:/pci/display/0")` | Claims the display device exclusively; a second concurrent open fails `Busy` |
+| `open("surface:/fb0")` | Legacy alias for the same display claim (retired in plans/userspace-compositor.md Phase 4/5) |
 | `mount("ext2", ...)` | Claims the backing block device for the lifetime of the mount |
 | `open("block:/pci/storage/N")` | Claims the block device; fails `Busy` if it is mounted or already open |
 
-Note: the in-kernel compositor currently accesses the framebuffer without a
-claim; that bypass closes when the compositor moves to userspace (see
-`plans/userspace-compositor.md`).
+Note: the in-kernel compositor holds the display's claim for as long as it
+runs, so on a system with a display both `display:/pci/display/0` and
+`surface:/fb0` are `Busy` to userspace. That is deliberate — the compositor
+really is the display's exclusive owner — and it ends when the compositor
+moves to userspace (see `plans/userspace-compositor.md`), at which point the
+userspace compositor takes the claim by opening `display:` normally.

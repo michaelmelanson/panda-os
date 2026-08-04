@@ -144,6 +144,15 @@ EVENT_CHANNEL_CLOSED    // Peer closed
 EVENT_KEYBOARD_KEY      // Key event available
 ```
 
+**Display events:**
+```rust
+EVENT_DISPLAY_CHANGED   // Display mode changed; re-query OP_DISPLAY_INFO and re-map
+```
+
+Posted to the mailbox attached to a `display:` handle (the display's exclusive
+owner) when the driver changes the display mode. The owner's previous
+framebuffer mapping is stale after this event.
+
 **Process events:**
 ```rust
 EVENT_PROCESS_EXITED    // Child process exited

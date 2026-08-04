@@ -140,6 +140,42 @@ Teaching handle-close to also unmap is future work.
 | `OP_SURFACE_FLUSH` | 0x6_0003 | (rect_ptr) | 0 or error |
 | `OP_SURFACE_UPDATE_PARAMS` | 0x6_0004 | (params_ptr) | 0 or error |
 
+### Display operations (0x6_1000 - 0x6_1FFF)
+
+| Operation | Code | Arguments | Returns |
+|-----------|------|-----------|---------|
+| `OP_DISPLAY_INFO` | 0x6_1000 | (info_ptr) | 0 or error |
+| `OP_DISPLAY_MAP` | 0x6_1001 | () | vaddr or error |
+| `OP_DISPLAY_FLUSH` | 0x6_1002 | (rect_ptr, 0 = whole screen) | 0 or error |
+
+These act on a handle opened from the `display:` scheme (e.g.
+`display:/pci/display/0`), which claims the display device **exclusively** via
+the claim table: a second open — through `display:` or the legacy
+`surface:/fb0` path — fails with `Busy` until the owning handle is closed or
+the owning process exits. Holding the handle is therefore the whole permission
+model; these operations apply no further check and reject any handle that is
+not a display with `InvalidHandle`.
+
+`OP_DISPLAY_INFO` writes a `SurfaceInfoOut` (width, height, format, stride) —
+the same pixel-geometry struct the surface operations use, deliberately not
+duplicated. `OP_DISPLAY_FLUSH` takes a `SurfaceRect`, validated against the
+display bounds; the underlying virtio-gpu transfer+flush is synchronous and
+whole-surface, so the rectangle is validation and forward-compatibility rather
+than a bandwidth optimisation today.
+
+`OP_DISPLAY_MAP` maps the framebuffer pages into the calling process at a
+freshly allocated address in the buffer vaddr region and returns that address.
+Unlike `OP_BUFFER_MAP`, the framebuffer is not a frame-tracked `SharedBuffer`
+but a physically contiguous region owned by the display driver, so the mapping
+is MMIO-style: unmapping (on process exit) tears down only this process's
+page-table entries. A mode change replaces the framebuffer and posts
+`EVENT_DISPLAY_CHANGED`; the owner must then re-query `OP_DISPLAY_INFO` and
+re-issue `OP_DISPLAY_MAP`.
+
+Until the compositor moves to userspace (plans/userspace-compositor.md,
+Phase 5), the in-kernel compositor holds the display's claim for as long as it
+runs, so on a system with a display these opens always return `Busy`.
+
 ### Mailbox operations (0x7_0000 - 0x7_0FFF)
 
 | Operation | Code | Arguments | Returns |
@@ -277,6 +313,7 @@ Used with mailbox operations and open/spawn event_mask:
 | `EVENT_CHANNEL_CLOSED` | 1 << 2 | Peer closed their endpoint |
 | `EVENT_PROCESS_EXITED` | 1 << 3 | Child process has exited |
 | `EVENT_KEYBOARD_KEY` | 1 << 4 | Key event available |
+| `EVENT_DISPLAY_CHANGED` | 1 << 5 | Display mode changed; re-query `OP_DISPLAY_INFO` and re-map |
 
 ## Userspace API
 

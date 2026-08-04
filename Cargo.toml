@@ -65,6 +65,7 @@ members = [
   "userspace/tests/handle_transfer_test",
   "userspace/tests/handle_transfer_child",
   "userspace/tests/claim_test",
+  "userspace/tests/display_test",
   "userspace/tests/claim_child",
   "userspace/tests/scheme_registry_test",
   "userspace/tests/buffer_transfer_test",

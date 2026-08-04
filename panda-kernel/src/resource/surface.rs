@@ -406,6 +406,24 @@ pub unsafe fn init_framebuffer(framebuffer: *mut u8, width: u32, height: u32) {
     *global = Some(surface);
 }
 
+/// The framebuffer's kernel virtual base address and geometry, if a
+/// framebuffer has been initialized.
+///
+/// This is what the `display:` scheme needs in order to map the framebuffer
+/// pages into the display owner's address space and to answer
+/// `OP_DISPLAY_INFO` — it deliberately hands out the raw region rather than a
+/// [`FramebufferSurface`], because the display resource does no drawing of
+/// its own.
+pub fn framebuffer_region() -> Option<(x86_64::VirtAddr, SurfaceInfo)> {
+    let global = FRAMEBUFFER_SURFACE.read();
+    global.as_ref().map(|surface| {
+        (
+            x86_64::VirtAddr::new(surface.framebuffer as u64),
+            surface.info,
+        )
+    })
+}
+
 /// Get a clone of the framebuffer surface for handle creation.
 pub fn get_framebuffer_surface() -> Option<Box<FramebufferSurface>> {
     let global = FRAMEBUFFER_SURFACE.read();

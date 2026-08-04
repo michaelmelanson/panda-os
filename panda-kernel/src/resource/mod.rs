@@ -10,6 +10,7 @@ mod buffer;
 mod channel;
 mod char_output;
 mod directory;
+mod display;
 mod event_source;
 mod mailbox;
 mod process;
@@ -23,6 +24,7 @@ pub use buffer::{Buffer, BufferError, BufferExt, SharedBuffer};
 pub use channel::{ChannelEndpoint, ChannelError};
 pub use char_output::{CharOutError, CharacterOutput};
 pub use directory::{DirEntry, Directory};
+pub use display::{DisplayDevice, DisplayError, device_address as display_device_address, notify_display_changed};
 pub use event_source::{Event, EventSource, KeyEvent};
 pub use mailbox::{Mailbox, MailboxRef};
 pub use process::Process as ProcessInterface;
@@ -88,6 +90,14 @@ pub trait Resource: Send + Sync {
 
     /// Get this resource as a Surface (for framebuffer, display).
     fn as_surface(&self) -> Option<&dyn Surface> {
+        None
+    }
+
+    /// Get this resource as an exclusively-owned display device (the
+    /// `display:` scheme). Follows the same one-accessor-per-concrete-
+    /// capability idiom as `as_scheme_proxy`: the display interface is not a
+    /// surface (it does no drawing) and has no other trait that fits.
+    fn as_display(&self) -> Option<&DisplayDevice> {
         None
     }
 

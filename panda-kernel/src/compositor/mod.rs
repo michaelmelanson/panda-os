@@ -11,6 +11,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::Waker;
 use spinning_top::Spinlock;
 
+use crate::devices::claims::{ClaimGuard, ClaimOwner, claim};
 use crate::resource::{FramebufferSurface, Rect, Surface, alpha_blend};
 
 /// Background color (Nord dark gray)
@@ -21,6 +22,22 @@ const REFRESH_INTERVAL_MS: u64 = 16;
 
 /// Global compositor instance
 static COMPOSITOR: Spinlock<Option<WindowManager>> = Spinlock::new(None);
+
+/// The in-kernel compositor's claim on the display device.
+///
+/// The compositor writes framebuffer memory directly and continuously, so it
+/// is the display's exclusive owner for as long as it runs. Holding the claim
+/// here — for the whole kernel lifetime, since nothing stops the compositor —
+/// closes the "compositor bypass" gap that previously let `surface:/fb0` hand
+/// a second, unsynchronized writer to userspace while the compositor was
+/// writing the same pixels.
+///
+/// The consequence is intentional: while the kernel compositor exists, both
+/// `display:/pci/display/0` and `surface:/fb0` are `Busy`. This claim (and
+/// this whole module) disappears in Phase 5 of
+/// plans/userspace-compositor.md, at which point the userspace compositor
+/// takes the claim by opening `display:` normally.
+static DISPLAY_CLAIM: Spinlock<Option<ClaimGuard>> = Spinlock::new(None);
 
 /// Frame counter - incremented after each compositor tick completes
 static FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -237,6 +254,19 @@ impl WindowManager {
 
 /// Initialize the compositor with the framebuffer
 pub fn init(framebuffer: FramebufferSurface) {
+    // Take exclusive ownership of the display for as long as the compositor
+    // runs (see DISPLAY_CLAIM). A failure here means something else already
+    // holds the display; the compositor still runs, but the claim table then
+    // reflects that other owner rather than lying about who is writing the
+    // framebuffer.
+    match crate::resource::display_device_address() {
+        Some(address) => match claim(address, ClaimOwner::Display) {
+            Ok(guard) => *DISPLAY_CLAIM.lock() = Some(guard),
+            Err(error) => log::warn!("compositor: could not claim the display: {:?}", error),
+        },
+        None => log::warn!("compositor: no display device to claim"),
+    }
+
     // Clear entire framebuffer to background color
     let width = framebuffer.width();
     let height = framebuffer.height();

@@ -105,6 +105,9 @@ pub enum HandleType {
     Surface = 0x30,
     /// Shared memory buffer handle.
     Buffer = 0x31,
+    /// Display handle: the exclusive owner of a display device, opened via
+    /// the `display:` scheme.
+    Display = 0x32,
 }
 
 impl HandleType {
@@ -152,6 +155,7 @@ impl HandleType {
             0x20 => Some(Self::Mailbox),
             0x30 => Some(Self::Surface),
             0x31 => Some(Self::Buffer),
+            0x32 => Some(Self::Display),
             _ => None,
         }
     }
@@ -293,6 +297,16 @@ pub enum Operation {
     /// Update window parameters: (params_ptr) -> 0 or error
     SurfaceUpdateParams = 0x6_0004,
 
+    // Display operations (0x6_1000 - 0x6_1FFF)
+    /// Get display mode info: (info_ptr) -> 0 or error.
+    /// `info_ptr` points to a [`SurfaceInfoOut`] (width, height, format, stride).
+    DisplayInfo = 0x6_1000,
+    /// Map the display's framebuffer into the calling process: () -> vaddr or error.
+    DisplayMap = 0x6_1001,
+    /// Flush a damaged rectangle to the display: (rect_ptr) -> 0 or error.
+    /// `rect_ptr` points to a [`SurfaceRect`], or is 0 for a full-screen flush.
+    DisplayFlush = 0x6_1002,
+
     // Mailbox operations (0x7_0000 - 0x7_0FFF)
     /// Create a new mailbox: () -> mailbox_handle
     MailboxCreate = 0x7_0000,
@@ -368,6 +382,9 @@ impl Operation {
             0x6_0002 => Some(Self::SurfaceFill),
             0x6_0003 => Some(Self::SurfaceFlush),
             0x6_0004 => Some(Self::SurfaceUpdateParams),
+            0x6_1000 => Some(Self::DisplayInfo),
+            0x6_1001 => Some(Self::DisplayMap),
+            0x6_1002 => Some(Self::DisplayFlush),
             0x7_0000 => Some(Self::MailboxCreate),
             0x7_0001 => Some(Self::MailboxWait),
             0x7_0002 => Some(Self::MailboxPoll),
@@ -500,6 +517,23 @@ pub const OP_SURFACE_FILL: u32 = Operation::SurfaceFill as u32;
 pub const OP_SURFACE_FLUSH: u32 = Operation::SurfaceFlush as u32;
 /// Update window parameters: (params_ptr) -> 0 or error
 pub const OP_SURFACE_UPDATE_PARAMS: u32 = Operation::SurfaceUpdateParams as u32;
+
+// Display operations (0x6_1000 - 0x6_1FFF)
+//
+// These act on a handle opened from the `display:` scheme, which is
+// exclusively claimed (see `panda-kernel/src/devices/claims.rs`): holding the
+// handle *is* the proof that this process owns the display, so no further
+// permission check is applied to the operations below.
+/// Get display mode info: (info_ptr) -> 0 or error.
+/// Writes a [`SurfaceInfoOut`] (width, height, format, stride) — the same
+/// pixel-geometry struct the surface interface uses, deliberately not
+/// duplicated.
+pub const OP_DISPLAY_INFO: u32 = Operation::DisplayInfo as u32;
+/// Map the display framebuffer into the calling process: () -> vaddr or error.
+pub const OP_DISPLAY_MAP: u32 = Operation::DisplayMap as u32;
+/// Flush a damaged rectangle to the display: (rect_ptr) -> 0 or error.
+/// `rect_ptr` points to a [`SurfaceRect`], or is 0 to flush the whole screen.
+pub const OP_DISPLAY_FLUSH: u32 = Operation::DisplayFlush as u32;
 
 // Mailbox operations (0x7_0000 - 0x7_0FFF)
 /// Create a new mailbox: () -> mailbox_handle
@@ -694,6 +728,11 @@ impl EventFlags {
     /// Key event available (key data packed in bits 8-25).
     pub const KEYBOARD_KEY: Self = Self(1 << 4);
 
+    // Display events (bit 5)
+    /// The display's mode/resolution changed; the owner must re-query
+    /// `OP_DISPLAY_INFO` and re-map the framebuffer.
+    pub const DISPLAY_CHANGED: Self = Self(1 << 5);
+
     /// Check if channel readable flag is set.
     #[inline]
     pub const fn is_channel_readable(self) -> bool {
@@ -722,6 +761,12 @@ impl EventFlags {
     #[inline]
     pub const fn is_keyboard_key(self) -> bool {
         self.0 & Self::KEYBOARD_KEY.0 != 0
+    }
+
+    /// Check if display changed flag is set.
+    #[inline]
+    pub const fn is_display_changed(self) -> bool {
+        self.0 & Self::DISPLAY_CHANGED.0 != 0
     }
 
     /// Combine flags with bitwise OR.
@@ -761,6 +806,12 @@ pub const EVENT_PROCESS_EXITED: u32 = EventFlags::PROCESS_EXITED.0;
 /// - Bits 8-23: key code (16 bits)
 /// - Bits 24-25: key value (0=release, 1=press, 2=repeat)
 pub const EVENT_KEYBOARD_KEY: u32 = EventFlags::KEYBOARD_KEY.0;
+
+// Display events (bit 5)
+/// The display's mode/resolution changed. The owner of the `display:` handle
+/// must re-query `OP_DISPLAY_INFO` and re-issue `OP_DISPLAY_MAP`: its previous
+/// mapping refers to the old framebuffer.
+pub const EVENT_DISPLAY_CHANGED: u32 = EventFlags::DISPLAY_CHANGED.0;
 
 // Keyboard event encoding helpers
 /// Shift for key code in event flags.

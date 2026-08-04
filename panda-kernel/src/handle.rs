@@ -119,6 +119,11 @@ impl Handle {
         self.resource.as_surface()
     }
 
+    /// Get this handle's resource as an exclusively-owned display device.
+    pub fn as_display(&self) -> Option<&crate::resource::DisplayDevice> {
+        self.resource.as_display()
+    }
+
     /// Get a waker for blocking on this handle.
     pub fn waker(&self) -> Option<Arc<IoWaker>> {
         self.resource.waker()

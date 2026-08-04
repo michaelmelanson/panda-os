@@ -408,24 +408,20 @@ impl SchemeHandler for SurfaceScheme {
             "/fb0" => {
                 // The legacy "/fb0" path doesn't go through `device_path::resolve`
                 // (it isn't a "/pci/..." path), so resolve the display's
-                // DeviceAddress the same way a "/pci/display/0" open would:
-                // the first PCI device in the display class.
-                let address = crate::pci::get_device_by_class(
-                    crate::pci::DeviceClass::Display.code(),
-                    0,
-                )
-                .ok_or(OpenError::NotFound)?;
+                // DeviceAddress the same way a "/pci/display/0" open would.
+                let address =
+                    super::display_device_address().ok_or(OpenError::NotFound)?;
                 let claim = crate::devices::claims::claim(address, ClaimOwner::Display)
                     .map_err(|_| OpenError::Busy)?;
 
-                // NOTE (compositor bypass): the in-kernel compositor
-                // (crate::compositor) reads and writes the framebuffer
-                // directly via `get_framebuffer_surface()`, without going
-                // through this scheme or this claim. That bypass is a known,
-                // temporary gap that closes once the compositor moves to
-                // userspace (see plans/userspace-compositor.md); until then,
-                // this claim only protects against concurrent *userspace*
-                // opens of "/fb0", not against the in-kernel compositor.
+                // NOTE: while the in-kernel compositor runs it holds the
+                // display's claim itself (see `compositor::init`), so this
+                // open always fails `Busy` on a system with a display. That
+                // is deliberate: handing out a second, unsynchronized writer
+                // to framebuffer memory while the compositor is writing it is
+                // exactly the aliasing hazard the claim table exists to
+                // prevent. `/fb0` is retired outright in Phase 4/5 of
+                // plans/userspace-compositor.md.
                 let surface =
                     super::get_framebuffer_surface().ok_or(OpenError::NotFound)?;
                 Ok(Box::new(ClaimedFramebufferSurface {
@@ -471,6 +467,44 @@ impl Resource for ClaimedFramebufferSurface {
 
     fn as_surface(&self) -> Option<&dyn super::Surface> {
         Some(&self.surface)
+    }
+}
+
+// =============================================================================
+// Display Scheme - exclusive display ownership
+// =============================================================================
+
+/// Scheme handler for display devices (`display:/pci/display/0`).
+///
+/// Opening a display claims it exclusively (see
+/// `crate::resource::display`): a second open — through this scheme or the
+/// legacy `surface:/fb0` path — fails with `Busy` until the owning handle is
+/// closed or the owning process exits.
+pub struct DisplayScheme;
+
+#[async_trait]
+impl SchemeHandler for DisplayScheme {
+    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError> {
+        // Resolve like any other class-based device path, e.g.
+        // "/pci/display/0" or the raw "/pci/00:02.0".
+        let address = device_path::resolve(path).ok_or(OpenError::NotFound)?;
+
+        // Only the device the framebuffer was initialized from can be opened
+        // as a display; any other PCI device resolved by this path is not a
+        // display this kernel can drive.
+        if super::display_device_address().as_ref() != Some(&address) {
+            return Err(OpenError::NotFound);
+        }
+
+        let claim = crate::devices::claims::claim(address, ClaimOwner::Display)
+            .map_err(|_| OpenError::Busy)?;
+
+        let display = super::DisplayDevice::new(claim).ok_or(OpenError::NotFound)?;
+        Ok(Box::new(display))
+    }
+
+    async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
+        device_path::list(path)
     }
 }
 
@@ -951,6 +985,7 @@ pub fn init() {
     register_scheme("console", Arc::new(ConsoleScheme));
     register_scheme("keyboard", Arc::new(KeyboardScheme));
     register_scheme("surface", Arc::new(SurfaceScheme));
+    register_scheme("display", Arc::new(DisplayScheme));
     register_scheme("block", Arc::new(BlockScheme));
     register_scheme("scheme", Arc::new(SchemeScheme));
 }

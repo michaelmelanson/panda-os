@@ -137,5 +137,12 @@ pub fn change_resolution(width: u32, height: u32) -> Result<(), &'static str> {
         .ok_or("Failed to get new framebuffer surface")?;
     crate::compositor::replace_framebuffer(*new_surface);
 
+    // Tell the display owner (if any) that its mode info and framebuffer
+    // mapping are stale: it must re-query OP_DISPLAY_INFO and re-issue
+    // OP_DISPLAY_MAP. This is the `display:` scheme's replacement for
+    // `compositor::replace_framebuffer` above, which goes away with the
+    // in-kernel compositor.
+    crate::resource::notify_display_changed();
+
     Ok(())
 }

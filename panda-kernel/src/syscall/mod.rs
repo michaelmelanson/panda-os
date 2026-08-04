@@ -9,6 +9,7 @@
 mod buffer;
 mod channel;
 mod directory;
+mod display;
 mod entry;
 mod environment;
 mod file;
@@ -272,6 +273,23 @@ fn build_future(
             ua,
             handle,
             user_ptr::UserPtr::new(arg0),
+        )),
+
+        // Display operations
+        OP_DISPLAY_INFO => Ok(display::handle_info(
+            ua,
+            handle,
+            user_ptr::UserPtr::new(arg0),
+        )),
+        OP_DISPLAY_MAP => Ok(display::handle_map(handle)),
+        OP_DISPLAY_FLUSH => Ok(display::handle_flush(
+            ua,
+            handle,
+            if arg0 != 0 {
+                Some(user_ptr::UserPtr::new(arg0))
+            } else {
+                None
+            },
         )),
 
         // Mailbox operations
