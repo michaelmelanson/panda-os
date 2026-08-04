@@ -417,75 +417,58 @@ Check causes in roughly this order, cheapest first:
    confidence — "I read the code and this looks plausible" is not the same
    as "I watched the bug happen and then watched it stop happening." Say
    explicitly which kind of evidence you actually have when reporting a fix.
-4. **Check whether local QEMU actually matches CI's QEMU.** The Nix devShell
-   pins a specific QEMU version; CI (at time of writing) installs QEMU via
-   `apt-get install -y qemu-system-x86` in `.github/workflows/ci.yml`, which
-   pulls whatever version ships with the runner's Ubuntu image — a different,
-   potentially several-major-versions-old build from the Nix one. A gap that
-   large is enough on its own to produce genuinely different TCG scheduling/
-   timer/virtio timing that no amount of matching `-accel tcg` or parallelism
-   locally can reproduce, because you're not running the same software CI
-   is. Check this *before* concluding a CI-only failure is unreproducible —
-   it can turn a "such a rare race we can't catch it locally" investigation
-   into "we were never testing the same binary." See "Known flaky tests"
-   below for a case where this was identified as the likely explanation.
+4. **Check whether local actually matches CI's environment**, starting with
+   the QEMU version. CI runs every step through `nix develop` (see
+   `.github/workflows/ci.yml`), the same devShell a local `nix develop`
+   gives you, pinned by the committed `flake.lock` — so this should be moot
+   today. It wasn't always: CI used to install QEMU via
+   `apt-get install qemu-system-x86` (Ubuntu's packaged build, several major
+   versions behind the Nix-pinned one), and that gap alone was enough to
+   produce genuinely different TCG/timer/virtio timing that no amount of
+   matching `-accel tcg` or parallelism locally could reproduce — see
+   "Resolved CI-only flakes" below for the full story. If CI's workflow ever
+   changes to install tools outside the Nix devShell again, re-check this
+   first before trusting a local non-repro.
 
-### Known flaky tests
+### Resolved CI-only flakes (postmortems)
 
-- **`buffer_transfer_test`** (as of the M2.2 era): intermittently fails in CI
-  with a distinctive symptom — the child's `recv_with_handle` call succeeds,
-  the message payload is correct, but the attached buffer handle comes back
-  `None` even though the parent's `send_with_handle` call succeeded (i.e. the
-  attachment genuinely existed at send time). Downstream, the child then
-  exits without signalling, and the parent's follow-up `recv` fails with
-  `PeerClosed` — that second failure is a consequence of the first, not an
-  independent bug.
+Flaky tests are not acceptable long-term — this section is a record of ones
+that were found, root-caused, and fixed, kept for pattern-matching the next
+one, not a list of tests it's okay to ignore. If a test here starts failing
+again, treat it as a regression, not a known quirk.
 
-  Investigated extensively without reaching a fix:
-  - Read `resource/channel.rs`'s `send_with_attachment`/`recv_with_attachment`
-    end to end. Both hold the channel's single `Spinlock<ChannelShared>` for
-    their entire critical section; the message payload and its attachment
-    live in one `ChannelMessage` struct pushed/popped together, so there's no
-    window where they could be split. `send`'s `peer.waker.wake()` call also
-    happens under that same lock, after the push, so the wake can't be
-    observed before the message is visible.
-  - Read `syscall/channel.rs::handle_recv`'s check → register → recheck loop
-    (the pattern from the lost-wakeup fix, `fbf2649`) in detail, specifically
-    the gap between `peek_has_attachment()` (which drops the channel lock)
-    and the handle-table-fullness check and subsequent `recv_with_attachment()`
-    call (which reacquires it). Found no way, in this single-core /
-    single-syscall-in-flight-per-process design, for anything else to touch
-    the queue's front entry in that gap.
-  - Attempted repro: forced `-accel tcg` (temporary local edit, reverted),
-    ran `buffer_transfer_test` alone 40x (0 repros), then the full suite with
-    `MAX_PARALLEL=4` matching CI's concurrency ~11x (0 repros of this
-    failure; one unrelated pre-existing `control_plane_test` flake seen
-    instead, itself an `expected.txt` ordering issue per point 1 above), then
-    the full suite constrained to 2 host CPUs via `taskset -c 0,1` (matching
-    GitHub's 2-vCPU runners) for a time-boxed ~25 minutes — no repro before
-    the cap was hit. Total: 50+ local attempts, zero reproductions.
-  - **Leading theory (unconfirmed): QEMU version divergence between local and
-    CI** (see point 4 above) — every local attempt used the Nix flake's QEMU,
-    never CI's apt-installed one, so none of the local non-repro runs are
-    strong evidence the kernel code is correct; they only prove the bug
-    doesn't reproduce under a QEMU build CI doesn't actually use. This is
-    considered the primary suspect for why extensive local reproduction
-    attempts failed.
-  - CPU-oversubscription-specific timing (GitHub runners having only 2 vCPUs
-    for `MAX_PARALLEL=4`) was the working theory before the QEMU-version gap
-    was noticed; it's now downgraded to an alternative/secondary theory,
-    considered unlikely to be the primary explanation on its own since the
-    QEMU version gap alone is sufficient to explain the non-repro results.
+- **`buffer_transfer_test`** (M2.2 era). Intermittently failed in CI with a
+  distinctive symptom: the child's `recv_with_handle` call succeeded, the
+  message payload was correct, but the attached buffer handle came back
+  `None` even though the parent's `send_with_handle` call had succeeded (the
+  attachment genuinely existed at send time). The child then exited without
+  signalling, and the parent's follow-up `recv` failed with `PeerClosed` — a
+  consequence of the child's earlier failure, not a second independent bug.
 
-  CI now runs through the Nix devShell (see point 4 above), closing the
-  version gap this investigation identified. If this test fails again after
-  that change, the QEMU-version theory is ruled out and it's worth resuming
-  investigation from the code-review findings above — they found no bug, but
-  didn't have a CI-matched environment to test against yet. If it stops
-  failing, that's reasonably strong evidence the version gap was the actual
-  cause all along, similar to the `buffer_owner_test` case above. No kernel
-  or test code was changed as part of this
-  investigation.
+  Code review of `resource/channel.rs`'s `send_with_attachment`/
+  `recv_with_attachment` and `syscall/channel.rs::handle_recv`'s check →
+  register → recheck loop (the pattern from the lost-wakeup fix, `fbf2649`)
+  found no bug: message and attachment are pushed/popped together under one
+  lock, with no window where they could be split. 50+ local reproduction
+  attempts (isolated runs, CI-matched parallelism, CPU-constrained via
+  `taskset`) never reproduced it.
+
+  **Root cause: CI and local were never running the same QEMU.** CI installed
+  QEMU via `apt-get install qemu-system-x86` (Ubuntu's packaged build);
+  every local attempt used the Nix flake's pinned QEMU 11.0.1 — a gap of
+  several major versions, big enough on its own to produce genuinely
+  different TCG/timer/virtio timing. None of the local non-repro runs were
+  ever evidence the kernel code was correct; they only proved the failure
+  doesn't reproduce under a QEMU build CI doesn't use.
+
+  **Fix**: `93614d4` switched CI to run every step through `nix develop`,
+  resolving to the exact same toolchain (including QEMU) a local `nix
+  develop` gives, pinned by the committed `flake.lock`. Confirmed clean
+  across 3 consecutive CI runs afterward (previously failing in roughly half
+  of all runs) — strong evidence the version gap was the actual cause. This
+  also closes the whole *class* of "works locally, fails in CI" problem, not
+  just this one instance: local non-repro is now actually meaningful
+  evidence again.
 
 ## Test infrastructure
 
