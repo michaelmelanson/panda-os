@@ -12,7 +12,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: true
 
@@ -29,8 +29,15 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Cache Nix store
-        uses: DeterminateSystems/magic-nix-cache-action@main
+      # No Nix store cache here: DeterminateSystems/magic-nix-cache-action
+      # needs a FlakeHub account (this repo has none) to actually cache
+      # anything, so it was only ever emitting an auth warning and doing
+      # nothing useful. The devShell's packages (rustc nightly, qemu, etc.)
+      # come pre-built from cache.nixos.org, which the Nix installer already
+      # trusts by default, so `nix develop` below still fetches binaries
+      # rather than building from source -- it just isn't persisted between
+      # CI runs. That's an acceptable tradeoff given fetching them fresh
+      # each run is a small fraction of total CI time.
 
       # Put the devShell's toolchain directly on PATH for every later step,
       # instead of prefixing each `run:` with `nix develop -c`. This matters
@@ -68,7 +75,7 @@ jobs:
 
       - name: Upload kernel test logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: kernel-test-logs
           path: build/test-*.log
@@ -81,7 +88,7 @@ jobs:
 
       - name: Upload userspace test logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: userspace-test-logs
           path: build/utest-*.log
