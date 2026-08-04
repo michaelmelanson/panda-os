@@ -761,18 +761,33 @@ impl ProviderState {
 
         loop {
             let mut buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
-            let len = core::future::poll_fn(|_cx| match self.kernel_endpoint.recv(&mut buf) {
-                Ok(len) => core::task::Poll::Ready(Ok(len)),
-                Err(super::ChannelError::QueueEmpty) => {
-                    self.kernel_endpoint
-                        .waker()
-                        .set_waiting(crate::scheduler::current_process_id());
-                    core::task::Poll::Pending
+            let len = core::future::poll_fn(|_cx| {
+                let mut registered = false;
+                loop {
+                    match self.kernel_endpoint.recv(&mut buf) {
+                        Ok(len) => return core::task::Poll::Ready(Ok(len)),
+                        Err(super::ChannelError::QueueEmpty) => {
+                            if registered {
+                                return core::task::Poll::Pending;
+                            }
+                            // Register, then retry immediately: the
+                            // provider's response may arrive (and call
+                            // `wake()`) between the `recv` above and this
+                            // registration, in which case `wake()` finds no
+                            // registered waiter and the response would
+                            // otherwise be missed, leaving this round trip
+                            // blocked forever.
+                            self.kernel_endpoint
+                                .waker()
+                                .set_waiting(crate::scheduler::current_process_id());
+                            registered = true;
+                        }
+                        Err(super::ChannelError::PeerClosed) => {
+                            return core::task::Poll::Ready(Err(ProviderError::Disconnected));
+                        }
+                        Err(_) => return core::task::Poll::Ready(Err(ProviderError::Protocol)),
+                    }
                 }
-                Err(super::ChannelError::PeerClosed) => {
-                    core::task::Poll::Ready(Err(ProviderError::Disconnected))
-                }
-                Err(_) => core::task::Poll::Ready(Err(ProviderError::Protocol)),
             })
             .await?;
             buf.truncate(len);

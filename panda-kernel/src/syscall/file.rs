@@ -208,7 +208,7 @@ fn handle_read_sync(handle_id: u64, dst: UserSlice, flags: u32) -> SyscallFuture
                     return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
                 };
 
-                if let Some(event) = event_source.poll() {
+                let event_to_result = |event: crate::resource::Event| {
                     let event_bytes = match event {
                         crate::resource::Event::Key(key) => {
                             let mut bytes = [0u8; 8];
@@ -220,13 +220,24 @@ fn handle_read_sync(handle_id: u64, dst: UserSlice, flags: u32) -> SyscallFuture
                     };
                     let n = event_bytes.len().min(dst.len());
                     let data = event_bytes[..n].to_vec();
-                    Poll::Ready(SyscallResult::write_back(n as isize, data, dst))
+                    SyscallResult::write_back(n as isize, data, dst)
+                };
+
+                if let Some(event) = event_source.poll() {
+                    Poll::Ready(event_to_result(event))
                 } else {
-                    // Re-register waker
+                    // Register waker, then re-check: an event may have
+                    // arrived (and called `wake()`) between the `poll()`
+                    // above and this registration, in which case `wake()`
+                    // finds no registered waiter and the event would
+                    // otherwise be missed, leaving us blocked forever.
                     if let Some(ref waker) = waker {
                         waker.set_waiting(scheduler::current_process_id());
                     }
-                    Poll::Pending
+                    match event_source.poll() {
+                        Some(event) => Poll::Ready(event_to_result(event)),
+                        None => Poll::Pending,
+                    }
                 }
             }))
         }

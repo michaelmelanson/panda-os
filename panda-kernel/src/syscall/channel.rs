@@ -136,26 +136,46 @@ pub fn handle_send(
             return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
 
-        match channel.send_with_attachment(&msg, attachment.clone()) {
-            Ok(()) => {
-                debug!("channel_send: sent successfully");
-                Poll::Ready(SyscallResult::ok(0))
-            }
-            Err(ChannelError::QueueFull) => {
-                if flags & CHANNEL_NONBLOCK != 0 {
-                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::WouldBlock));
+        // `registered` tracks whether we've already called `set_waiting` on
+        // this poll. If the queue is still full after registering, it's
+        // safe to actually block: any peer recv that happens after
+        // `set_waiting` is guaranteed to see us in `waiting` and wake us.
+        // But a peer recv landing *before* `set_waiting` (between our first
+        // `QueueFull` observation and the call) would otherwise be missed —
+        // `IoWaker::wake()` finds no registered waiter and just records
+        // `signaled`, which nothing here re-checks. So on the first
+        // `QueueFull`, register then retry immediately rather than
+        // returning `Poll::Pending` straight away; only block once the
+        // retry (post-registration) also sees a full queue.
+        let mut registered = false;
+        loop {
+            match channel.send_with_attachment(&msg, attachment.clone()) {
+                Ok(()) => {
+                    debug!("channel_send: sent successfully");
+                    return Poll::Ready(SyscallResult::ok(0));
                 }
-                debug!("channel_send: queue full, blocking...");
-                channel.waker().set_waiting(scheduler::current_process_id());
-                Poll::Pending
+                Err(ChannelError::QueueFull) => {
+                    if flags & CHANNEL_NONBLOCK != 0 {
+                        return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::WouldBlock));
+                    }
+                    if registered {
+                        debug!("channel_send: queue full, blocking...");
+                        return Poll::Pending;
+                    }
+                    channel.waker().set_waiting(scheduler::current_process_id());
+                    registered = true;
+                    // Loop back and retry now that we're registered.
+                }
+                Err(ChannelError::MessageTooLarge) => {
+                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::MessageTooLarge));
+                }
+                Err(ChannelError::PeerClosed) => {
+                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::ChannelClosed));
+                }
+                Err(_) => {
+                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::IoError));
+                }
             }
-            Err(ChannelError::MessageTooLarge) => {
-                Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::MessageTooLarge))
-            }
-            Err(ChannelError::PeerClosed) => {
-                Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::ChannelClosed))
-            }
-            Err(_) => Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::IoError)),
         }
     })))
 }
@@ -199,64 +219,85 @@ pub fn handle_recv(
             return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
 
-        // If the queued message carries an attachment, check handle-table
-        // capacity BEFORE popping it — recv_with_attachment has no way to
-        // "un-pop" a message once its attachment has been handed to us, so
-        // we must not dequeue at all if we can't install the attachment.
-        if channel.peek_has_attachment() == Some(true) {
-            let table_full = scheduler::with_current_process(|proc| proc.handles().is_full());
-            if table_full {
-                return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::TooManyHandles));
-            }
-        }
-
-        // Cap allocation to MAX_MESSAGE_SIZE (messages can never exceed this)
-        let alloc_len = dst.len().min(panda_abi::MAX_MESSAGE_SIZE);
-        let mut kernel_buf = vec![0u8; alloc_len];
-        match channel.recv_with_attachment(&mut kernel_buf) {
-            Ok((len, attachment)) => {
-                debug!("channel_recv: received {} bytes", len);
-                kernel_buf.truncate(len);
-
-                // Install the attachment into our own handle table. Capacity
-                // was already verified above (single-core kernel, interrupts
-                // disabled for the whole syscall, so nothing else could have
-                // filled the table in between) — insert() failing here would
-                // indicate 56-bit ID space exhaustion, not a capacity race.
-                // In that unreachable-in-practice case we drop the
-                // attachment rather than lose the already-dequeued message.
-                let received_handle = attachment
-                    .and_then(|res| {
-                        scheduler::with_current_process(|proc| proc.handles_mut().insert(res).ok())
-                    })
-                    .unwrap_or(0);
-
-                match out_handle_dst {
-                    Some(ptr) => Poll::Ready(SyscallResult::write_back_with_handle(
-                        len as isize,
-                        kernel_buf,
-                        dst,
-                        ptr,
-                        received_handle,
-                    )),
-                    None => Poll::Ready(SyscallResult::write_back(len as isize, kernel_buf, dst)),
+        // `registered` tracks whether we've already called `set_waiting` on
+        // this poll. See the matching comment in `handle_send`: a sender
+        // that completes `send_with_attachment` (and wakes us) between our
+        // first `QueueEmpty` observation and the `set_waiting` call below
+        // would otherwise be missed entirely, since `IoWaker::wake()` only
+        // notifies an already-registered waiter. So on the first
+        // `QueueEmpty`, register then retry immediately; only actually
+        // block (`Poll::Pending`) once the retry also sees an empty queue.
+        let mut registered = false;
+        loop {
+            // If the queued message carries an attachment, check handle-table
+            // capacity BEFORE popping it — recv_with_attachment has no way to
+            // "un-pop" a message once its attachment has been handed to us, so
+            // we must not dequeue at all if we can't install the attachment.
+            if channel.peek_has_attachment() == Some(true) {
+                let table_full = scheduler::with_current_process(|proc| proc.handles().is_full());
+                if table_full {
+                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::TooManyHandles));
                 }
             }
-            Err(ChannelError::QueueEmpty) => {
-                if flags & CHANNEL_NONBLOCK != 0 {
-                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::WouldBlock));
+
+            // Cap allocation to MAX_MESSAGE_SIZE (messages can never exceed this)
+            let alloc_len = dst.len().min(panda_abi::MAX_MESSAGE_SIZE);
+            let mut kernel_buf = vec![0u8; alloc_len];
+            match channel.recv_with_attachment(&mut kernel_buf) {
+                Ok((len, attachment)) => {
+                    debug!("channel_recv: received {} bytes", len);
+                    kernel_buf.truncate(len);
+
+                    // Install the attachment into our own handle table. Capacity
+                    // was already verified above (single-core kernel, interrupts
+                    // disabled for the whole syscall, so nothing else could have
+                    // filled the table in between) — insert() failing here would
+                    // indicate 56-bit ID space exhaustion, not a capacity race.
+                    // In that unreachable-in-practice case we drop the
+                    // attachment rather than lose the already-dequeued message.
+                    let received_handle = attachment
+                        .and_then(|res| {
+                            scheduler::with_current_process(|proc| {
+                                proc.handles_mut().insert(res).ok()
+                            })
+                        })
+                        .unwrap_or(0);
+
+                    return match out_handle_dst {
+                        Some(ptr) => Poll::Ready(SyscallResult::write_back_with_handle(
+                            len as isize,
+                            kernel_buf,
+                            dst,
+                            ptr,
+                            received_handle,
+                        )),
+                        None => {
+                            Poll::Ready(SyscallResult::write_back(len as isize, kernel_buf, dst))
+                        }
+                    };
                 }
-                debug!("channel_recv: queue empty, blocking...");
-                channel.waker().set_waiting(scheduler::current_process_id());
-                Poll::Pending
+                Err(ChannelError::QueueEmpty) => {
+                    if flags & CHANNEL_NONBLOCK != 0 {
+                        return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::WouldBlock));
+                    }
+                    if registered {
+                        debug!("channel_recv: queue empty, blocking...");
+                        return Poll::Pending;
+                    }
+                    channel.waker().set_waiting(scheduler::current_process_id());
+                    registered = true;
+                    // Loop back and retry now that we're registered.
+                }
+                Err(ChannelError::BufferTooSmall) => {
+                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::BufferTooSmall));
+                }
+                Err(ChannelError::PeerClosed) => {
+                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::ChannelClosed));
+                }
+                Err(_) => {
+                    return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::IoError));
+                }
             }
-            Err(ChannelError::BufferTooSmall) => {
-                Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::BufferTooSmall))
-            }
-            Err(ChannelError::PeerClosed) => {
-                Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::ChannelClosed))
-            }
-            Err(_) => Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::IoError)),
         }
     }))
 }

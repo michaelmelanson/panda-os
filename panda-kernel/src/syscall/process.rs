@@ -33,14 +33,21 @@ pub fn handle_wait(handle_id: u64) -> SyscallFuture {
             return Poll::Ready(SyscallResult::err(panda_abi::ErrorCode::InvalidHandle));
         };
 
+        // Re-check after registering: the process may exit (and call
+        // `wake()`) between our first `exit_code()` check and
+        // `set_waiting()` below, in which case `wake()` finds no
+        // registered waiter yet and the exit signal would otherwise be
+        // missed entirely, leaving us blocked forever.
         match process_iface.exit_code() {
             Some(exit_code) => Poll::Ready(SyscallResult::ok(exit_code as isize)),
             None => {
-                // Register waker so we get woken when the process exits
                 process_iface
                     .waker()
                     .set_waiting(scheduler::current_process_id());
-                Poll::Pending
+                match process_iface.exit_code() {
+                    Some(exit_code) => Poll::Ready(SyscallResult::ok(exit_code as isize)),
+                    None => Poll::Pending,
+                }
             }
         }
     }))
