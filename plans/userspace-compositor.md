@@ -194,7 +194,9 @@ general-purpose M1 primitives.
 
 ## Implementation plan
 
-### Phase 1: handle transfer + multi-process buffers (roadmap M1)
+### Phase 1: handle transfer + multi-process buffers (roadmap M1) — ✅ landed
+
+`1194f0b` (handle transfer), `4d8c098` (multi-process buffers/`OP_BUFFER_MAP`).
 
 - `resource/channel.rs`: message struct gains `Option<Arc<dyn Resource>>`;
   send-side validation (whitelist), receive-side handle-table installation.
@@ -203,20 +205,50 @@ general-purpose M1 primitives.
   the closing process's mapping.
 - ABI: extend `OP_CHANNEL_SEND`/`OP_CHANNEL_RECV` register conventions
   (`docs/SYSCALLS.md`), add `OP_BUFFER_MAP`.
-- Tests: kernel tests for transfer (send buffer, map in receiver, verify
-  contents, verify frame refcounting on exit); extend
-  `channel_test`/`buffer_test`.
+- Tests landed as userspace integration tests rather than kernel-only tests —
+  `handle_transfer_test`/`_child`, `buffer_transfer_test`/`_child`, and (from
+  a follow-up ownership-bug fix, `b4dba11`/`dcf6986`) `buffer_owner_test`/
+  `_child`, which is the regression coverage for a real bug this phase's
+  design left open: a process holding a *transferred-but-unmapped* buffer
+  handle could reach `read`/`write`/`resize`/`free` and corrupt memory in the
+  wrong address space. Fixed and covered before Phase 2 started, not a
+  follow-up debt against this phase.
 
-### Phase 2: exclusive display resource
+### Phase 2: exclusive display resource — ✅ landed
+
+`358469a`.
 
 - `display:` scheme with the claim table; `Busy` on second open; release on
   close/exit.
 - `OP_DISPLAY_INFO` / `OP_DISPLAY_MAP` / `OP_DISPLAY_FLUSH`;
   `EVENT_DISPLAY_CHANGED` wired from the virtio-gpu resolution-change path.
-- Kernel test: two opens → second gets `Busy`; owner exit → reopen succeeds;
-  flush round-trip.
-- The kernel compositor keeps running in this phase (it claims the display
-  itself) so nothing breaks before Phase 5.
+- **Deviation from the plan as written**: the kernel compositor claims the
+  display *permanently* (at `compositor::init`, using the same
+  `ClaimOwner::Display` that legacy `surface:/fb0` already used), not merely
+  "keeps running so nothing breaks" — this was the only sound resolution to a
+  problem the original plan text didn't anticipate: without a permanent
+  claim, a userspace `display:` open could succeed *while the compositor is
+  still writing the same framebuffer memory unsynchronized*, recreating
+  exactly the hazard this phase exists to close. The consequence: `/fb0` is
+  now *always* `Busy` for as long as the kernel compositor exists, which is
+  the entire span of Phases 2–4. `surface_test`/`surface_overflow_test` were
+  rewritten to assert `Busy` rather than draw to the framebuffer — acceptable
+  because `/fb0` is deleted outright in Phase 4/5 regardless, and real
+  pixel-output coverage already lives in the compositor-path screenshot
+  tests (`window_test`, `alpha_test`, `multi_window_test`,
+  `partial_refresh_test`, `window_move_test`).
+- **Test coverage is narrower than "two opens → Busy; owner exit → reopen
+  succeeds; flush round-trip"** as originally planned, precisely because of
+  the point above: nothing *but* the kernel compositor can ever hold the
+  claim during this phase, so "owner exit → reopen succeeds" and a real
+  `OP_DISPLAY_MAP`/`OP_DISPLAY_FLUSH` round trip are not exercisable until
+  Phase 5 deletes the kernel compositor. `display_test` (new) covers what
+  is exercisable now: exclusivity (`Busy` on every open attempt, through
+  both `display:` and `surface:/fb0`), path resolution (`NotFound` for a
+  nonexistent display index and for a non-display device), and that
+  `OP_DISPLAY_INFO`/`MAP`/`FLUSH` reject a non-display handle rather than
+  crashing. The full round trip is carried forward as explicit, tracked debt
+  against Phase 5, not silently dropped.
 
 ### Phase 3: compositor process + protocol crate
 
