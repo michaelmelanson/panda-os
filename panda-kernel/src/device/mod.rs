@@ -31,7 +31,7 @@ pub type DeviceId = u64;
 
 /// Bus-specific device information: enough both to build a `DeviceIdentity`
 /// for `DeviceEvent` and to match against a subscriber's raw match bytes.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum DeviceInfo {
     Pci {
         address: PciAddress,
@@ -223,7 +223,13 @@ impl DeviceRegistry {
         let tokens = &mut self.tokens;
         let next_token = &mut self.next_token;
         let mut mint = |device, pid| Self::mint_token(tokens, next_token, device, pid);
-        self.subscriptions.post_added(id, &info, &mut mint);
+        let posted = self.subscriptions.post_added(id, &info, &mut mint);
+        log::info!(
+            "device: registered {:?} as device {} ({} subscriber(s) notified)",
+            info,
+            id,
+            posted.len()
+        );
         id
     }
 
@@ -241,35 +247,55 @@ impl DeviceRegistry {
         let tokens = &mut self.tokens;
         let next_token = &mut self.next_token;
         let mut mint = |device, pid| Self::mint_token(tokens, next_token, device, pid);
-        self.subscriptions
-            .subscribe(bus_type, match_bytes, owner_pid, mailbox, &self.devices, &mut mint)
+        let replayed =
+            self.subscriptions
+                .subscribe(bus_type, match_bytes, owner_pid, mailbox, &self.devices, &mut mint);
+        log::info!(
+            "device: process {:?} subscribed to {:?} ({} existing match(es) replayed)",
+            owner_pid,
+            bus_type,
+            replayed.len()
+        );
+        replayed
     }
 
     /// Claim a device using a token previously handed to `pid`. Consumes
     /// the token (single-use) regardless of whether the claim succeeds.
     pub fn claim(&mut self, token: u64, pid: ProcessId) -> Result<DeviceId, ClaimError> {
-        let &(device_id, owner_pid) = self.tokens.get(&token).ok_or(ClaimError::InvalidToken)?;
+        let Some(&(device_id, owner_pid)) = self.tokens.get(&token) else {
+            log::warn!("device: claim with unknown/already-used token {} by {:?}", token, pid);
+            return Err(ClaimError::InvalidToken);
+        };
         if owner_pid != pid {
             // Not this process's token: leave it alone (don't burn the
             // rightful owner's still-valid token) and fail.
+            log::warn!(
+                "device: process {:?} tried to claim token {} owned by {:?}",
+                pid,
+                token,
+                owner_pid
+            );
             return Err(ClaimError::InvalidToken);
         }
         self.tokens.remove(&token);
 
         if self.owners.contains_key(&device_id) {
+            log::warn!("device: {:?} claim of device {} denied, already owned", pid, device_id);
             return Err(ClaimError::AlreadyClaimed);
         }
         self.owners.insert(device_id, pid);
+        log::info!("device: {:?} claimed device {}", pid, device_id);
         Ok(device_id)
     }
 
     /// Release a device's claim (e.g. on device removal or owning-process
     /// exit), posting `EVENT_DEVICE_REMOVED` to all matching subscribers.
     pub fn release(&mut self, device_id: DeviceId) {
-        self.owners.remove(&device_id);
+        let owner = self.owners.remove(&device_id);
         if let Some(info) = self.devices.get(&device_id) {
             self.subscriptions.post_removed(info);
         }
+        log::info!("device: released device {} (was owned by {:?})", device_id, owner);
     }
 
     /// Release every device claimed by `pid`. Called on process exit.
@@ -280,6 +306,9 @@ impl DeviceRegistry {
             .filter(|&(_, &owner)| owner == pid)
             .map(|(&id, _)| id)
             .collect();
+        if !owned.is_empty() {
+            log::info!("device: process {:?} exiting, releasing {} device(s)", pid, owned.len());
+        }
         for id in owned {
             self.release(id);
         }
