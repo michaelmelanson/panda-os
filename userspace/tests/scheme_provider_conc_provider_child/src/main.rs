@@ -128,6 +128,9 @@ libpanda::main! {
             Ok(Some(Request::Readdir { request_id, .. })) => {
                 let _ = provider.reply_readdir_err(request_id, ErrorCode::NotFound);
             }
+            Ok(Some(Request::Connect { request_id, .. })) => {
+                let _ = provider.reply_connect_err(request_id, ErrorCode::NotSupported);
+            }
             Ok(None) => {
                 process::yield_now();
             }

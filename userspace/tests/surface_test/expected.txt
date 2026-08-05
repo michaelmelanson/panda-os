@@ -1,3 +1,0 @@
-Surface test starting
-PASS: fb0 refused with Busy (the compositor owns the display)
-PASS

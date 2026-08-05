@@ -1,0 +1,19 @@
+# @unordered
+Compositor protocol test starting
+# @barrier
+compositor_test_child: starting
+compositor: starting
+compositor: display is busy, running without output
+compositor: entering the frame loop
+# @barrier
+PASS: Connected to compositor
+# @barrier
+PASS: Commit with no attached buffer produced no FrameDone
+# @barrier
+PASS: Sent an out-of-bounds damage rect
+# @barrier
+PASS: Sent an undersized buffer attach and commit
+# @barrier
+PASS: Compositor still answers requests normally after all three cases
+# @barrier
+compositor_test_child: finished

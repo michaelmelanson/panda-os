@@ -1,0 +1,20 @@
+# The compositor_test_child process's startup logging has no causal
+# ordering with the parent's own logging until DisplayFormats is actually
+# received (Window::builder().build() blocks on it) — see docs/TESTING.md
+# "Debugging CI-only test failures" for why these need @unordered rather
+# than an assumed fixed interleaving.
+# @unordered
+Window test starting
+# @barrier
+compositor_test_child: starting
+compositor: starting
+compositor: display is busy, running without output
+compositor: entering the frame loop
+PASS: Created window
+PASS: Allocated buffer
+PASS: Filled buffer with test pattern
+PASS: Blitted buffer to window
+# @barrier
+PASS: Flushed window (FrameDone received)
+# @barrier
+compositor_test_child: finished

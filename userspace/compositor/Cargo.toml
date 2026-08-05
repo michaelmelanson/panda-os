@@ -8,6 +8,10 @@ default = ["os"]
 # The parts that talk to the kernel (display resource, channels, logging).
 # Disable to unit-test the pure window-management logic on the host.
 os = ["dep:libpanda", "dep:panda-abi"]
+# Exposes `target::MemoryTarget` outside `cfg(test)`, so integration tests
+# can drive a `WindowManager` in-process and inspect composited pixels
+# without a real display (see target.rs doc comment).
+test-target = []
 
 [dependencies]
 compositor-protocol = { path = "../compositor-protocol" }

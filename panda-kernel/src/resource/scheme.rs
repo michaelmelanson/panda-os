@@ -48,6 +48,22 @@ pub trait SchemeHandler: Send + Sync {
     async fn readdir(&self, _path: &str) -> Option<Vec<DirEntry>> {
         None
     }
+
+    /// Connect to this scheme and receive a live channel to it, per
+    /// `panda_abi::scheme_protocol::Request::Connect`'s doc comment.
+    ///
+    /// Unlike [`open`](Self::open), which returns a resource this process
+    /// owns exclusively, `connect` returns a shared `Arc` because the
+    /// concrete resource (for [`UserSchemeProvider`], a fresh
+    /// `ChannelEndpoint` the provider handed over as a channel attachment)
+    /// is installed directly into the *caller's* handle table by
+    /// `syscall::environment::handle_connect` — there is no intermediate
+    /// proxy for this path to own. Schemes with no connect-style resource
+    /// (everything except [`UserSchemeProvider`] today) inherit the default,
+    /// which always fails `NotFound`.
+    async fn connect(&self, _path: &str) -> Result<Arc<dyn Resource>, OpenError> {
+        Err(OpenError::NotFound)
+    }
 }
 
 /// Global registry of scheme handlers.
@@ -120,6 +136,20 @@ pub async fn open(uri: &str) -> Result<Box<dyn Resource>, OpenError> {
             .ok_or(OpenError::NotFound)?
     };
     handler.open(path).await
+}
+
+/// Connect to a scheme by URI (e.g., "compositor:/connect") and receive a
+/// live channel to its provider. See `SchemeHandler::connect`.
+pub async fn connect(uri: &str) -> Result<Arc<dyn Resource>, OpenError> {
+    let (scheme, path) = uri.split_once(':').ok_or(OpenError::NotFound)?;
+    let handler: Arc<dyn SchemeHandler> = {
+        let schemes = SCHEMES.read();
+        schemes
+            .get(scheme)
+            .map(|h| Arc::clone(h))
+            .ok_or(OpenError::NotFound)?
+    };
+    handler.connect(path).await
 }
 
 /// List directory contents by URI (e.g., "file:/initrd")
@@ -752,7 +782,25 @@ impl ProviderState {
     /// real response. Any response whose `request_id` doesn't match this
     /// call's own is silently discarded and the receive retried, rather
     /// than being misdelivered to the wrong caller.
+    ///
+    /// Delegates to [`round_trip_with_attachment`](Self::round_trip_with_attachment)
+    /// and discards the attachment — every request kind except `Connect`
+    /// ignores it.
     async fn round_trip(&self, request_id: u64, request: &[u8]) -> Result<Vec<u8>, ProviderError> {
+        self.round_trip_with_attachment(request_id, request)
+            .await
+            .map(|(buf, _attachment)| buf)
+    }
+
+    /// As [`round_trip`](Self::round_trip), but also reports any resource
+    /// the provider attached to its response — see
+    /// `Response::ConnectOk`/`UserSchemeProvider::connect`, the only caller
+    /// that currently uses the attachment.
+    async fn round_trip_with_attachment(
+        &self,
+        request_id: u64,
+        request: &[u8],
+    ) -> Result<(Vec<u8>, Option<Arc<dyn Resource>>), ProviderError> {
         let _guard = self.lock.acquire().await;
 
         self.kernel_endpoint
@@ -761,11 +809,13 @@ impl ProviderState {
 
         loop {
             let mut buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
-            let len = core::future::poll_fn(|_cx| {
+            let (len, attachment) = core::future::poll_fn(|_cx| {
                 let mut registered = false;
                 loop {
-                    match self.kernel_endpoint.recv(&mut buf) {
-                        Ok(len) => return core::task::Poll::Ready(Ok(len)),
+                    match self.kernel_endpoint.recv_with_attachment(&mut buf) {
+                        Ok((len, attachment)) => {
+                            return core::task::Poll::Ready(Ok((len, attachment)));
+                        }
                         Err(super::ChannelError::QueueEmpty) => {
                             if registered {
                                 return core::task::Poll::Pending;
@@ -797,7 +847,7 @@ impl ProviderState {
             }
             let response_id = u64::from_le_bytes(buf[1..9].try_into().unwrap());
             if response_id == request_id {
-                return Ok(buf);
+                return Ok((buf, attachment));
             }
             // Orphaned response (see doc comment above) — keep waiting for
             // the one that actually matches this call.
@@ -872,6 +922,44 @@ impl SchemeHandler for UserSchemeProvider {
                 )
             }
             _ => None,
+        }
+    }
+
+    async fn connect(&self, path: &str) -> Result<Arc<dyn Resource>, OpenError> {
+        use panda_abi::scheme_protocol::{Request, Response};
+
+        let request_id = self.state.next_request_id();
+        let mut req_buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let Some(n) = (Request::Connect { request_id, path }).encode(&mut req_buf) else {
+            return Err(OpenError::NotFound);
+        };
+        req_buf.truncate(n);
+
+        let (resp, attachment) = self
+            .state
+            .round_trip_with_attachment(request_id, &req_buf)
+            .await
+            .map_err(|_| OpenError::NotFound)?;
+
+        match Response::decode(&resp) {
+            Some(Response::ConnectOk { .. }) => {
+                // The provider is untrusted input: a `ConnectOk` with no
+                // attached channel (bad provider) or an attachment that
+                // isn't actually a channel (impossible today — only
+                // `ChannelEndpoint` and `SharedBuffer` are transferable at
+                // all, per `resource::is_transferable`, but this is still
+                // the honest thing to check rather than assume) both fail
+                // cleanly rather than handing the caller a resource that
+                // doesn't behave like the channel they asked for.
+                match attachment {
+                    Some(resource) if resource.as_channel().is_some() => Ok(resource),
+                    _ => Err(OpenError::NotFound),
+                }
+            }
+            Some(Response::ConnectErr { error, .. }) if error == panda_abi::ErrorCode::Busy => {
+                Err(OpenError::Busy)
+            }
+            _ => Err(OpenError::NotFound),
         }
     }
 }

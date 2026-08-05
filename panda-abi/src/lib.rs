@@ -257,6 +257,14 @@ pub enum Operation {
     EnvironmentOpendir = 0x3_0004,
     /// Mount filesystem: (fstype_ptr, fstype_len, mountpoint_ptr, mountpoint_len) -> 0 or error
     EnvironmentMount = 0x3_0005,
+    /// Connect to a userspace scheme provider's `Request::Connect` handler
+    /// and receive a live channel to it: (uri_ptr, uri_len) -> channel_handle
+    /// or error. Unlike `EnvironmentOpen`, which yields a file-like
+    /// resource_id proxy, this hands back the actual `ChannelEndpoint` the
+    /// provider attached to its `ConnectOk` reply — see
+    /// `panda_abi::scheme_protocol`'s `MSG_CONNECT` and
+    /// `resource::scheme::UserSchemeProvider::connect`.
+    EnvironmentConnect = 0x3_0006,
     // Directory operations (0x8_0000 - 0x8_FFFF)
     /// Create file in directory: (name_ptr, name_len, mode) -> file_handle or error
     DirectoryCreateFile = 0x8_0000,
@@ -370,6 +378,7 @@ impl Operation {
             0x3_0003 => Some(Self::EnvironmentTime),
             0x3_0004 => Some(Self::EnvironmentOpendir),
             0x3_0005 => Some(Self::EnvironmentMount),
+            0x3_0006 => Some(Self::EnvironmentConnect),
             0x8_0000 => Some(Self::DirectoryCreateFile),
             0x8_0001 => Some(Self::DirectoryUnlinkFile),
             0x8_0002 => Some(Self::DirectoryMkdir),
@@ -475,6 +484,8 @@ pub const OP_ENVIRONMENT_OPENDIR: u32 = Operation::EnvironmentOpendir as u32;
 /// fstype: "ext2" to mount ext2 on first block device
 /// mountpoint: e.g., "/mnt"
 pub const OP_ENVIRONMENT_MOUNT: u32 = Operation::EnvironmentMount as u32;
+/// Connect to a userspace scheme provider: (uri_ptr, uri_len) -> channel_handle or error
+pub const OP_ENVIRONMENT_CONNECT: u32 = Operation::EnvironmentConnect as u32;
 // Directory operations (0x8_0000 - 0x8_FFFF)
 /// Create file in directory: (name_ptr, name_len, mode) -> file_handle or error
 pub const OP_DIRECTORY_CREATE_FILE: u32 = Operation::DirectoryCreateFile as u32;

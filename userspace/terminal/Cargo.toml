@@ -6,4 +6,5 @@ edition.workspace = true
 [dependencies]
 libpanda = { workspace = true }
 panda-abi = { path = "../../panda-abi" }
+compositor-protocol = { path = "../compositor-protocol" }
 fontdue = { path = "../../vendor/fontdue", default-features = false, features = ["hashbrown"] }

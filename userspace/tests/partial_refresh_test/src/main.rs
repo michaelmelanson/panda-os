@@ -1,8 +1,18 @@
 #![no_std]
 #![no_main]
 
+//! Full then partial buffer updates against a real compositor process
+//! (plans/userspace-compositor.md, Phase 4). See `window_test` for why
+//! this is a protocol round-trip test rather than a screenshot comparison;
+//! damage-rect coalescing itself is covered by `compositor`'s
+//! `MemoryTarget`-based `manager::tests::only_committed_damage_is_
+//! composited_and_flushed` and `dirty_regions_coalesce_when_overlapping_
+//! or_adjacent`.
+
 use libpanda::environment;
 use libpanda::graphics::{Colour, PixelBuffer, Window};
+use libpanda::ipc::Channel;
+use libpanda::process;
 
 libpanda::main! {
     environment::log("Partial refresh test starting");
@@ -10,11 +20,20 @@ libpanda::main! {
     let window_width = 400u32;
     let window_height = 400u32;
 
-    // Create a 400x400 window at (100, 50)
+    let Ok(compositor_handle) = environment::spawn("file:/initrd/compositor_test_child") else {
+        environment::log("FAIL: could not spawn compositor_test_child");
+        return 1;
+    };
+    let Some(channel) = Channel::from_handle_borrowed(compositor_handle) else {
+        environment::log("FAIL: compositor handle is not a channel");
+        return 1;
+    };
+
     let mut window = match Window::builder()
         .size(window_width, window_height)
         .position(100, 50)
         .visible(true)
+        .channel(channel)
         .build()
     {
         Ok(w) => w,
@@ -24,9 +43,7 @@ libpanda::main! {
         }
     };
     environment::log("PASS: Opened window");
-    environment::log("PASS: Set window parameters");
 
-    // Allocate buffer for full window and fill with blue
     let mut full_buffer = match PixelBuffer::new(window_width, window_height) {
         Ok(b) => b,
         Err(_) => {
@@ -34,18 +51,17 @@ libpanda::main! {
             return 1;
         }
     };
-
     full_buffer.clear(Colour::BLUE);
 
-    let _ = window.blit(&full_buffer, 0, 0);
-    let _ = window.flush();
+    if window.blit(&full_buffer, 0, 0).is_err() || window.flush().is_err() {
+        environment::log("FAIL: Could not fill window with blue");
+        return 1;
+    }
     environment::log("PASS: Filled window with blue");
 
-    // Now create buffers for partial updates
     let partial_width = 200u32;
     let partial_height = 200u32;
 
-    // Update top-left quarter with red
     let mut red_buffer = match PixelBuffer::new(partial_width, partial_height) {
         Ok(b) => b,
         Err(_) => {
@@ -53,14 +69,14 @@ libpanda::main! {
             return 1;
         }
     };
-
     red_buffer.clear(Colour::RED);
 
-    let _ = window.blit(&red_buffer, 0, 0);
-    let _ = window.flush();
+    if window.blit(&red_buffer, 0, 0).is_err() || window.flush().is_err() {
+        environment::log("FAIL: Could not update top-left quarter");
+        return 1;
+    }
     environment::log("PASS: Updated top-left quarter with red");
 
-    // Update bottom-right quarter with green
     let mut green_buffer = match PixelBuffer::new(partial_width, partial_height) {
         Ok(b) => b,
         Err(_) => {
@@ -68,18 +84,22 @@ libpanda::main! {
             return 1;
         }
     };
-
     green_buffer.clear(Colour::GREEN);
 
-    let _ = window.blit(&green_buffer, 200, 200);
-    let _ = window.flush();
+    if window.blit(&green_buffer, 200, 200).is_err() || window.flush().is_err() {
+        environment::log("FAIL: Could not update bottom-right quarter");
+        return 1;
+    }
     environment::log("PASS: Updated bottom-right quarter with green");
 
     environment::log("PASS: Partial refresh test complete");
 
-    // Signal that screenshot can be taken
-    environment::screenshot_ready();
+    drop(window);
+    let exit_code = process::wait(compositor_handle);
+    if exit_code != 0 {
+        environment::log("FAIL: compositor_test_child exited with non-zero code");
+        return 1;
+    }
 
-    // Loop forever
-    loop {}
+    0
 }

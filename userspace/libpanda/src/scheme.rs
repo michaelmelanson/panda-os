@@ -166,4 +166,27 @@ impl SchemeProvider {
             Response::encode_err(scheme_protocol::MSG_CLOSE, request_id, error, buf)
         })
     }
+
+    /// Reply to a `Connect` request by handing the caller a live channel.
+    ///
+    /// `channel` is attached to the response frame using the same
+    /// handle-transfer mechanism `Channel::send_with_handle` uses elsewhere
+    /// (see docs/IPC.md "Handle transfer"): the kernel installs it directly
+    /// into the connecting process's handle table, bypassing the
+    /// resource_id proxy `reply_open_ok` sets up. Typically `channel` is the
+    /// caller-facing half of a fresh [`crate::ipc::create_pair`], with the
+    /// other half kept by this provider as the new connection.
+    pub fn reply_connect_ok(&self, request_id: u64, channel: &Channel) -> Result<()> {
+        let mut buf = [0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let len = Response::encode_connect_ok(request_id, &mut buf).ok_or(ErrorCode::MessageTooLarge)?;
+        self.channel.send_with_handle(&buf[..len], channel.untyped_handle())
+    }
+
+    /// Reply to a `Connect` request with an error (e.g. `NotFound` for an
+    /// unrecognized path).
+    pub fn reply_connect_err(&self, request_id: u64, error: ErrorCode) -> Result<()> {
+        self.send_encoded(|buf| {
+            Response::encode_err(scheme_protocol::MSG_CONNECT, request_id, error, buf)
+        })
+    }
 }

@@ -77,10 +77,13 @@ consumer:
 handle (SCM_RIGHTS analogue). `OP_CHANNEL_SEND` gains a handle argument (0 =
 none); on receive, the kernel installs the resource into the receiver's handle
 table and returns the new handle id alongside the payload. Clients use this to
-send their window buffers to the compositor; `init` uses it to bootstrap the
-compositor↔client connection before userspace scheme routing (roadmap M2)
-exists. Transferable resource types are whitelisted initially: `SharedBuffer`
-and `ChannelEndpoint`.
+send their window buffers to the compositor; the compositor uses it (via
+`OP_ENVIRONMENT_CONNECT`'s `Request::Connect`, built on roadmap M2's scheme
+registry, which had already landed) to hand each connecting client a fresh
+channel to itself, rather than a client needing to be one of the
+compositor's own children.
+Transferable resource types are whitelisted initially: `SharedBuffer` and
+`ChannelEndpoint`.
 
 **Cross-process buffer mapping.** `SharedBuffer` currently maps into exactly one
 address space at allocation time. It is restructured so the physical frames are
@@ -116,10 +119,14 @@ framebuffer only inside `OP_DISPLAY_FLUSH` on behalf of that owner.
 loop:
 
 1. Claim `display:/pci/display/0`, map the framebuffer.
-2. Accept client connections (via the scheme registry once roadmap M2 lands;
-   via an `init`-provided channel until then). Greet each client with
-   `DisplayFormats` (supported pixel formats — BGRA initially — and any stride
-   constraints).
+2. Register the `compositor:` scheme (roadmap M2's scheme registry,
+   `OP_SCHEME_REGISTER`, landed ahead of this phase) and accept client
+   connections via `Request::Connect` (see `docs/IPC.md` "Scheme provider
+   protocol" and `Compositor::serve_connects`) — `init` spawns the compositor
+   and each graphical client (e.g. the terminal) as independent siblings, and
+   clients reach the compositor by name rather than by being one of its
+   children. Greet each client with `DisplayFormats` (supported pixel
+   formats — BGRA initially — and any stride constraints).
 3. Track per-window state: position, size, visibility, z-order, the currently
    attached buffer (a mapped client `SharedBuffer`), and pending damage.
 4. On `Commit`: latch the attached buffer and accumulated damage for the next
@@ -258,7 +265,9 @@ general-purpose M1 primitives.
   `src_a + dst_a·(1−src_a)` form and document it).
 - `userspace/compositor/`: port `WindowManager` composite/damage logic; client
   connection handling; buffer attach/latch/release lifecycle; `init` spawns it
-  and hands clients a channel to it.
+  and each client independently, and clients reach it via the `compositor:`
+  scheme it registers on startup, built on roadmap M2's scheme registry (see
+  "Kernel primitives" above).
 
 ### Phase 4: port clients
 

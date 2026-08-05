@@ -1,7 +1,19 @@
+# @unordered
 Partial refresh test starting
+# @barrier
+compositor_test_child: starting
+compositor: starting
+compositor: display is busy, running without output
+compositor: entering the frame loop
+# @barrier
 PASS: Opened window
-PASS: Set window parameters
+# @barrier
 PASS: Filled window with blue
+# @barrier
 PASS: Updated top-left quarter with red
+# @barrier
 PASS: Updated bottom-right quarter with green
+# @barrier
 PASS: Partial refresh test complete
+# @barrier
+compositor_test_child: finished

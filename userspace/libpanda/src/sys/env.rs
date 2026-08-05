@@ -93,6 +93,22 @@ pub fn opendir(path: &str) -> isize {
     )
 }
 
+/// Connect to a userspace scheme provider by URI and receive a live channel
+/// handle to it (rather than the file-like resource handle `open` returns).
+///
+/// Returns a channel handle on success, or negative error code.
+#[inline(always)]
+pub fn connect(uri: &str) -> isize {
+    send(
+        Handle::ENVIRONMENT,
+        OP_ENVIRONMENT_CONNECT,
+        uri.as_ptr() as usize,
+        uri.len(),
+        0,
+        0,
+    )
+}
+
 /// Mount a filesystem.
 ///
 /// Returns 0 on success, or negative error code.

@@ -186,7 +186,23 @@ name = "compositor-protocol"
 version = "0.1.0"
 
 [[package]]
+name = "compositor_protocol_test"
+version = "0.1.0"
+dependencies = [
+ "compositor-protocol",
+ "libpanda",
+]
+
+[[package]]
 name = "compositor_start_test"
+version = "0.1.0"
+dependencies = [
+ "compositor",
+ "libpanda",
+]
+
+[[package]]
+name = "compositor_test_child"
 version = "0.1.0"
 dependencies = [
  "compositor",
@@ -464,6 +480,7 @@ checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
 name = "libpanda"
 version = "0.1.0"
 dependencies = [
+ "compositor-protocol",
  "panda-abi",
  "spinning_top 0.3.0",
  "talc",
@@ -887,22 +904,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "surface_overflow_test"
-version = "0.1.0"
-dependencies = [
- "libpanda",
- "panda-abi",
-]
-
-[[package]]
-name = "surface_test"
-version = "0.1.0"
-dependencies = [
- "libpanda",
- "panda-abi",
-]
-
-[[package]]
 name = "syn"
 version = "2.0.111"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -937,6 +938,7 @@ dependencies = [
 name = "terminal"
 version = "0.1.0"
 dependencies = [
+ "compositor-protocol",
  "fontdue",
  "libpanda",
  "panda-abi",

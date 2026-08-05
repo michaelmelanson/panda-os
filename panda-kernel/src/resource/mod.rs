@@ -30,8 +30,8 @@ pub use mailbox::{Mailbox, MailboxRef};
 pub use process::Process as ProcessInterface;
 pub use scheme::{
     ConsoleScheme, DirectoryResource, FileScheme, KeyboardResource, KeyboardScheme, OpenError,
-    SchemeHandler, SchemeProxyResource, UserSchemeProvider, init as init_schemes, open, readdir,
-    register_scheme, register_user_scheme,
+    SchemeHandler, SchemeProxyResource, UserSchemeProvider, connect, init as init_schemes, open,
+    readdir, register_scheme, register_user_scheme,
 };
 pub(crate) use scheme::unregister_scheme_if_present;
 pub use spawn_handle::SpawnHandle;

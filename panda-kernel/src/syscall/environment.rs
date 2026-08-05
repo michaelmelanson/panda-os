@@ -86,6 +86,46 @@ pub fn handle_open(
     })
 }
 
+/// Handle environment connect operation (`OP_ENVIRONMENT_CONNECT`).
+///
+/// Like [`handle_open`], but routes through `resource::connect` instead of
+/// `resource::open`: the scheme provider hands back a live `ChannelEndpoint`
+/// (via `Request::Connect`/`Response::ConnectOk`'s channel attachment,
+/// see `panda_abi::scheme_protocol`) rather than a file-like resource_id
+/// proxy. The returned resource is installed into the caller's handle table
+/// exactly as any other resource would be — it just happens to already be an
+/// `Arc` rather than a freshly-boxed one, since `SchemeHandler::connect`
+/// hands back the provider's attachment directly instead of constructing a
+/// new resource.
+///
+/// Arguments:
+/// - uri_ptr, uri_len: URI of the scheme provider to connect to (e.g.
+///   "compositor:/connect")
+pub fn handle_connect(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> SyscallFuture {
+    let uri = match read_user_str(ua, uri_ptr, uri_len) {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
+
+    debug!("handle_connect: uri={}", uri);
+
+    Box::pin(async move {
+        match resource::connect(&uri).await {
+            Ok(resource) => {
+                let result = scheduler::with_current_process(|proc| {
+                    proc.handles_mut().insert(resource).ok()
+                });
+                match result {
+                    Some(handle_id) => SyscallResult::ok(handle_id as isize),
+                    None => SyscallResult::err(panda_abi::ErrorCode::TooManyHandles),
+                }
+            }
+            Err(resource::OpenError::NotFound) => SyscallResult::err(panda_abi::ErrorCode::NotFound),
+            Err(resource::OpenError::Busy) => SyscallResult::err(panda_abi::ErrorCode::Busy),
+        }
+    })
+}
+
 /// Handle environment mount operation.
 ///
 /// This syscall is async - mounting a filesystem requires reading from disk.

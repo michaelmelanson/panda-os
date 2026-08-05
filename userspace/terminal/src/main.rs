@@ -13,10 +13,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use fontdue::{Font, FontSettings};
 use libpanda::{
-    buffer::Buffer,
     channel, environment,
+    graphics::{PixelBuffer, Rect as WindowRect, Window},
     mailbox::{ChannelEvent, Event, InputEvent, Mailbox, ProcessEvent},
-    sys::{self, send},
     Handle,
 };
 use panda_abi::{
@@ -25,7 +24,6 @@ use panda_abi::{
         TerminalCapabilities, TerminalQuery,
     },
     value::Value,
-    BlitParams, UpdateParamsIn, OP_SURFACE_UPDATE_PARAMS,
 };
 
 use crate::input::PendingInput;
@@ -43,10 +41,6 @@ fn rdtsc() -> u64 {
 // Terminal colours (ARGB format)
 const COLOUR_BACKGROUND: u32 = 0xFF1E1E1E; // Dark grey
 const COLOUR_DEFAULT_FG: u32 = 0xFFD4D4D4; // Light grey
-
-const BG_B: u8 = (COLOUR_BACKGROUND & 0xFF) as u8;
-const BG_G: u8 = ((COLOUR_BACKGROUND >> 8) & 0xFF) as u8;
-const BG_R: u8 = ((COLOUR_BACKGROUND >> 16) & 0xFF) as u8;
 
 const MARGIN: u32 = 10;
 const FONT_SIZE: f32 = 16.0;
@@ -92,7 +86,7 @@ impl DirtyRect {
 
 /// Terminal state
 pub struct Terminal {
-    pub surface: Handle,
+    pub window: Window,
     pub keyboard: Handle,
     pub mailbox: Mailbox,
     font: Font,
@@ -112,7 +106,7 @@ pub struct Terminal {
     /// Average character width for grid-based calculations (terminal size, cursor positioning)
     avg_char_width: u32,
     /// Persistent framebuffer — all rendering composites into this buffer
-    framebuffer: Buffer,
+    framebuffer: PixelBuffer,
     /// Dirty region tracking for batched blits
     dirty: Option<DirtyRect>,
     /// Glyph cache: avoids re-rasterizing the same character repeatedly
@@ -124,7 +118,7 @@ pub struct Terminal {
 
 impl Terminal {
     fn new(
-        surface: Handle,
+        window: Window,
         keyboard: Handle,
         mailbox: Mailbox,
         font: Font,
@@ -135,14 +129,14 @@ impl Terminal {
         let avg_char_width = font.metrics('M', FONT_SIZE).advance_width as u32;
 
         // Allocate persistent framebuffer for the entire window surface
-        let fb_size = (width * height * 4) as usize;
-        let framebuffer = Buffer::alloc(fb_size).expect("Failed to allocate terminal framebuffer");
+        let framebuffer =
+            PixelBuffer::new(width, height).expect("Failed to allocate terminal framebuffer");
 
         let mut display_lines = Vec::new();
         display_lines.push(Line { segments: Vec::new() });
 
         Self {
-            surface,
+            window,
             keyboard,
             mailbox,
             font,
@@ -251,7 +245,7 @@ impl Terminal {
 
     /// Fill a rectangle in the framebuffer with a solid ARGB colour.
     fn fb_fill(&mut self, x: u32, y: u32, w: u32, h: u32, colour: u32) {
-        let fb = self.framebuffer.as_mut_slice();
+        let fb = self.framebuffer.as_bytes_mut();
         let stride = self.width;
         let b = (colour & 0xFF) as u8;
         let g = ((colour >> 8) & 0xFF) as u8;
@@ -298,18 +292,25 @@ impl Terminal {
         let glyph_width = metrics.width;
         let glyph_height = metrics.height;
 
-        // Extract RGB from foreground colour
-        let fg_r = ((fg >> 16) & 0xFF) as u16;
-        let fg_g = ((fg >> 8) & 0xFF) as u16;
-        let fg_b = (fg & 0xFF) as u16;
+        // Foreground colour in BGRA byte order, matching the canonical
+        // `alpha_blend`'s convention (compositor_protocol::blend).
+        let fg_bgra = [
+            (fg & 0xFF) as u8,
+            ((fg >> 8) & 0xFF) as u8,
+            ((fg >> 16) & 0xFF) as u8,
+            255,
+        ];
 
         // Calculate position in framebuffer
         let glyph_x = self.cursor_x + metrics.xmin as u32;
         let glyph_y =
             self.cursor_y + (FONT_SIZE as i32 - metrics.height as i32 - metrics.ymin) as u32;
 
-        // Composite glyph into framebuffer with alpha blending
-        let fb = self.framebuffer.as_mut_slice();
+        // Composite glyph into framebuffer with alpha blending — the one
+        // canonical implementation (compositor_protocol::alpha_blend),
+        // shared with the compositor and `PixelBuffer` (plans/
+        // userspace-compositor.md, "Client library").
+        let fb = self.framebuffer.as_bytes_mut();
         let stride = self.width;
 
         for py in 0..glyph_height {
@@ -323,27 +324,17 @@ impl Terminal {
                     break;
                 }
 
-                let alpha = bitmap[py * glyph_width + px] as u16;
-                if alpha == 0 {
+                let coverage = bitmap[py * glyph_width + px];
+                if coverage == 0 {
                     continue;
                 }
 
                 let off = ((dst_y * stride + dst_x) * 4) as usize;
-
-                if alpha == 255 {
-                    // Fully opaque — direct write
-                    fb[off] = fg_b as u8;
-                    fb[off + 1] = fg_g as u8;
-                    fb[off + 2] = fg_r as u8;
-                    fb[off + 3] = 255;
-                } else {
-                    // Alpha blend over background
-                    let inv = 255 - alpha;
-                    fb[off] = ((fg_b * alpha + BG_B as u16 * inv) / 255) as u8;
-                    fb[off + 1] = ((fg_g * alpha + BG_G as u16 * inv) / 255) as u8;
-                    fb[off + 2] = ((fg_r * alpha + BG_R as u16 * inv) / 255) as u8;
-                    fb[off + 3] = 255;
-                }
+                let mut src = fg_bgra;
+                src[3] = coverage;
+                let dst: [u8; 4] = fb[off..off + 4].try_into().unwrap();
+                let blended = compositor_protocol::alpha_blend(src, dst);
+                fb[off..off + 4].copy_from_slice(&blended);
             }
         }
 
@@ -523,22 +514,18 @@ impl Terminal {
     /// asks the compositor to present the frame.
     pub fn flush(&mut self) {
         if let Some(dirty) = self.dirty {
-            let w = dirty.x1 - dirty.x0;
-            let h = dirty.y1 - dirty.y0;
-            let blit_params = BlitParams {
-                x: dirty.x0,
-                y: dirty.y0,
-                width: w,
-                height: h,
-                buffer_handle: self.framebuffer.handle().as_raw(),
-                src_x: dirty.x0,
-                src_y: dirty.y0,
-                src_stride: self.width,
-            };
-            sys::surface::blit(self.surface, &blit_params);
+            let rect = WindowRect::new(
+                dirty.x0,
+                dirty.y0,
+                dirty.x1 - dirty.x0,
+                dirty.y1 - dirty.y0,
+            );
+            let _ = self
+                .window
+                .blit_region(&self.framebuffer, dirty.x0, dirty.y0, rect);
             self.dirty = None;
         }
-        sys::surface::flush(self.surface, None);
+        let _ = self.window.flush();
     }
 
     /// Handle a typed character (when not in input mode from child)
@@ -995,30 +982,18 @@ libpanda::main! {
 
     let mailbox = Mailbox::default();
 
-    let Ok(surface) = environment::open("surface:/window", 0, 0) else {
-        environment::log("terminal: Failed to open window");
-        return 1;
-    };
-
     let window_width = 800u32;
     let window_height = 600u32;
 
-    let window_params = UpdateParamsIn {
-        x: 50,
-        y: 50,
-        width: window_width,
-        height: window_height,
-        visible: 1,
+    let Ok(window) = Window::builder()
+        .size(window_width, window_height)
+        .position(50, 50)
+        .visible(true)
+        .build()
+    else {
+        environment::log("terminal: Failed to create window");
+        return 1;
     };
-
-    send(
-        surface,
-        OP_SURFACE_UPDATE_PARAMS,
-        &window_params as *const UpdateParamsIn as usize,
-        0,
-        0,
-        0,
-    );
 
     let Ok(keyboard) = environment::open(
         "keyboard:/pci/00:03.0",
@@ -1030,7 +1005,7 @@ libpanda::main! {
     };
 
     environment::log("terminal: creating Terminal");
-    let mut term = Terminal::new(surface, keyboard, mailbox, font, window_width, window_height);
+    let mut term = Terminal::new(window, keyboard, mailbox, font, window_width, window_height);
     environment::log("terminal: calling clear");
     term.clear();
     environment::log("terminal: clear done");

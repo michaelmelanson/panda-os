@@ -92,6 +92,15 @@ See `HandleType` in panda-abi for all type tags.
 | `OP_ENVIRONMENT_TIME` | 0x3_0003 | () | timestamp |
 | `OP_ENVIRONMENT_OPENDIR` | 0x3_0004 | (path_ptr, path_len) | dir_handle |
 | `OP_ENVIRONMENT_MOUNT` | 0x3_0005 | (fstype_ptr, fstype_len, mount_ptr, mount_len) | 0 or error |
+| `OP_ENVIRONMENT_CONNECT` | 0x3_0006 | (uri_ptr, uri_len) | channel_handle or error |
+
+`OP_ENVIRONMENT_CONNECT` is `OP_ENVIRONMENT_OPEN`'s counterpart for schemes
+that speak their own protocol over a channel rather than the file-like
+`open`/`read`/`write`/`close` model: it routes to the scheme provider's
+`Request::Connect` handler (see "Scheme provider operations" below) and
+installs the live `ChannelEndpoint` the provider hands back directly into
+the caller's handle table, instead of wrapping a `resource_id` in a proxy.
+The compositor uses this to hand out its `compositor:` scheme connection.
 
 ### Buffer operations (0x4_0000 - 0x4_FFFF)
 
@@ -223,6 +232,17 @@ route through the same `resource::open`/`resource::readdir` paths as any
 other scheme, and `syscall/file.rs`'s read/write handlers recognize the
 resulting client-side resource (`resource::SchemeProxyResource`) and
 round-trip to the provider instead of going through the VFS.
+
+A provider can also serve `OP_ENVIRONMENT_CONNECT` (`environment::connect`
+in userspace), answering `Request::Connect` with `Response::ConnectOk` and a
+live channel attached to that reply frame (see `panda_abi::scheme_protocol`
+and `libpanda::scheme::SchemeProvider::reply_connect_ok`). The kernel
+installs that channel directly into the connecting process's handle table —
+there is no `resource_id`/proxy involved for this path. This is for
+providers whose real protocol isn't the file-like
+open/readdir/read/write/close model at all (the compositor's `Request`/
+`Event` frames, for instance): `Connect` is how a process reaches such a
+provider by name instead of needing to be one of its child processes.
 
 **v1 scope** (see `resource/scheme.rs` for the full reasoning):
 - One request in flight per provider at a time — concurrent callers into

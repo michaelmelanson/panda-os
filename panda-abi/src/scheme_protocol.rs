@@ -43,6 +43,10 @@ pub const MSG_READ: u8 = 3;
 pub const MSG_WRITE: u8 = 4;
 /// Request/response kind: close a provider resource.
 pub const MSG_CLOSE: u8 = 5;
+/// Request/response kind: connect to the provider and receive a live
+/// channel, rather than a file-like `resource_id` (see [`Request::Connect`]
+/// and the "Connect" section of the module docs above the request enum).
+pub const MSG_CONNECT: u8 = 6;
 
 /// Response status byte: the operation succeeded.
 pub const STATUS_OK: u8 = 0;
@@ -94,6 +98,24 @@ fn u8_to_error(byte: u8) -> ErrorCode {
 }
 
 /// A decoded provider request (borrows from the frame it was decoded from).
+///
+/// # Connect
+///
+/// `Connect` is the odd one out: `Open`/`Readdir`/`Read`/`Write`/`Close` are
+/// all file-like — a resource opened this way is addressed by an opaque
+/// `resource_id` the provider mints, and every operation after `Open` is a
+/// synchronous round trip relayed by the kernel. `Connect` instead asks the
+/// provider to hand back a **live channel**: the provider replies with
+/// [`Response::ConnectOk`] over its own provider channel, using the
+/// underlying channel-attachment mechanism (see docs/IPC.md "Handle
+/// transfer") to carry a fresh `ChannelEndpoint`, which the kernel installs
+/// directly into the calling process's handle table (bypassing the
+/// resource_id proxy entirely — see
+/// `resource::scheme::UserSchemeProvider::connect` and
+/// `OP_ENVIRONMENT_CONNECT`). This is how a process gets a full-duplex,
+/// unmediated channel to another process's own custom protocol (e.g. the
+/// compositor's `Request`/`Event` frames) by name, instead of relying on
+/// being spawned by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Request<'a> {
     Open { request_id: u64, path: &'a str },
@@ -101,6 +123,7 @@ pub enum Request<'a> {
     Read { request_id: u64, resource_id: u64, len: u32 },
     Write { request_id: u64, resource_id: u64, data: &'a [u8] },
     Close { request_id: u64, resource_id: u64 },
+    Connect { request_id: u64, path: &'a str },
 }
 
 impl<'a> Request<'a> {
@@ -111,7 +134,8 @@ impl<'a> Request<'a> {
             | Request::Readdir { request_id, .. }
             | Request::Read { request_id, .. }
             | Request::Write { request_id, .. }
-            | Request::Close { request_id, .. } => request_id,
+            | Request::Close { request_id, .. }
+            | Request::Connect { request_id, .. } => request_id,
         }
     }
 
@@ -119,11 +143,15 @@ impl<'a> Request<'a> {
     /// doesn't fit.
     pub fn encode(self, buf: &mut [u8]) -> Option<usize> {
         match self {
-            Request::Open { request_id, path } | Request::Readdir { request_id, path } => {
+            Request::Open { request_id, path }
+            | Request::Readdir { request_id, path }
+            | Request::Connect { request_id, path } => {
                 let kind = if matches!(self, Request::Open { .. }) {
                     MSG_OPEN
-                } else {
+                } else if matches!(self, Request::Readdir { .. }) {
                     MSG_READDIR
+                } else {
+                    MSG_CONNECT
                 };
                 let path = path.as_bytes();
                 let total = HEADER_LEN + 2 + path.len();
@@ -192,7 +220,7 @@ impl<'a> Request<'a> {
         let kind = buf[0];
         let request_id = u64::from_le_bytes(buf[1..9].try_into().ok()?);
         match kind {
-            MSG_OPEN | MSG_READDIR => {
+            MSG_OPEN | MSG_READDIR | MSG_CONNECT => {
                 if buf.len() < 11 {
                     return None;
                 }
@@ -201,8 +229,10 @@ impl<'a> Request<'a> {
                 let path = core::str::from_utf8(buf.get(11..end)?).ok()?;
                 Some(if kind == MSG_OPEN {
                     Request::Open { request_id, path }
-                } else {
+                } else if kind == MSG_READDIR {
                     Request::Readdir { request_id, path }
+                } else {
+                    Request::Connect { request_id, path }
                 })
             }
             MSG_READ => {
@@ -269,6 +299,12 @@ pub enum Response<'a> {
     WriteErr { request_id: u64, error: ErrorCode },
     CloseOk { request_id: u64 },
     CloseErr { request_id: u64, error: ErrorCode },
+    /// Answers `Request::Connect`. The live channel itself travels as an
+    /// attached handle on the frame carrying this response (see
+    /// `Request::Connect`'s doc comment) — there is no payload to decode
+    /// here beyond the header.
+    ConnectOk { request_id: u64 },
+    ConnectErr { request_id: u64, error: ErrorCode },
 }
 
 impl<'a> Response<'a> {
@@ -283,7 +319,9 @@ impl<'a> Response<'a> {
             | Response::WriteOk { request_id, .. }
             | Response::WriteErr { request_id, .. }
             | Response::CloseOk { request_id }
-            | Response::CloseErr { request_id, .. } => request_id,
+            | Response::CloseErr { request_id, .. }
+            | Response::ConnectOk { request_id }
+            | Response::ConnectErr { request_id, .. } => request_id,
         }
     }
 
@@ -385,6 +423,17 @@ impl<'a> Response<'a> {
         Some(total)
     }
 
+    /// Encode `ConnectOk`. Header only — the channel travels as an attached
+    /// handle on the message carrying this frame, not in the payload.
+    pub fn encode_connect_ok(request_id: u64, buf: &mut [u8]) -> Option<usize> {
+        let total = RESP_HEADER_LEN;
+        if total > buf.len() {
+            return None;
+        }
+        Self::header(MSG_CONNECT, request_id, STATUS_OK, buf)?;
+        Some(total)
+    }
+
     /// Decode a response frame from `buf`. Returns `None` on truncated or
     /// malformed input.
     pub fn decode(buf: &'a [u8]) -> Option<Response<'a>> {
@@ -402,6 +451,7 @@ impl<'a> Response<'a> {
                 MSG_READ => Response::ReadErr { request_id, error },
                 MSG_WRITE => Response::WriteErr { request_id, error },
                 MSG_CLOSE => Response::CloseErr { request_id, error },
+                MSG_CONNECT => Response::ConnectErr { request_id, error },
                 _ => return None,
             });
         }
@@ -433,6 +483,7 @@ impl<'a> Response<'a> {
                 })
             }
             MSG_CLOSE => Some(Response::CloseOk { request_id }),
+            MSG_CONNECT => Some(Response::ConnectOk { request_id }),
             _ => None,
         }
     }

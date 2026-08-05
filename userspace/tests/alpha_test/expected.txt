@@ -1,8 +1,23 @@
+# @unordered
 Alpha blending test starting
+# @barrier
+compositor_test_child: starting
+compositor: starting
+compositor: display is busy, running without output
+compositor: entering the frame loop
+# @barrier
 PASS: Opened window 1 (red)
+# @barrier
 PASS: Created red window with 60% alpha
+# @barrier
 PASS: Opened window 2 (green)
+# @barrier
 PASS: Created green window with 60% alpha
+# @barrier
 PASS: Opened window 3 (blue)
+# @barrier
 PASS: Created blue window with 60% alpha
+# @barrier
 PASS: Alpha blending test complete
+# @barrier
+compositor_test_child: finished

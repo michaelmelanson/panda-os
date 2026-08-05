@@ -1,4 +1,15 @@
+# @unordered
 Multi-window test starting
+# @barrier
+compositor_test_child: starting
+compositor: starting
+compositor: display is busy, running without output
+compositor: entering the frame loop
+# @barrier
 PASS: Created and rendered red window at (50, 50)
+# @barrier
 PASS: Created and rendered blue window at (150, 100)
-PASS: Multi-window test complete - blue should overlap red
+# @barrier
+PASS: Multi-window test complete
+# @barrier
+compositor_test_child: finished

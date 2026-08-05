@@ -72,6 +72,33 @@ pub fn spawn(path: &str) -> Result<Handle> {
     ChildBuilder::new(path).spawn_handle()
 }
 
+/// Connect to a userspace scheme provider by URI and receive a live channel
+/// to it — e.g. `environment::connect("compositor:/connect")`.
+///
+/// Unlike [`open`], which yields a file-like resource handle proxied through
+/// the provider's `Open`/`Read`/`Write`/`Close` handlers, `connect` hands
+/// back a real `Channel` handle: a fresh `ChannelEndpoint` the provider
+/// creates and attaches to its reply (see
+/// `panda_abi::scheme_protocol::Request::Connect` and
+/// `libpanda::scheme::SchemeProvider::reply_connect_ok`). Use this when the
+/// provider speaks its own full-duplex protocol over the channel (as the
+/// compositor does) rather than the scheme provider's request/response
+/// file model.
+///
+/// # Examples
+///
+/// ```no_run
+/// use libpanda::environment;
+/// use libpanda::ipc::Channel;
+///
+/// let handle = environment::connect("compositor:/connect").unwrap();
+/// let channel = Channel::from_handle(handle).unwrap();
+/// ```
+#[inline(always)]
+pub fn connect(uri: &str) -> Result<Handle> {
+    error::from_syscall_handle(sys::env::connect(uri))
+}
+
 /// Log a message to the system console.
 #[inline(always)]
 pub fn log(msg: &str) {

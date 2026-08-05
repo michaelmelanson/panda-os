@@ -7,7 +7,7 @@ mod pixels;
 mod surface;
 
 pub use pixels::PixelBuffer;
-pub use surface::{Surface, SurfaceInfo, Window, WindowBuilder};
+pub use surface::{Window, WindowBuilder, screen_size};
 
 /// A 32-bit ARGB colour.
 ///

@@ -271,7 +271,7 @@ operations" for the syscall-level contract and v1 scope limitations
 ### Request frame
 
 ```text
-byte 0:      kind (u8): 1=Open, 2=Readdir, 3=Read, 4=Write, 5=Close
+byte 0:      kind (u8): 1=Open, 2=Readdir, 3=Read, 4=Write, 5=Close, 6=Connect
 bytes 1..9:  request_id (u64 LE) — minted by the kernel
 bytes 9..:   kind-specific payload
 ```
@@ -283,6 +283,18 @@ bytes 9..:   kind-specific payload
 | `Read` | `resource_id: u64`, `len: u32` |
 | `Write` | `resource_id: u64`, `data_len: u32`, then `data` bytes |
 | `Close` | `resource_id: u64` |
+| `Connect` | `path_len: u16`, then `path` bytes (UTF-8) |
+
+`Connect` (`OP_ENVIRONMENT_CONNECT`, `environment::connect` in userspace) is
+not file-like: it asks the provider for a live channel instead of a
+`resource_id`. The provider replies with `ConnectOk` and attaches a fresh
+channel to that response frame using the ordinary handle-transfer mechanism
+(see "Handle transfer" above) — `libpanda::scheme::SchemeProvider::reply_connect_ok`
+does this for you. The kernel installs the attached channel directly into
+the connecting process's handle table; there is no proxy resource for this
+path. This is how a process gets a full-duplex channel to a provider that
+speaks its own protocol (e.g. the compositor's `Request`/`Event` frames)
+without needing to be one of that provider's child processes.
 
 `resource_id` is minted by the provider in its `Open` response and is
 opaque to the kernel — it only ever echoes it back on later requests for
@@ -308,6 +320,7 @@ On `status=1` (error), the payload is a single `ErrorCode` byte (see
 | `Read` | `data_len: u32`, then `data` bytes |
 | `Write` | `written: u32` |
 | `Close` | *(empty)* |
+| `Connect` | *(empty — the channel travels as the frame's attached handle, not the payload)* |
 
 Every frame — request or response — must fit in one `MAX_MESSAGE_SIZE`
 (4 KiB) channel message; there is no fragmentation. `Readdir` responses in

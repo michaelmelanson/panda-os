@@ -1,6 +1,19 @@
+# @unordered
 Window move test starting
+# @barrier
+compositor_test_child: starting
+compositor: starting
+compositor: display is busy, running without output
+compositor: entering the frame loop
+# @barrier
 PASS: Opened window
+# @barrier
 PASS: Set initial window position (50, 50)
+# @barrier
 PASS: Displayed red window at (50, 50)
+# @barrier
 PASS: Moved window to (300, 200)
+# @barrier
 PASS: Window move test complete
+# @barrier
+compositor_test_child: finished

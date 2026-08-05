@@ -28,8 +28,12 @@ pub trait Target {
     fn flush(&mut self, rect: &Rect);
 }
 
-/// A `Target` over a plain byte buffer, used by the unit tests.
-#[cfg(test)]
+/// A `Target` over a plain byte buffer, used by the unit tests and by
+/// integration tests that need to inspect composited pixels without a real
+/// display (Phase 4 of plans/userspace-compositor.md: the in-kernel
+/// compositor still holds the only display claim, so `display:` is `Busy`
+/// for the userspace compositor throughout this phase).
+#[cfg(any(test, feature = "test-target"))]
 pub struct MemoryTarget {
     pub pixels: alloc::vec::Vec<u8>,
     pub width: u32,
@@ -37,7 +41,7 @@ pub struct MemoryTarget {
     pub flushed: alloc::vec::Vec<Rect>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-target"))]
 impl MemoryTarget {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
@@ -53,7 +57,7 @@ impl MemoryTarget {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-target"))]
 impl Target for MemoryTarget {
     fn width(&self) -> u32 {
         self.width

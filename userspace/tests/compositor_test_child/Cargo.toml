@@ -1,8 +1,8 @@
 [package]
-name = "surface_test"
+name = "compositor_test_child"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 libpanda = { workspace = true }
-panda-abi = { path = "../../../panda-abi" }
+compositor = { path = "../../compositor" }

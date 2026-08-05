@@ -14,13 +14,13 @@ use panda_abi::BufferAllocInfo;
 ///
 /// # Example
 /// ```no_run
-/// use libpanda::graphics::{Colour, PixelBuffer, Rect, Surface};
+/// use libpanda::graphics::{Colour, PixelBuffer, Rect, Window};
 ///
 /// let mut buffer = PixelBuffer::new(100, 100).unwrap();
 /// buffer.clear(Colour::BLUE);
 /// buffer.fill_rect(Rect::new(10, 10, 20, 20), Colour::RED);
-/// let mut surface = Surface::open("surface:/pci/display/0").unwrap();
-/// surface.blit(&buffer, 0, 0).unwrap();
+/// let mut window = Window::new(100, 100).unwrap();
+/// window.blit(&buffer, 0, 0).unwrap();
 /// ```
 pub struct PixelBuffer {
     handle: Handle,
@@ -204,32 +204,21 @@ impl PixelBuffer {
 
     /// Blend a pixel with alpha compositing.
     ///
-    /// Uses source-over compositing: result = src + dst * (1 - src_alpha)
+    /// Uses the canonical `compositor_protocol::alpha_blend` ("source over"
+    /// with `src_a + dst_a·(1−src_a)` output alpha) — the one blend
+    /// implementation shared by the compositor, this buffer, and the
+    /// terminal (plans/userspace-compositor.md, "Client library").
     pub fn blend_pixel(&mut self, x: u32, y: u32, colour: Colour) {
         if x >= self.width || y >= self.height {
             return;
         }
 
-        let src_a = colour.a() as u32;
-        if src_a == 255 {
-            // Fully opaque, just set
-            self.set_pixel(x, y, colour);
-            return;
-        }
-        if src_a == 0 {
-            // Fully transparent, do nothing
-            return;
-        }
-
-        let dst = self.get_pixel(x, y);
-        let inv_a = 255 - src_a;
-
-        let r = ((colour.r() as u32 * src_a + dst.r() as u32 * inv_a) / 255) as u8;
-        let g = ((colour.g() as u32 * src_a + dst.g() as u32 * inv_a) / 255) as u8;
-        let b = ((colour.b() as u32 * src_a + dst.b() as u32 * inv_a) / 255) as u8;
-        let a = ((src_a * 255 + dst.a() as u32 * inv_a) / 255) as u8;
-
-        self.set_pixel(x, y, Colour::rgba(r, g, b, a));
+        // `Colour` is `0xAARRGGBB`; `alpha_blend` takes BGRA byte order,
+        // which `to_le_bytes` on that representation already is.
+        let src = colour.as_u32().to_le_bytes();
+        let dst = self.get_pixel(x, y).as_u32().to_le_bytes();
+        let out = compositor_protocol::alpha_blend(src, dst);
+        self.set_pixel(x, y, Colour(u32::from_le_bytes(out)));
     }
 }
 

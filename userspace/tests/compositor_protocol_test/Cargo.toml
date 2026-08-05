@@ -1,8 +1,8 @@
 [package]
-name = "surface_overflow_test"
+name = "compositor_protocol_test"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 libpanda = { workspace = true }
-panda-abi = { path = "../../../panda-abi" }
+compositor-protocol = { path = "../../compositor-protocol" }
