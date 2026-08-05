@@ -26,13 +26,24 @@ A **protocol** is the fundamental interface abstraction in panda's IPC system. I
 
 Today, the kernel exposes device functionality through scheme names: `keyboard:`, `block:`, `console:`. These scheme names implicitly define an interface — opening `keyboard:/pci/input/0` gives you a resource that produces key events. But the interface contract is embedded in the kernel's scheme handler code with no formal definition or type safety.
 
-Protocols make this contract explicit and portable. `Keyboard`, `Block`, `Console` become **protocol definitions** — each with a UUID, typed request/response/event messages, and capability constants. A protocol can be implemented by a kernel-side driver today and a userspace service tomorrow, and clients don't change because they program against the protocol, not the transport.
+Protocols make this contract explicit and portable. `Keyboard`, `Block`, `Console` become **protocol definitions** — each with a UUID, typed request/response/event messages, and capability constants. A protocol can be implemented by a kernel-side driver today and a userspace scheme provider tomorrow, and clients don't change because they program against the protocol, not the transport.
+
+> **Note (`plans/ROADMAP.md` M2, "typed schemes" decision):** device-facing
+> protocols like `Keyboard` and `Block` are carried over real *schemes*
+> registered with `OP_SCHEME_REGISTER` (roadmap M2.2), not over the
+> `service:` name broker described below. A userspace keyboard driver
+> registers the `keyboard` scheme directly and clients keep opening
+> `keyboard:/...` — see `plans/device-driver-model.md`. The `Protocol`/
+> `Service` framework and the `service:` scheme in this document remain the
+> mechanism for management-plane services (the service manager itself,
+> `svcctl`, future daemons like `networkd`) that aren't devices and have no
+> natural scheme namespace of their own.
 
 This means:
-- The **protocol UUID** is the real type safety mechanism. When a client connects to any service, the handshake verifies both sides speak the same protocol. The service name is just how you find it.
-- **Multiple implementations** of the same protocol are possible. A PS/2 keyboard driver and a virtio keyboard driver both implement the `Keyboard` protocol, registered under different service names (`service:/ps2-keyboard`, `service:/virtio-keyboard`).
-- **Discovery by protocol** is supported. A client that wants "any keyboard" can ask the service manager for services implementing a given protocol UUID, rather than hardcoding a service name.
-- The **existing kernel schemes** (`keyboard:`, `block:`, etc.) are the current transport for these interfaces. When drivers move to userspace, the same protocol definitions apply — only the transport changes from kernel resource to service channel.
+- The **protocol UUID** is the real type safety mechanism. When a client connects to a service or scheme provider, the handshake (or, for scheme providers, the wire protocol itself) verifies both sides speak the same interface.
+- **Multiple implementations** of the same protocol are possible for management-plane services registered by name under `service:` (e.g. two config daemons both speaking a shared protocol, registered as `service:/foo`, `service:/bar`). For a device-facing protocol carried over a scheme, only one provider can hold a given scheme name at a time — schemes are a flat namespace, not multi-valued.
+- **Discovery by protocol** is supported for `service:`-registered processes. A client that wants "any service implementing a protocol" can ask the service manager for services implementing a given protocol UUID via `ManagerRequest::ListByProtocol`. Scheme providers are discovered via `readdir("scheme:/")` instead (roadmap M2.1).
+- The **existing kernel schemes** (`keyboard:`, `block:`, etc.) are the current transport for device-facing protocols. When drivers move to userspace, the same protocol definitions apply — only the transport changes from kernel resource to userspace scheme provider (`OP_SCHEME_REGISTER`), not to a `service:` channel.
 
 #### Protocol and Service traits
 
@@ -342,13 +353,13 @@ The `service:` scheme is a flat name → channel broker. The path is exactly one
 service:/{name}
 ```
 
-The scheme maps names to channels, nothing more. The service name is an organizational label — the **protocol UUID** is the real interface contract. Two services with different names can implement the same protocol (e.g., `service:/ps2-keyboard` and `service:/virtio-keyboard` both speak the `Keyboard` protocol). A client that knows the service name connects directly; a client that wants "any service implementing this protocol" queries the service manager via `ManagerRequest::ListByProtocol`.
+The scheme maps names to channels, nothing more. The service name is an organizational label — the **protocol UUID** is the real interface contract. Two management-plane services with different names can implement the same protocol (e.g. a hypothetical `service:/dns-primary` and `service:/dns-secondary` both speaking a shared resolver protocol). A client that knows the service name connects directly; a client that wants "any service implementing this protocol" queries the service manager via `ManagerRequest::ListByProtocol`. Device-facing interfaces like `Keyboard` are not registered this way — see the naming re-scope note under "Phase 4" below and `plans/device-driver-model.md`.
 
 This design keeps the scheme trivial and puts richer semantics (protocol-based discovery, categorization) in the service manager where they're easier to evolve.
 
 **Relationship to existing kernel schemes:**
 
-Today, `keyboard:`, `block:`, `console:` are kernel-side schemes because the drivers are kernel-side. These scheme names implicitly define an interface contract. As drivers move to userspace, the protocol definitions (`Keyboard`, `Block`, `Console`) become the explicit contract, and the transport shifts from kernel resource to service channel. The existing kernel schemes would eventually become unnecessary — clients would connect to `service:/keyboard` instead of opening `keyboard:/pci/input/0`. During migration, both paths can coexist.
+Today, `keyboard:`, `block:`, `console:` are kernel-side schemes because the drivers are kernel-side. These scheme names implicitly define an interface contract. As drivers move to userspace, the protocol definitions (`Keyboard`, `Block`, `Console`) become the explicit contract, and the transport shifts from a kernel-implemented `SchemeHandler` to a userspace one registered via `OP_SCHEME_REGISTER` (roadmap M2.2) — the kernel routes `open`/`read`/`write`/`readdir`/`close` on the same scheme name to the userspace provider over channel IPC. Clients keep opening `keyboard:/pci/input/0`; nothing about the client-visible path changes, and kernel-side and userspace-provided schemes are indistinguishable to callers. This is a distinct mechanism from the `service:` name broker described above — see the naming re-scope note in `plans/device-driver-model.md` and roadmap M2 for the full rationale.
 
 ### TOML parser
 
