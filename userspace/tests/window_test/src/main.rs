@@ -2,16 +2,16 @@
 #![no_main]
 
 //! `libpanda::graphics::Window` end to end against a real compositor
-//! process (plans/userspace-compositor.md, Phase 4).
+//! process (plans/userspace-compositor.md, Phase 4/5).
 //!
-//! This used to draw a four-quadrant pattern via the raw `surface:` scheme
-//! and compare a QEMU screenshot. Real pixel output isn't observable in
-//! this phase — the in-kernel compositor holds the only display claim until
-//! Phase 5 (see docs on `compositor_test_child`) — so this instead proves
-//! the client-visible protocol contract: window creation, buffer attach,
-//! commit, and `FrameDone` all round-trip correctly through the real
-//! `Window` API and a real (spawned) compositor process. Pixel-level
-//! blending/positioning correctness is covered by `compositor`'s own
+//! Proves the client-visible protocol contract — window creation, buffer
+//! attach, commit, and `FrameDone` all round-trip correctly through the real
+//! `Window` API and a real (spawned) compositor process — and, now that the
+//! in-kernel compositor is deleted and the spawned compositor process is the
+//! display's real owner (Phase 5), also verifies the actual rendered pixels
+//! via a screenshot comparison against `expected.png` (see
+//! `docs/TESTING.md`, "Screenshot testing"). Pixel-level blending/positioning
+//! correctness is additionally covered by `compositor`'s own
 //! `MemoryTarget`-based unit tests in `userspace/compositor/src/manager.rs`.
 
 use libpanda::environment;
@@ -80,6 +80,13 @@ libpanda::main! {
         return 1;
     }
     environment::log("PASS: Flushed window (FrameDone received)");
+
+    // The compositor's frame loop runs independently of this process; give
+    // it a moment to have actually composited and flushed our commit before
+    // the harness captures the screen.
+    process::sleep(100);
+    environment::screenshot_ready();
+    process::sleep(5000);
 
     drop(window);
     let exit_code = process::wait(compositor_handle);

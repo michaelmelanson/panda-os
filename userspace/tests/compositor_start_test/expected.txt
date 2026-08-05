@@ -1,9 +1,9 @@
-# The compositor must come up, report that the display is unavailable
-# (the in-kernel compositor holds a permanent claim until Phase 5), keep
-# running anyway, and complete its frame loop.
+# The compositor must come up, claim the real display, register the
+# compositor: scheme, and complete its frame loop.
 Compositor start test: starting
 compositor: starting
-compositor: display is busy, running without output
+compositor: claimed the display
+compositor: registered the compositor: scheme
 compositor: entering the frame loop
 compositor: frame loop finished
 PASS

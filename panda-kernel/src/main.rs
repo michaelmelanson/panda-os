@@ -85,9 +85,6 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
             .expect("Failed to load init process - cannot boot");
     scheduler::init(init_process);
 
-    // Start compositor task now that scheduler is ready
-    panda_kernel::compositor::spawn_compositor_task();
-
     // Note: ext2 filesystem mounting is now done by init via the mount syscall
 
     unsafe { scheduler::exec_next_runnable() };

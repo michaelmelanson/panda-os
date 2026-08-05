@@ -14,7 +14,7 @@ use panda_abi::HandleType;
 
 use crate::process::waker::IoWaker;
 use crate::resource::{
-    Buffer, CharacterOutput, Directory, EventSource, ProcessInterface, Resource, Surface, VfsFile,
+    Buffer, CharacterOutput, Directory, EventSource, ProcessInterface, Resource, VfsFile,
 };
 
 /// Maximum number of open handles per process.
@@ -114,11 +114,6 @@ impl Handle {
         self.resource.as_buffer()
     }
 
-    /// Get this handle's resource as a Surface interface.
-    pub fn as_surface(&self) -> Option<&dyn Surface> {
-        self.resource.as_surface()
-    }
-
     /// Get this handle's resource as an exclusively-owned display device.
     pub fn as_display(&self) -> Option<&crate::resource::DisplayDevice> {
         self.resource.as_display()
@@ -132,11 +127,6 @@ impl Handle {
     /// Get this handle's resource as a VFS file (for async file operations).
     pub fn as_vfs_file(&self) -> Option<&dyn VfsFile> {
         self.resource.as_vfs_file()
-    }
-
-    /// Get this handle's resource as a Window.
-    pub fn as_window(&self) -> Option<Arc<spinning_top::Spinlock<crate::compositor::Window>>> {
-        self.resource.as_window()
     }
 
     /// Get this handle's resource as a Channel (for message-based IPC).

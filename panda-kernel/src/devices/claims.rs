@@ -4,10 +4,10 @@
 //!
 //! - A block device that ext2 has mounted must not also be opened raw via
 //!   `block:/...`, or writes from one side can corrupt what the other reads.
-//! - The display framebuffer must not be blitted into by two independent
-//!   userspace surfaces at once, or their writes tear each other's pixels
-//!   (see `FramebufferSurface`, which uses a raw pointer with no locking of
-//!   its own).
+//! - The display framebuffer must not be mapped and written by two
+//!   independent processes at once, or their writes tear each other's
+//!   pixels; the `display:` scheme's exclusivity depends entirely on this
+//!   claim table.
 //!
 //! This module is the single place that arbitrates ownership. Claiming a
 //! [`DeviceAddress`] returns a [`ClaimGuard`]; holding the guard *is* the
@@ -30,7 +30,7 @@ pub enum ClaimOwner {
     Mount,
     /// A raw scheme open (e.g. `block:/pci/storage/0`) is using the device.
     RawOpen,
-    /// The display is open via the surface scheme (e.g. `surface:/fb0`).
+    /// The display is open via the `display:` scheme.
     Display,
 }
 

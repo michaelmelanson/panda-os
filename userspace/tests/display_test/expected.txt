@@ -1,6 +1,10 @@
 display_test: starting
-display_test: display open refused with Busy (compositor owns it)
-display_test: second open also refused with Busy
+display_test: claimed the display
+display_test: second open refused with Busy
+display_test: OP_DISPLAY_INFO succeeded for the owner
+display_test: OP_DISPLAY_MAP succeeded for the owner
+display_test: OP_DISPLAY_FLUSH succeeded for the owner
+display_test: reopen after close succeeded
 display_test: nonexistent display index rejected with NotFound
 display_test: non-display device rejected with NotFound
 display_test: INFO/MAP/FLUSH on non-display handles rejected

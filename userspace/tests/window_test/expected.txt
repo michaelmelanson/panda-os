@@ -8,7 +8,8 @@ Window test starting
 # @barrier
 compositor_test_child: starting
 compositor: starting
-compositor: display is busy, running without output
+compositor: claimed the display
+compositor: registered the compositor: scheme
 compositor: entering the frame loop
 PASS: Created window
 PASS: Allocated buffer
@@ -16,5 +17,3 @@ PASS: Filled buffer with test pattern
 PASS: Blitted buffer to window
 # @barrier
 PASS: Flushed window (FrameDone received)
-# @barrier
-compositor_test_child: finished

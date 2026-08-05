@@ -139,16 +139,6 @@ Teaching handle-close to also unmap is future work.
 | `OP_FILE_READ_BUFFER` | 0x5_0000 | (buffer_handle) | bytes_read |
 | `OP_FILE_WRITE_BUFFER` | 0x5_0001 | (buffer_handle, len) | bytes_written |
 
-### Surface operations (0x6_0000 - 0x6_FFFF)
-
-| Operation | Code | Arguments | Returns |
-|-----------|------|-----------|---------|
-| `OP_SURFACE_INFO` | 0x6_0000 | (info_ptr) | 0 or error |
-| `OP_SURFACE_BLIT` | 0x6_0001 | (params_ptr) | 0 or error |
-| `OP_SURFACE_FILL` | 0x6_0002 | (params_ptr) | 0 or error |
-| `OP_SURFACE_FLUSH` | 0x6_0003 | (rect_ptr) | 0 or error |
-| `OP_SURFACE_UPDATE_PARAMS` | 0x6_0004 | (params_ptr) | 0 or error |
-
 ### Display operations (0x6_1000 - 0x6_1FFF)
 
 | Operation | Code | Arguments | Returns |
@@ -159,16 +149,14 @@ Teaching handle-close to also unmap is future work.
 
 These act on a handle opened from the `display:` scheme (e.g.
 `display:/pci/display/0`), which claims the display device **exclusively** via
-the claim table: a second open — through `display:` or the legacy
-`surface:/fb0` path — fails with `Busy` until the owning handle is closed or
-the owning process exits. Holding the handle is therefore the whole permission
-model; these operations apply no further check and reject any handle that is
-not a display with `InvalidHandle`.
+the claim table: a second open fails with `Busy` until the owning handle is
+closed or the owning process exits. Holding the handle is therefore the whole
+permission model; these operations apply no further check and reject any
+handle that is not a display with `InvalidHandle`.
 
-`OP_DISPLAY_INFO` writes a `SurfaceInfoOut` (width, height, format, stride) —
-the same pixel-geometry struct the surface operations use, deliberately not
-duplicated. `OP_DISPLAY_FLUSH` takes a `SurfaceRect`, validated against the
-display bounds; the underlying virtio-gpu transfer+flush is synchronous and
+`OP_DISPLAY_INFO` writes a `SurfaceInfoOut` (width, height, format, stride).
+`OP_DISPLAY_FLUSH` takes a `SurfaceRect`, validated against the display
+bounds; the underlying virtio-gpu transfer+flush is synchronous and
 whole-surface, so the rectangle is validation and forward-compatibility rather
 than a bandwidth optimisation today.
 
@@ -181,9 +169,9 @@ page-table entries. A mode change replaces the framebuffer and posts
 `EVENT_DISPLAY_CHANGED`; the owner must then re-query `OP_DISPLAY_INFO` and
 re-issue `OP_DISPLAY_MAP`.
 
-Until the compositor moves to userspace (plans/userspace-compositor.md,
-Phase 5), the in-kernel compositor holds the display's claim for as long as it
-runs, so on a system with a display these opens always return `Busy`.
+The userspace compositor (`userspace/compositor/`) is the display's usual
+owner: it claims the display on startup and holds it for as long as it runs.
+See `docs/COMPOSITOR.md`.
 
 ### Mailbox operations (0x7_0000 - 0x7_0FFF)
 

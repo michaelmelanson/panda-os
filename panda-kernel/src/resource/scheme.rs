@@ -421,95 +421,14 @@ impl EventSource for KeyboardResource {
 }
 
 // =============================================================================
-// Surface Scheme - window compositor access
-// =============================================================================
-
-/// Scheme handler for surface devices
-pub struct SurfaceScheme;
-
-#[async_trait]
-impl SchemeHandler for SurfaceScheme {
-    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError> {
-        match path {
-            "/window" => {
-                let window = crate::compositor::create_window();
-                Ok(Box::new(super::window::WindowResource { window }))
-            }
-            "/fb0" => {
-                // The legacy "/fb0" path doesn't go through `device_path::resolve`
-                // (it isn't a "/pci/..." path), so resolve the display's
-                // DeviceAddress the same way a "/pci/display/0" open would.
-                let address =
-                    super::display_device_address().ok_or(OpenError::NotFound)?;
-                let claim = crate::devices::claims::claim(address, ClaimOwner::Display)
-                    .map_err(|_| OpenError::Busy)?;
-
-                // NOTE: while the in-kernel compositor runs it holds the
-                // display's claim itself (see `compositor::init`), so this
-                // open always fails `Busy` on a system with a display. That
-                // is deliberate: handing out a second, unsynchronized writer
-                // to framebuffer memory while the compositor is writing it is
-                // exactly the aliasing hazard the claim table exists to
-                // prevent. `/fb0` is retired outright in Phase 4/5 of
-                // plans/userspace-compositor.md.
-                let surface =
-                    super::get_framebuffer_surface().ok_or(OpenError::NotFound)?;
-                Ok(Box::new(ClaimedFramebufferSurface {
-                    surface: *surface,
-                    _claim: claim,
-                }))
-            }
-            _ => Err(OpenError::NotFound),
-        }
-    }
-
-    async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
-        match path {
-            "/" => Some(alloc::vec![
-                DirEntry {
-                    name: alloc::string::String::from("window"),
-                    is_dir: false,
-                },
-                DirEntry {
-                    name: alloc::string::String::from("fb0"),
-                    is_dir: false,
-                },
-            ]),
-            _ => None,
-        }
-    }
-}
-
-/// A framebuffer surface opened via `surface:/fb0`, holding the display's
-/// exclusive claim for the lifetime of the returned handle.
-///
-/// Dropping this (on `close()`, or when a process's handle table is dropped
-/// at exit) releases the claim, so a second `surface:/fb0` open can succeed.
-struct ClaimedFramebufferSurface {
-    surface: super::FramebufferSurface,
-    _claim: ClaimGuard,
-}
-
-impl Resource for ClaimedFramebufferSurface {
-    fn handle_type(&self) -> panda_abi::HandleType {
-        self.surface.handle_type()
-    }
-
-    fn as_surface(&self) -> Option<&dyn super::Surface> {
-        Some(&self.surface)
-    }
-}
-
-// =============================================================================
 // Display Scheme - exclusive display ownership
 // =============================================================================
 
 /// Scheme handler for display devices (`display:/pci/display/0`).
 ///
 /// Opening a display claims it exclusively (see
-/// `crate::resource::display`): a second open — through this scheme or the
-/// legacy `surface:/fb0` path — fails with `Busy` until the owning handle is
-/// closed or the owning process exits.
+/// `crate::resource::display`): a second open fails with `Busy` until the
+/// owning handle is closed or the owning process exits.
 pub struct DisplayScheme;
 
 #[async_trait]
@@ -1087,7 +1006,6 @@ pub fn init() {
     register_scheme("file", Arc::new(FileScheme));
     register_scheme("console", Arc::new(ConsoleScheme));
     register_scheme("keyboard", Arc::new(KeyboardScheme));
-    register_scheme("surface", Arc::new(SurfaceScheme));
     register_scheme("display", Arc::new(DisplayScheme));
     register_scheme("block", Arc::new(BlockScheme));
     register_scheme("scheme", Arc::new(SchemeScheme));

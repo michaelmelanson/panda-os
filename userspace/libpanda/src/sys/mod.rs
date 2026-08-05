@@ -15,7 +15,6 @@ pub mod file;
 pub mod mailbox;
 pub mod process;
 pub mod scheme;
-pub mod surface;
 
 // Re-export the raw Handle type
 pub use crate::handle::Handle;

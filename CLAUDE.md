@@ -19,6 +19,7 @@ This file is a table of contents into the docs/ directory. Keep detailed documen
 - [docs/DEVICE_PATHS.md](docs/DEVICE_PATHS.md) - Unified device path scheme with human-friendly names
 - [docs/IPC.md](docs/IPC.md) - Channels, mailboxes, and process communication
 - [docs/PIPELINES.md](docs/PIPELINES.md) - Structured Value-based pipelines
+- [docs/COMPOSITOR.md](docs/COMPOSITOR.md) - Userspace compositor architecture and protocol
 
 ## Quick Reference
 

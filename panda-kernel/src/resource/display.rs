@@ -4,9 +4,8 @@
 //! (`display:/pci/display/0`), the permanent interface a compositor uses to
 //! drive the screen — see plans/userspace-compositor.md, "The display
 //! resource". Opening it claims the display device exclusively via
-//! [`crate::devices::claims`]; a second open (from anywhere, including
-//! `surface:/fb0`) fails with `Busy` until the owning handle is closed or the
-//! owning process exits.
+//! [`crate::devices::claims`]; a second open (from anywhere) fails with
+//! `Busy` until the owning handle is closed or the owning process exits.
 //!
 //! Because holding a [`DisplayDevice`] handle *is* the proof of exclusive
 //! ownership, the three operations below apply no further permission check: a
@@ -27,16 +26,86 @@ use crate::memory::{MemoryMappingOptions, map_external, virtual_address_to_physi
 use crate::pci::{self, DeviceClass};
 use crate::process::Process;
 
-use super::surface::{Rect, SurfaceError, SurfaceInfo};
 use super::{MailboxRef, Resource};
+
+/// Pixel format of the display's framebuffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum PixelFormat {
+    /// 32-bit ARGB (alpha, red, green, blue)
+    ARGB8888 = 0,
+}
+
+/// A rectangle, used to describe damaged regions passed to `OP_DISPLAY_FLUSH`.
+#[derive(Debug, Clone, Copy)]
+pub struct Rect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Display mode information: dimensions, pixel format, and row stride.
+#[derive(Debug, Clone, Copy)]
+pub struct SurfaceInfo {
+    pub width: u32,
+    pub height: u32,
+    pub format: PixelFormat,
+    pub stride: u32, // bytes per row
+}
+
+/// Errors that can occur while validating a display operation.
+#[derive(Debug, Clone, Copy)]
+pub enum SurfaceError {
+    /// Invalid coordinates or dimensions
+    InvalidBounds,
+}
+
+/// The kernel virtual base address and geometry of the framebuffer, if a
+/// display driver has initialized one.
+struct FramebufferRegion {
+    base: VirtAddr,
+    info: SurfaceInfo,
+}
+
+static FRAMEBUFFER_REGION: Spinlock<Option<FramebufferRegion>> = Spinlock::new(None);
+
+/// Record the framebuffer's location and geometry.
+///
+/// Called by the display driver (currently virtio-gpu) whenever it
+/// allocates or replaces the framebuffer. This is the only place that
+/// knows the raw framebuffer address; [`DisplayDevice::new`] reads it back
+/// to build the `display:` scheme's exclusive owner.
+pub fn init_framebuffer(framebuffer: *mut u8, width: u32, height: u32) {
+    let format = PixelFormat::ARGB8888;
+    let stride = match format {
+        PixelFormat::ARGB8888 => width * 4,
+    };
+
+    *FRAMEBUFFER_REGION.lock() = Some(FramebufferRegion {
+        base: VirtAddr::new(framebuffer as u64),
+        info: SurfaceInfo {
+            width,
+            height,
+            format,
+            stride,
+        },
+    });
+}
+
+fn framebuffer_region() -> Option<(VirtAddr, SurfaceInfo)> {
+    FRAMEBUFFER_REGION
+        .lock()
+        .as_ref()
+        .map(|region| (region.base, region.info))
+}
 
 /// The device address of the system's display, if one exists.
 ///
-/// Single source of truth for "which device is *the* display": the
-/// `display:` scheme, the legacy `surface:/fb0` path, and the in-kernel
-/// compositor's own claim all resolve the display through this function, so
-/// they can never end up claiming different addresses and silently
-/// coexisting.
+/// Single source of truth for "which device is *the* display": every
+/// caller that needs the display's device address resolves it through this
+/// function, so they can never end up claiming different addresses and
+/// silently coexisting.
 pub fn device_address() -> Option<DeviceAddress> {
     pci::get_device_by_class(DeviceClass::Display.code(), 0)
 }
@@ -79,7 +148,7 @@ impl DisplayDevice {
     /// driver bound), in which case the caller should report `NotFound` and
     /// let `claim` drop, releasing the claim it took.
     pub fn new(claim: ClaimGuard) -> Option<Self> {
-        let (framebuffer, info) = super::surface::framebuffer_region()?;
+        let (framebuffer, info) = framebuffer_region()?;
         Some(Self {
             framebuffer,
             info,

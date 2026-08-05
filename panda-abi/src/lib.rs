@@ -101,8 +101,6 @@ pub enum HandleType {
     Mailbox = 0x20,
 
     // Graphics types (0x30-0x3F)
-    /// Surface handle for graphics output.
-    Surface = 0x30,
     /// Shared memory buffer handle.
     Buffer = 0x31,
     /// Display handle: the exclusive owner of a display device, opened via
@@ -153,7 +151,6 @@ impl HandleType {
             0x10 => Some(Self::Channel),
             0x11 => Some(Self::Process),
             0x20 => Some(Self::Mailbox),
-            0x30 => Some(Self::Surface),
             0x31 => Some(Self::Buffer),
             0x32 => Some(Self::Display),
             _ => None,
@@ -208,7 +205,7 @@ pub const HANDLE_SELF: u64 = HANDLE_PROCESS;
 /// - Environment operations: 0x3_0000 - 0x3_FFFF
 /// - Buffer operations: 0x4_0000 - 0x4_FFFF
 /// - Buffer-based file operations: 0x5_0000 - 0x5_FFFF
-/// - Surface operations: 0x6_0000 - 0x6_FFFF
+/// - Display operations: 0x6_1000 - 0x6_1FFF
 /// - Mailbox operations: 0x7_0000 - 0x7_0FFF
 /// - Channel operations: 0x7_1000 - 0x7_1FFF
 #[repr(u32)]
@@ -295,18 +292,6 @@ pub enum Operation {
     /// Write from buffer to file: (file_handle, buffer_handle, len) -> bytes_written
     FileWriteBuffer = 0x5_0001,
 
-    // Surface operations (0x6_0000 - 0x6_FFFF)
-    /// Get surface info: (info_ptr) -> 0 or error
-    SurfaceInfo = 0x6_0000,
-    /// Blit pixels to surface: (params_ptr) -> 0 or error
-    SurfaceBlit = 0x6_0001,
-    /// Fill rectangle with solid colour: (params_ptr) -> 0 or error
-    SurfaceFill = 0x6_0002,
-    /// Flush surface updates: (rect_ptr) -> 0 or error
-    SurfaceFlush = 0x6_0003,
-    /// Update window parameters: (params_ptr) -> 0 or error
-    SurfaceUpdateParams = 0x6_0004,
-
     // Display operations (0x6_1000 - 0x6_1FFF)
     /// Get display mode info: (info_ptr) -> 0 or error.
     /// `info_ptr` points to a [`SurfaceInfoOut`] (width, height, format, stride).
@@ -389,11 +374,6 @@ impl Operation {
             0x4_0003 => Some(Self::BufferFree),
             0x5_0000 => Some(Self::FileReadBuffer),
             0x5_0001 => Some(Self::FileWriteBuffer),
-            0x6_0000 => Some(Self::SurfaceInfo),
-            0x6_0001 => Some(Self::SurfaceBlit),
-            0x6_0002 => Some(Self::SurfaceFill),
-            0x6_0003 => Some(Self::SurfaceFlush),
-            0x6_0004 => Some(Self::SurfaceUpdateParams),
             0x6_1000 => Some(Self::DisplayInfo),
             0x6_1001 => Some(Self::DisplayMap),
             0x6_1002 => Some(Self::DisplayFlush),
@@ -522,18 +502,6 @@ pub const OP_FILE_READ_BUFFER: u32 = Operation::FileReadBuffer as u32;
 /// Write from buffer to file: (file_handle, buffer_handle, len) -> bytes_written
 pub const OP_FILE_WRITE_BUFFER: u32 = Operation::FileWriteBuffer as u32;
 
-// Surface operations (0x6_0000 - 0x6_FFFF)
-/// Get surface info: (info_ptr) -> 0 or error
-pub const OP_SURFACE_INFO: u32 = Operation::SurfaceInfo as u32;
-/// Blit pixels to surface: (params_ptr) -> 0 or error
-pub const OP_SURFACE_BLIT: u32 = Operation::SurfaceBlit as u32;
-/// Fill rectangle with solid colour: (params_ptr) -> 0 or error
-pub const OP_SURFACE_FILL: u32 = Operation::SurfaceFill as u32;
-/// Flush surface updates: (rect_ptr) -> 0 or error (rect_ptr can be 0 for full flush)
-pub const OP_SURFACE_FLUSH: u32 = Operation::SurfaceFlush as u32;
-/// Update window parameters: (params_ptr) -> 0 or error
-pub const OP_SURFACE_UPDATE_PARAMS: u32 = Operation::SurfaceUpdateParams as u32;
-
 // Display operations (0x6_1000 - 0x6_1FFF)
 //
 // These act on a handle opened from the `display:` scheme, which is
@@ -541,9 +509,7 @@ pub const OP_SURFACE_UPDATE_PARAMS: u32 = Operation::SurfaceUpdateParams as u32;
 // handle *is* the proof that this process owns the display, so no further
 // permission check is applied to the operations below.
 /// Get display mode info: (info_ptr) -> 0 or error.
-/// Writes a [`SurfaceInfoOut`] (width, height, format, stride) — the same
-/// pixel-geometry struct the surface interface uses, deliberately not
-/// duplicated.
+/// Writes a [`SurfaceInfoOut`] (width, height, format, stride).
 pub const OP_DISPLAY_INFO: u32 = Operation::DisplayInfo as u32;
 /// Map the display framebuffer into the calling process: () -> vaddr or error.
 pub const OP_DISPLAY_MAP: u32 = Operation::DisplayMap as u32;

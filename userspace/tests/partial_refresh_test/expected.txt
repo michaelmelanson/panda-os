@@ -3,7 +3,8 @@ Partial refresh test starting
 # @barrier
 compositor_test_child: starting
 compositor: starting
-compositor: display is busy, running without output
+compositor: claimed the display
+compositor: registered the compositor: scheme
 compositor: entering the frame loop
 # @barrier
 PASS: Opened window

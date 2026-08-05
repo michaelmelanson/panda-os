@@ -135,9 +135,12 @@ if [ $SCREENSHOT_TEST -eq 1 ]; then
                 exit 1
             fi
             DIFF_PNG="$BUILD_DIR/${TEST_NAME}_diff.png"
-            # Allow 1% fuzz for anti-aliasing differences
+            # Allow 1% fuzz for anti-aliasing differences. ImageMagick's AE
+            # metric can be reported in scientific notation (e.g.
+            # "5.2428e+09"), which bash's integer `-gt` cannot compare — use
+            # awk for the numeric comparison instead.
             DIFF_PIXELS=$(compare -metric AE -fuzz 1% "$EXPECTED_PNG" "$ACTUAL_PNG" "$DIFF_PNG" 2>&1 | head -1 | awk '{print $1}' || echo "999999")
-            if [ "$DIFF_PIXELS" -gt 1000 ] 2>/dev/null; then
+            if awk -v n="$DIFF_PIXELS" 'BEGIN { exit !(n+0 > 1000) }'; then
                 echo "Screenshot differs from expected (${DIFF_PIXELS} pixels different)" >&2
                 echo "Expected: $EXPECTED_PNG" >&2
                 echo "Actual: $ACTUAL_PNG (preserved for inspection)" >&2

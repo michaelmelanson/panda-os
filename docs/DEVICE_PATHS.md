@@ -11,7 +11,7 @@ scheme:/pci/<class>/<index>
 ```
 
 Where:
-- `scheme` determines the interface type (block, keyboard, surface, etc.)
+- `scheme` determines the interface type (block, keyboard, display, etc.)
 - `class` is a human-readable PCI class name (storage, input, display, etc.)
 - `index` is the zero-based device index within that class
 
@@ -20,7 +20,7 @@ Where:
 Registered scheme handlers are themselves enumerable via the `scheme:` meta-scheme:
 
 ```
-readdir("scheme:/")   # -> ["block", "console", "display", "file", "keyboard", "scheme", "surface"]
+readdir("scheme:/")   # -> ["block", "console", "display", "file", "keyboard", "scheme"]
 ```
 
 This lists the name of every scheme registered with `register_scheme` (see
@@ -70,13 +70,13 @@ block:/pci/00:04.0          # By raw PCI address
         ┌─────────────────────┼─────────────────────┐
         ▼                     ▼                     ▼
 ┌──────────────┐      ┌──────────────┐      ┌──────────────┐
-│ BlockScheme  │      │KeyboardScheme│      │SurfaceScheme │
+│ BlockScheme  │      │KeyboardScheme│      │DisplayScheme │
 │              │      │              │      │              │
 │ Uses shared  │      │ Uses shared  │      │ Uses shared  │
 │ path resolve │      │ path resolve │      │ path resolve │
 │              │      │              │      │              │
 │ Returns      │      │ Returns      │      │ Returns      │
-│ BlockDevice  │      │ EventSource  │      │ Surface      │
+│ BlockDevice  │      │ EventSource  │      │ DisplayDevice│
 └──────────────┘      └──────────────┘      └──────────────┘
 ```
 
@@ -115,13 +115,9 @@ or its process exits (RAII — the claim guard lives inside the resource).
 | Operation | Claim |
 |-----------|-------|
 | `open("display:/pci/display/0")` | Claims the display device exclusively; a second concurrent open fails `Busy` |
-| `open("surface:/fb0")` | Legacy alias for the same display claim (retired in plans/userspace-compositor.md Phase 4/5) |
 | `mount("ext2", ...)` | Claims the backing block device for the lifetime of the mount |
 | `open("block:/pci/storage/N")` | Claims the block device; fails `Busy` if it is mounted or already open |
 
-Note: the in-kernel compositor holds the display's claim for as long as it
-runs, so on a system with a display both `display:/pci/display/0` and
-`surface:/fb0` are `Busy` to userspace. That is deliberate — the compositor
-really is the display's exclusive owner — and it ends when the compositor
-moves to userspace (see `plans/userspace-compositor.md`), at which point the
-userspace compositor takes the claim by opening `display:` normally.
+The userspace compositor (`userspace/compositor/`) is the display's usual
+owner: it claims `display:/pci/display/0` on startup and holds the claim for
+as long as it runs. See `docs/COMPOSITOR.md`.

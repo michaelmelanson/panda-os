@@ -87,15 +87,9 @@ pub fn init_from_pci_device(pci_device: PciDevice) {
         .expect("Could not create framebuffer");
     let framebuffer = VirtAddr::new(framebuffer.as_ptr() as u64);
 
-    // Initialize the framebuffer surface for userspace access
-    unsafe {
-        init_framebuffer(framebuffer.as_mut_ptr(), width, height);
-    }
-
-    // Initialize compositor with a framebuffer surface
-    if let Some(surface) = crate::resource::get_framebuffer_surface() {
-        crate::compositor::init(*surface);
-    }
+    // Record the framebuffer's location and geometry for the `display:`
+    // scheme.
+    init_framebuffer(framebuffer.as_mut_ptr(), width, height);
 
     let mut device = VIRTIO_GPU_DEVICE.write();
     *device = Some(VirtioGpuDevice {
@@ -116,7 +110,8 @@ pub fn flush_framebuffer() {
 /// Change the display resolution at runtime.
 ///
 /// Tears down the existing GPU framebuffer resource, creates a new one at the
-/// specified dimensions, and updates the global framebuffer surface and compositor.
+/// specified dimensions, and updates the global framebuffer region for the
+/// `display:` scheme.
 pub fn change_resolution(width: u32, height: u32) -> Result<(), &'static str> {
     let mut device = VIRTIO_GPU_DEVICE.write();
     let dev = device.as_mut().ok_or("GPU not initialized")?;
@@ -129,19 +124,11 @@ pub fn change_resolution(width: u32, height: u32) -> Result<(), &'static str> {
     dev.framebuffer = VirtAddr::new(framebuffer_ptr as u64);
     dev.resolution = (width, height);
 
-    unsafe {
-        init_framebuffer(framebuffer_ptr, width, height);
-    }
-
-    let new_surface = crate::resource::get_framebuffer_surface()
-        .ok_or("Failed to get new framebuffer surface")?;
-    crate::compositor::replace_framebuffer(*new_surface);
+    init_framebuffer(framebuffer_ptr, width, height);
 
     // Tell the display owner (if any) that its mode info and framebuffer
     // mapping are stale: it must re-query OP_DISPLAY_INFO and re-issue
-    // OP_DISPLAY_MAP. This is the `display:` scheme's replacement for
-    // `compositor::replace_framebuffer` above, which goes away with the
-    // in-kernel compositor.
+    // OP_DISPLAY_MAP.
     crate::resource::notify_display_changed();
 
     Ok(())

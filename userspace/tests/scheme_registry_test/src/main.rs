@@ -59,7 +59,7 @@ libpanda::main! {
     }
 
     // Test 2: the well-known built-in schemes must all be present.
-    for expected in ["file", "console", "keyboard", "surface", "display", "block", "scheme"] {
+    for expected in ["file", "console", "keyboard", "display", "block", "scheme"] {
         if !names.iter().any(|n| n.as_str() == expected) {
             environment::log(&format!(
                 "FAIL: scheme '{}' missing from scheme:/ listing",

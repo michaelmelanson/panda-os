@@ -121,13 +121,13 @@ pub trait HandleKind: private::Sealed {
 ///
 /// # Example
 /// ```
-/// use libpanda::handle::{TypedHandle, File, Surface};
+/// use libpanda::handle::{TypedHandle, File, Directory};
 ///
 /// fn read_file(file: TypedHandle<File>) { /* ... */ }
-/// fn blit_surface(surface: TypedHandle<Surface>) { /* ... */ }
+/// fn list_dir(dir: TypedHandle<Directory>) { /* ... */ }
 ///
 /// // This would be a compile error:
-/// // read_file(surface_handle);
+/// // read_file(dir_handle);
 /// ```
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -248,14 +248,6 @@ impl HandleKind for Directory {
     const EXPECTED_TYPE: panda_abi::HandleType = panda_abi::HandleType::Directory;
 }
 
-/// Marker type for surface handles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Surface {}
-impl private::Sealed for Surface {}
-impl HandleKind for Surface {
-    const NAME: &'static str = "Surface";
-    const EXPECTED_TYPE: panda_abi::HandleType = panda_abi::HandleType::Surface;
-}
 
 /// Marker type for process handles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,9 +294,6 @@ pub type FileHandle = TypedHandle<File>;
 
 /// A typed directory handle.
 pub type DirectoryHandle = TypedHandle<Directory>;
-
-/// A typed surface handle.
-pub type SurfaceHandle = TypedHandle<Surface>;
 
 /// A typed process handle.
 pub type ProcessHandle = TypedHandle<Process>;

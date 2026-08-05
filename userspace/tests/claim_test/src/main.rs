@@ -2,16 +2,17 @@
 //!
 //! Covers the claim guard's whole lifecycle on a block device — second open
 //! fails `Busy`, close releases, process exit releases (via claim_child) —
-//! plus the two claims that are held by something other than a plain raw
-//! open: the in-kernel compositor's claim on the display, and ext2's claim on
-//! a mounted block device.
+//! plus ext2's claim on a mounted block device, and the same full lifecycle
+//! against the real `display:` scheme.
 //!
-//! The lifecycle cases used to run against `surface:/fb0`. They can't any
-//! more: since Phase 2 of plans/userspace-compositor.md the in-kernel
-//! compositor claims the display for as long as it runs, so no userspace
-//! process can acquire it. The block device exercises exactly the same
-//! `ClaimGuard` code paths, and the display's now-permanent claim is asserted
-//! directly below instead.
+//! The display lifecycle case used to be untestable: before Phase 5 of
+//! plans/userspace-compositor.md the in-kernel compositor held the display's
+//! claim permanently, so every open from a test process failed `Busy` and
+//! only that one outcome could be asserted (see the Phase 2 note in the
+//! plan). With the in-kernel compositor deleted, nothing holds the display
+//! at boot, so this test now exercises the full open/Busy/close/reopen cycle
+//! against `display:/pci/display/0` directly — the "carried forward as
+//! explicit, tracked debt against Phase 5" round trip the plan called for.
 
 #![no_std]
 #![no_main]
@@ -66,24 +67,32 @@ libpanda::main! {
     environment::log("claim_test: block open after child exit succeeded");
     file::close(dev3);
 
-    // Test 4: the display is claimed by the in-kernel compositor, so both the
-    // display scheme and the legacy raw framebuffer path are refused
+    // Test 4: the display claim's full lifecycle — open, second open Busy,
+    // close releases, reopen succeeds.
+    let Ok(display) = environment::open("display:/pci/display/0", 0, 0) else {
+        environment::log("FAIL: could not open display:/pci/display/0");
+        return 1;
+    };
     match environment::open("display:/pci/display/0", 0, 0) {
         Err(ErrorCode::Busy) => {
-            environment::log("claim_test: display open refused with Busy")
+            environment::log("claim_test: second display open refused with Busy")
         }
-        _ => {
-            environment::log("FAIL: display open was not refused with Busy");
+        Err(_) => {
+            environment::log("FAIL: second display open failed with wrong error");
+            return 1;
+        }
+        Ok(_) => {
+            environment::log("FAIL: second display open succeeded");
             return 1;
         }
     }
-    match environment::open("surface:/fb0", 0, 0) {
-        Err(ErrorCode::Busy) => environment::log("claim_test: fb0 open refused with Busy"),
-        _ => {
-            environment::log("FAIL: fb0 open was not refused with Busy");
-            return 1;
-        }
-    }
+    file::close(display);
+    let Ok(display2) = environment::open("display:/pci/display/0", 0, 0) else {
+        environment::log("FAIL: display reopen after close failed");
+        return 1;
+    };
+    environment::log("claim_test: display reopen after close succeeded");
+    file::close(display2);
 
     // Test 5: a mounted block device refuses raw opens
     if environment::mount("ext2", "/mnt").is_err() {

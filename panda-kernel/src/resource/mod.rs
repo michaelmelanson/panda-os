@@ -16,15 +16,16 @@ mod mailbox;
 mod process;
 pub(crate) mod scheme;
 mod spawn_handle;
-mod surface;
-mod window;
 
 pub use block::{BlockDevice, BlockError};
 pub use buffer::{Buffer, BufferError, BufferExt, SharedBuffer};
 pub use channel::{ChannelEndpoint, ChannelError};
 pub use char_output::{CharOutError, CharacterOutput};
 pub use directory::{DirEntry, Directory};
-pub use display::{DisplayDevice, DisplayError, device_address as display_device_address, notify_display_changed};
+pub use display::{
+    DisplayDevice, DisplayError, PixelFormat, Rect, SurfaceError, SurfaceInfo,
+    device_address as display_device_address, init_framebuffer, notify_display_changed,
+};
 pub use event_source::{Event, EventSource, KeyEvent};
 pub use mailbox::{Mailbox, MailboxRef};
 pub use process::Process as ProcessInterface;
@@ -35,11 +36,6 @@ pub use scheme::{
 };
 pub(crate) use scheme::unregister_scheme_if_present;
 pub use spawn_handle::SpawnHandle;
-pub use surface::{
-    FramebufferSurface, PixelFormat, Rect, Surface, SurfaceError, SurfaceInfo, alpha_blend,
-    get_framebuffer_surface, init_framebuffer,
-};
-pub use window::WindowResource;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -88,11 +84,6 @@ pub trait Resource: Send + Sync {
         None
     }
 
-    /// Get this resource as a Surface (for framebuffer, display).
-    fn as_surface(&self) -> Option<&dyn Surface> {
-        None
-    }
-
     /// Get this resource as an exclusively-owned display device (the
     /// `display:` scheme). Follows the same one-accessor-per-concrete-
     /// capability idiom as `as_scheme_proxy`: the display interface is not a
@@ -103,11 +94,6 @@ pub trait Resource: Send + Sync {
 
     /// Get a waker for blocking on this resource, if applicable.
     fn waker(&self) -> Option<Arc<IoWaker>> {
-        None
-    }
-
-    /// Get this resource as a Window (for compositor windows).
-    fn as_window(&self) -> Option<Arc<Spinlock<crate::compositor::Window>>> {
         None
     }
 
