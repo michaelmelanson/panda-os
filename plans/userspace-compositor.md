@@ -280,12 +280,60 @@ general-purpose M1 primitives.
   (out-of-bounds damage rects, oversized attach requests, commits with no
   attached buffer).
 
-### Phase 5: kernel deletion (atomic cutover)
+### Phase 5: kernel deletion (atomic cutover) — ✅ landed
 
-- Delete the table above in one commit, following the device-driver-model
-  precedent: no coexistence period.
-- Update `docs/` (new `docs/COMPOSITOR.md`; prune `docs/DEVICE_PATHS.md`
-  surface examples; update `docs/IPC.md` for handle transfer).
+`62fdd12`.
+
+- Deleted `compositor/mod.rs` (500 lines), `syscall/surface.rs` (660 lines),
+  `resource/window.rs` (77 lines), and `resource/surface.rs` (441 lines) —
+  1,678 lines total, close to the plan's ~1,500-line estimate (the estimate
+  undercounted `resource/window.rs` and `resource/surface.rs` slightly).
+  Also removed the `surface:` scheme registration, the `as_surface`/
+  `as_window` accessors on `Resource` and `Handle`, `OP_SURFACE_*` and
+  `HandleType::Surface` from `panda-abi`, and the now-fully-dead
+  `userspace/libpanda/src/sys/surface.rs` (81 lines).
+- **Deviation from the plan as written**: `resource/surface.rs` defined
+  `PixelFormat`, `Rect`, `SurfaceInfo`, and `SurfaceError` — used by both the
+  doomed `Surface` trait/`FramebufferSurface` and the permanent `display:`
+  resource (`resource/display.rs`). Rather than delete and redefine these,
+  they were relocated into `resource/display.rs` unchanged (same fields, same
+  names), along with the framebuffer-region tracking `init_framebuffer`/
+  `framebuffer_region` needed. `display.rs`'s public interface is otherwise
+  unchanged.
+- With the in-kernel compositor's permanent claim gone, the userspace
+  compositor (spawned by `init`) now actually claims `display:/pci/display/0`
+  and renders for real — confirmed from a `window_test` log: `compositor:
+  claimed the display` / `compositor: registered the compositor: scheme`
+  appear where `compositor: display is busy, running without output` used to.
+  `claim_test` and `display_test`, which had only been able to assert the
+  permanent-Busy state since Phase 2, were rewritten to exercise the real
+  claim/open/`Busy`/close/reopen round trip and the real
+  `OP_DISPLAY_INFO`/`MAP`/`FLUSH` round trip against the owner — the debt
+  Phase 2's note explicitly carried forward to this phase.
+- **Real pixel verification restored**: `window_test` now captures and
+  compares a real QEMU screenshot (`expected.png`) of the compositor's
+  rendered output (a red/green/blue/yellow four-quadrant window), using the
+  screenshot-comparison support already in `scripts/run-qemu-test.sh` /
+  `docs/TESTING.md`. Restoring this surfaced a latent bug in that script:
+  ImageMagick's `compare -metric AE` can report the pixel-difference count in
+  scientific notation (e.g. `5.2428e+09`), which bash's integer `[ -gt ]`
+  cannot parse; the comparison's stderr was redirected to `/dev/null`, so the
+  failed comparison was silently treated as "not greater than the threshold"
+  and every screenshot test passed unconditionally regardless of the actual
+  image, since before this phase no test had a real (non-placeholder) diff to
+  expose it. Fixed by comparing with `awk` instead. `alpha_test`,
+  `multi_window_test`, `partial_refresh_test`, and `window_move_test` are not
+  additionally converted to screenshot tests in this phase: their existing
+  protocol-level assertions plus `compositor`'s own `MemoryTarget` pixel unit
+  tests (`userspace/compositor/src/manager.rs`) already cover blending and
+  positioning, and one corrected, working screenshot test is enough to prove
+  the harness bug fix and the real-output claim; converting the rest is
+  tracked debt, not attempted here.
+- Added `docs/COMPOSITOR.md` (architecture, protocol, buffer lifecycle) and
+  pruned the retired `surface:`/permanent-compositor-claim references from
+  `docs/DEVICE_PATHS.md` and `docs/SYSCALLS.md`. `docs/IPC.md` needed no
+  changes: its `compositor:` mentions are generic scheme-provider-protocol
+  examples, not surface-scheme-specific.
 
 ### Handed off to roadmap M4
 
