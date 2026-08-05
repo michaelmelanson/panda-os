@@ -1,6 +1,6 @@
 # Resolve bash from PATH (NixOS has no /bin/bash); $(shell) itself uses /bin/sh which is universal.
 SHELL := $(shell command -v bash)
-.PHONY: build panda-kernel init run test kernel-test userspace-test unit-test check-extras ext2-image clean-ext2 release
+.PHONY: build panda-kernel init compositor run test kernel-test userspace-test unit-test check-extras ext2-image clean-ext2 release
 
 # Set PROFILE=release for optimized builds: make build PROFILE=release
 PROFILE ?= dev
@@ -49,7 +49,7 @@ KERNEL_TARGET := --target ./x86_64-panda-uefi.json
 USERSPACE_TARGET := --target ./x86_64-panda-userspace.json
 
 # Build targets
-build: panda-kernel init terminal hello ls cat
+build: panda-kernel init compositor terminal hello ls cat
 	mkdir -p build/run/efi/boot
 	mkdir -p build/run/initrd
 	cp target/x86_64-panda-uefi/$(PROFILE_DIR)/panda-kernel.efi build/run/efi/boot/bootx64.efi
@@ -66,6 +66,9 @@ panda-kernel:
 
 init:
 	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package init $(USERSPACE_TARGET)
+
+compositor:
+	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package compositor $(USERSPACE_TARGET)
 
 terminal:
 	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package terminal $(USERSPACE_TARGET)
@@ -90,7 +93,7 @@ run: build ext2-image
 # Create ext2 test disk image
 ext2-image: $(EXT2_IMAGE)
 
-$(EXT2_IMAGE): terminal hello ls cat
+$(EXT2_IMAGE): compositor terminal hello ls cat
 	@echo "Creating ext2 test image..."
 	@mkdir -p build
 	dd if=/dev/zero of=$(EXT2_IMAGE) bs=1M count=32 2>/dev/null
@@ -100,7 +103,7 @@ $(EXT2_IMAGE): terminal hello ls cat
 	@echo "Nested file content" > build/nested.txt
 	@dd if=/dev/urandom of=build/large.bin bs=1024 count=8 2>/dev/null
 	@echo "Deep file" > build/deep.txt
-	@debugfs -w $(EXT2_IMAGE) -f /dev/stdin <<< $$'mkdir subdir\nmkdir a\nmkdir a/b\nmkdir a/b/c\nwrite build/hello.txt hello.txt\nwrite build/nested.txt subdir/nested.txt\nwrite build/large.bin large.bin\nwrite build/deep.txt a/b/c/deep.txt\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/terminal terminal\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/hello hello\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/ls ls\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/cat cat' 2>/dev/null
+	@debugfs -w $(EXT2_IMAGE) -f /dev/stdin <<< $$'mkdir subdir\nmkdir a\nmkdir a/b\nmkdir a/b/c\nwrite build/hello.txt hello.txt\nwrite build/nested.txt subdir/nested.txt\nwrite build/large.bin large.bin\nwrite build/deep.txt a/b/c/deep.txt\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/compositor compositor\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/terminal terminal\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/hello hello\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/ls ls\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/cat cat' 2>/dev/null
 	@rm -f build/hello.txt build/nested.txt build/large.bin build/deep.txt
 	@echo "Ext2 image created: $(EXT2_IMAGE)"
 
@@ -123,6 +126,12 @@ unit-test:
 	@echo ""
 	@echo "Running ring-buffer unit tests..."
 	@cargo test -p ring-buffer
+	@echo ""
+	@echo "Running compositor-protocol unit tests..."
+	@cargo test -p compositor-protocol
+	@echo ""
+	@echo "Running compositor unit tests..."
+	@cargo test -p compositor --no-default-features
 	@echo ""
 	@echo "Running libpanda doctests..."
 	@cargo test -p libpanda --doc --no-default-features

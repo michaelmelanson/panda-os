@@ -173,6 +173,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "compositor"
+version = "0.1.0"
+dependencies = [
+ "compositor-protocol",
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
+name = "compositor-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "compositor_start_test"
+version = "0.1.0"
+dependencies = [
+ "compositor",
+ "libpanda",
+]
+
+[[package]]
 name = "const_fn"
 version = "0.4.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

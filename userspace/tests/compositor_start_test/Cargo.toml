@@ -1,0 +1,8 @@
+[package]
+name = "compositor_start_test"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+libpanda = { workspace = true }
+compositor = { path = "../../compositor" }

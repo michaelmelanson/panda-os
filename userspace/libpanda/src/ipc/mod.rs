@@ -9,7 +9,8 @@
 mod channel;
 
 pub use channel::{
-    Channel, create_pair, recv, recv_with_handle, send, send_with_handle, try_recv, try_send,
+    Channel, create_pair, recv, recv_with_handle, send, send_with_handle, try_recv,
+    try_recv_with_handle, try_send,
 };
 
 // Re-export mailbox types for convenience

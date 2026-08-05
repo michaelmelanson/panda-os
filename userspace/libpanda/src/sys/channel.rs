@@ -125,3 +125,20 @@ pub fn recv_msg_with_handle(handle: Handle, buf: &mut [u8], out_handle: &mut u64
         out_handle as *mut u64 as usize,
     )
 }
+
+/// Receive a message from a channel, reporting any attached handle
+/// (non-blocking).
+///
+/// Returns number of bytes received on success, or a negative error code
+/// (`WouldBlock` if the queue is empty).
+#[inline(always)]
+pub fn try_recv_msg_with_handle(handle: Handle, buf: &mut [u8], out_handle: &mut u64) -> isize {
+    send(
+        handle,
+        OP_CHANNEL_RECV,
+        buf.as_mut_ptr() as usize,
+        buf.len(),
+        CHANNEL_NONBLOCK as usize,
+        out_handle as *mut u64 as usize,
+    )
+}

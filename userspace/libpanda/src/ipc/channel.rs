@@ -158,6 +158,21 @@ impl Channel {
         recv_with_handle(self.handle.into(), buf)
     }
 
+    /// Try to receive a message, reporting any handle attached to it
+    /// (non-blocking).
+    ///
+    /// Returns `Ok(None)` when the queue is empty.
+    pub fn try_recv_with_handle(
+        &self,
+        buf: &mut [u8],
+    ) -> Result<Option<(usize, Option<Handle>)>> {
+        match try_recv_with_handle(self.handle.into(), buf) {
+            Ok(result) => Ok(Some(result)),
+            Err(ErrorCode::WouldBlock) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Consume the channel and return the underlying typed handle without closing it.
     pub fn into_handle(self) -> ChannelHandle {
         let handle = self.handle;
@@ -257,6 +272,22 @@ pub fn try_recv(handle: Handle, buf: &mut [u8]) -> Result<usize> {
 pub fn recv_with_handle(handle: Handle, buf: &mut [u8]) -> Result<(usize, Option<Handle>)> {
     let mut out_handle: u64 = 0;
     let result = sys::channel::recv_msg_with_handle(handle, buf, &mut out_handle);
+    if result < 0 {
+        Err(error::from_code(result))
+    } else {
+        let attached = (out_handle != 0).then(|| Handle::from(out_handle));
+        Ok((result as usize, attached))
+    }
+}
+
+/// Receive a message on a channel, reporting any attached handle
+/// (non-blocking).
+///
+/// Returns `Err(ErrorCode::WouldBlock)` if the queue is empty.
+#[inline(always)]
+pub fn try_recv_with_handle(handle: Handle, buf: &mut [u8]) -> Result<(usize, Option<Handle>)> {
+    let mut out_handle: u64 = 0;
+    let result = sys::channel::try_recv_msg_with_handle(handle, buf, &mut out_handle);
     if result < 0 {
         Err(error::from_code(result))
     } else {

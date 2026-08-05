@@ -1,0 +1,20 @@
+[package]
+name = "compositor"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["os"]
+# The parts that talk to the kernel (display resource, channels, logging).
+# Disable to unit-test the pure window-management logic on the host.
+os = ["dep:libpanda", "dep:panda-abi"]
+
+[dependencies]
+compositor-protocol = { path = "../compositor-protocol" }
+libpanda = { workspace = true, optional = true }
+panda-abi = { path = "../../panda-abi", optional = true }
+
+[[bin]]
+name = "compositor"
+path = "src/main.rs"
+required-features = ["os"]
