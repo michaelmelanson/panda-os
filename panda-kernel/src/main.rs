@@ -64,12 +64,17 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
     // but linked_list_allocator's extend() has strict requirements about
     // contiguity that make it fragile. The 2MB is a small price for stability.
 
-    // Mount initrd as /initrd
-    let tarfs = vfs::TarFs::from_tar_data(initrd_data).expect("Failed to parse initrd TAR archive");
-    vfs::mount("/initrd", alloc::sync::Arc::new(tarfs));
+    // Mount initrd as /initrd, and also register the `initrd:` scheme
+    // (used by the service manager to read driver binaries before any
+    // filesystem is mounted — see resource::InitrdScheme).
+    let tarfs = alloc::sync::Arc::new(
+        vfs::TarFs::from_tar_data(initrd_data).expect("Failed to parse initrd TAR archive"),
+    );
+    vfs::mount("/initrd", tarfs.clone());
 
     // Initialize resource scheme system
     resource::init_schemes();
+    resource::register_initrd_scheme(tarfs);
 
     info!("Panda OS");
 

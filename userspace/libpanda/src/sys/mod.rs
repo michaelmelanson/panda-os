@@ -9,6 +9,7 @@ use core::arch::asm;
 
 pub mod buffer;
 pub mod channel;
+pub mod device;
 pub mod display;
 pub mod env;
 pub mod file;

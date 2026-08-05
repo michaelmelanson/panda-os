@@ -133,6 +133,9 @@ unit-test:
 	@echo "Running ring-buffer unit tests..."
 	@cargo test -p ring-buffer
 	@echo ""
+	@echo "Running panda-elf unit tests..."
+	@cargo test -p panda-elf
+	@echo ""
 	@echo "Running compositor-protocol unit tests..."
 	@cargo test -p compositor-protocol
 	@echo ""

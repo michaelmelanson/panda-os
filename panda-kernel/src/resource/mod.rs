@@ -12,6 +12,7 @@ mod char_output;
 mod directory;
 mod display;
 mod event_source;
+pub(crate) mod initrd;
 mod mailbox;
 mod process;
 pub(crate) mod scheme;
@@ -27,12 +28,13 @@ pub use display::{
     device_address as display_device_address, init_framebuffer, notify_display_changed,
 };
 pub use event_source::{Event, EventSource, KeyEvent};
+pub use initrd::InitrdScheme;
 pub use mailbox::{Mailbox, MailboxRef};
 pub use process::Process as ProcessInterface;
 pub use scheme::{
     ConsoleScheme, DirectoryResource, FileScheme, KeyboardResource, KeyboardScheme, OpenError,
     SchemeHandler, SchemeProxyResource, UserSchemeProvider, connect, init as init_schemes, open,
-    readdir, register_scheme, register_user_scheme,
+    readdir, register_initrd_scheme, register_scheme, register_user_scheme,
 };
 pub(crate) use scheme::unregister_scheme_if_present;
 pub use spawn_handle::SpawnHandle;

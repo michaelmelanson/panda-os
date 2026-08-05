@@ -11,6 +11,7 @@ extern crate std;
 #[cfg(feature = "std")]
 extern crate alloc;
 
+pub mod device;
 pub mod encoding;
 pub mod path;
 pub mod scheme_protocol;
@@ -106,6 +107,11 @@ pub enum HandleType {
     /// Display handle: the exclusive owner of a display device, opened via
     /// the `display:` scheme.
     Display = 0x32,
+
+    // Device driver model types (0x40-0x4F)
+    /// Device event subscription handle, from `OP_DEVICE_SUBSCRIBE`. See
+    /// `panda_abi::device`.
+    DeviceSubscription = 0x40,
 }
 
 impl HandleType {
@@ -153,6 +159,7 @@ impl HandleType {
             0x20 => Some(Self::Mailbox),
             0x31 => Some(Self::Buffer),
             0x32 => Some(Self::Display),
+            0x40 => Some(Self::DeviceSubscription),
             _ => None,
         }
     }

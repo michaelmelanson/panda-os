@@ -5,3 +5,5 @@ edition.workspace = true
 
 [dependencies]
 libpanda = { workspace = true }
+panda-abi = { path = "../../panda-abi" }
+panda-elf = { path = "../../crates/panda-elf" }

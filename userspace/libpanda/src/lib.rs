@@ -34,6 +34,7 @@ pub mod ipc;
 
 // High-level modules (these use sys:: internally)
 pub mod buffer;
+pub mod device;
 pub mod env;
 pub mod environment;
 pub mod file;

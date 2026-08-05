@@ -1,15 +1,40 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
+mod driver_registry;
+
+use driver_registry::DriverRegistry;
 use libpanda::environment;
 
 libpanda::main! {
+    // Phase 5a (plans/device-driver-model.md): scan the initrd for driver
+    // binaries before any filesystem is mounted. `initrd:` is a kernel
+    // scheme backed directly by the in-memory ustar archive (see
+    // panda-kernel/src/resource/initrd.rs), so this works even though
+    // nothing has been mounted yet — resolving the chicken-and-egg problem
+    // where the block driver that would mount the root filesystem must
+    // itself be read from somewhere first.
+    //
+    // Note: subscribing to device events and spawning matched drivers
+    // (the rest of the service manager's role) is not wired up yet — this
+    // scan demonstrates the registry is buildable at the right point in
+    // boot, ahead of that follow-on work.
+    let mut drivers = DriverRegistry::new();
+    drivers.scan("initrd:/drivers");
+
     // Mount ext2 filesystem from the first block device
     if environment::mount("ext2", "/mnt").is_err() {
         environment::log("init: failed to mount ext2");
         return 1;
     }
     environment::log("init: mounted ext2 at /mnt");
+
+    // Phase 5b: scan the now-mounted root filesystem for additional driver
+    // binaries. `scan` adds to the registry without clearing what Phase 5a
+    // already found.
+    drivers.scan("file:/mnt/drivers");
 
     // Spawn the compositor. It claims the display and serves windows over
     // the protocol; until the in-kernel compositor is deleted (Phase 5 of

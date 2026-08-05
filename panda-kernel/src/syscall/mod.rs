@@ -8,6 +8,7 @@
 
 mod buffer;
 mod channel;
+mod device;
 mod directory;
 mod display;
 mod entry;
@@ -274,6 +275,14 @@ fn build_future(
 
         // Scheme operations
         OP_SCHEME_REGISTER => Ok(scheme::handle_register(ua, arg0, arg1)),
+
+        // Device operations (only SUBSCRIBE/CLAIM are implemented; the rest
+        // are reserved pending IOMMU support and fall through to
+        // NotSupported below, same as any unrecognised operation).
+        panda_abi::device::OP_DEVICE_SUBSCRIBE => {
+            Ok(self::device::handle_device_subscribe(ua, arg0, arg1, arg2, arg3))
+        }
+        panda_abi::device::OP_DEVICE_CLAIM => Ok(self::device::handle_device_claim(handle)),
 
         _ => {
             error!("Unknown operation: {:#x}", operation);

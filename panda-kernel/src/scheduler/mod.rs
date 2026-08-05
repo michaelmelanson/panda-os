@@ -614,6 +614,11 @@ pub unsafe fn exec_next_runnable() -> ! {
 /// Dropping a process may trigger channel close notifications that wake other
 /// processes, which requires the scheduler lock.
 pub fn remove_process(pid: ProcessId) {
+    // Release any devices this process claimed (posts EVENT_DEVICE_REMOVED
+    // to subscribers) before tearing down the process itself. See
+    // `device::DeviceRegistry::release_all_owned_by`.
+    crate::device::release_all_owned_by(pid);
+
     // with_scheduler_mut's internal guard is dropped before it returns, so the
     // process is guaranteed to be dropped outside the scheduler lock here.
     let process = with_scheduler_mut(|scheduler| scheduler.remove_process(pid));

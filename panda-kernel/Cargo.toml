@@ -77,6 +77,10 @@ name = "block"
 harness = false
 
 [[test]]
+name = "device"
+harness = false
+
+[[test]]
 name = "device_path"
 harness = false
 

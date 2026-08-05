@@ -1001,6 +1001,14 @@ impl Drop for SchemeProxyResource {
 // Initialization
 // =============================================================================
 
+/// Register the `initrd:` scheme, backed directly by the in-memory ustar
+/// archive rather than the general VFS mount table. Called separately from
+/// [`init`] because it needs the already-parsed [`vfs::TarFs`] the kernel
+/// built to mount `/initrd` — see `panda-kernel/src/main.rs`.
+pub fn register_initrd_scheme(fs: Arc<vfs::TarFs>) {
+    register_scheme("initrd", Arc::new(super::initrd::InitrdScheme::new(fs)));
+}
+
 /// Initialize the resource scheme system with default schemes
 pub fn init() {
     register_scheme("file", Arc::new(FileScheme));

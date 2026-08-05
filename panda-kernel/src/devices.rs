@@ -6,9 +6,15 @@ pub mod virtio_keyboard;
 
 use log::debug;
 
+use crate::device;
 use crate::pci::{self, device::PciDevice};
 
 pub fn init() {
+    // Register enumerated devices with the device driver model's registry
+    // (see plans/device-driver-model.md) alongside the existing
+    // kernel-resident driver dispatch below.
+    device::pci::register_enumerated_devices();
+
     pci::enumerate_pci_devices(|pci_device: PciDevice| {
         let address = pci_device.address();
         debug!(
