@@ -9,17 +9,7 @@ use crate::display::Framebuffer;
 use crate::manager::{Attachment, WindowManager};
 
 /// Frame interval in milliseconds (~60 fps), as in the kernel compositor.
-///
-/// Userspace has no timer syscall yet (`environment::time()` is a stub and
-/// there is no sleep), so the loop currently paces itself by yielding
-/// [`YIELDS_PER_FRAME`] times instead of sleeping for this long. The
-/// constant stays as the documented target — see Risk 4 of
-/// plans/userspace-compositor.md.
 pub const REFRESH_INTERVAL_MS: u64 = 16;
-
-/// How many times the frame loop yields between ticks, standing in for a
-/// `REFRESH_INTERVAL_MS` sleep until a timer syscall exists.
-const YIELDS_PER_FRAME: u32 = 64;
 
 /// A connected client and the windows it owns.
 struct Client {
@@ -185,9 +175,7 @@ impl Compositor {
                 *left -= 1;
             }
 
-            for _ in 0..YIELDS_PER_FRAME {
-                libpanda::process::yield_now();
-            }
+            libpanda::process::sleep(REFRESH_INTERVAL_MS);
         }
     }
 }

@@ -34,7 +34,10 @@ impl Future for SleepFuture {
             if let Some(task_id) = super::current_task_id() {
                 let mut scheduler = crate::scheduler::SCHEDULER.write();
                 if let Some(scheduler) = scheduler.as_mut() {
-                    scheduler.register_deadline(task_id, self.wakeup_time);
+                    scheduler.register_deadline(
+                        crate::scheduler::SchedulableEntity::KernelTask(task_id),
+                        self.wakeup_time,
+                    );
                 }
             }
             self.registered = true;

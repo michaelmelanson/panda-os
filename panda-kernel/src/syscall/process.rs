@@ -53,6 +53,40 @@ pub fn handle_wait(handle_id: u64) -> SyscallFuture {
     }))
 }
 
+/// Handle process sleep operation.
+///
+/// Blocks the calling process until `duration_ms` milliseconds have elapsed,
+/// then returns 0. The wakeup deadline is computed once, on the first poll,
+/// from the current uptime.
+pub fn handle_sleep(duration_ms: u64) -> SyscallFuture {
+    let mut wakeup_time = None;
+
+    Box::pin(poll_fn(move |_cx| {
+        let deadline = *wakeup_time.get_or_insert_with(|| crate::time::uptime_ms() + duration_ms);
+
+        if crate::time::uptime_ms() >= deadline {
+            return Poll::Ready(SyscallResult::ok(0));
+        }
+
+        // Re-check after registering: a timer tick could advance uptime past
+        // `deadline` between our check above and the registration below, in
+        // which case the deadline is already expired by the time it's
+        // registered. That's fine (`wake_deadline_tasks` wakes anything whose
+        // deadline is `<= now`, not just ones that expired "just now"), but we
+        // still re-check here to avoid needlessly blocking in that case,
+        // mirroring the check-register-recheck pattern used by `handle_wait`
+        // and `channel::handle_recv` to avoid lost wakeups.
+        let pid = scheduler::current_process_id();
+        scheduler::register_deadline(scheduler::SchedulableEntity::Process(pid), deadline);
+
+        if crate::time::uptime_ms() >= deadline {
+            return Poll::Ready(SyscallResult::ok(0));
+        }
+
+        Poll::Pending
+    }))
+}
+
 /// Handle process signal operation.
 pub fn handle_signal() -> SyscallFuture {
     Box::pin(core::future::ready(SyscallResult::err(

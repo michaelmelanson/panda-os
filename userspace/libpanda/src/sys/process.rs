@@ -48,6 +48,21 @@ pub fn signal(process_handle: Handle, sig: u32) -> isize {
     send(process_handle, OP_PROCESS_SIGNAL, sig as usize, 0, 0, 0)
 }
 
+/// Sleep for at least `duration_ms` milliseconds.
+///
+/// Returns 0 on success, or negative error code.
+#[inline(always)]
+pub fn sleep(duration_ms: u64) -> isize {
+    send(
+        Handle::SELF,
+        OP_PROCESS_SLEEP,
+        duration_ms as usize,
+        0,
+        0,
+        0,
+    )
+}
+
 /// Set the program break (for heap management).
 ///
 /// If `new_brk` is 0, returns current break without changing it.

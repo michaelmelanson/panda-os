@@ -219,6 +219,7 @@ fn build_future(
         OP_PROCESS_WAIT => Ok(process::handle_wait(handle)),
         OP_PROCESS_SIGNAL => Ok(process::handle_signal()),
         OP_PROCESS_BRK => Ok(process::handle_brk(arg0)),
+        OP_PROCESS_SLEEP => Ok(process::handle_sleep(arg0 as u64)),
 
         // Environment operations
         OP_ENVIRONMENT_OPEN => Ok(environment::handle_open(ua, arg0, arg1, arg2, arg3)),

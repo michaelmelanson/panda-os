@@ -1,0 +1,3 @@
+sleep_test: starting
+sleep_test: slept for at least the requested duration
+PASS

@@ -19,6 +19,7 @@ members = [
   "userspace/tests/spawn_child",
   "userspace/tests/yield_test",
   "userspace/tests/yield_child",
+  "userspace/tests/sleep_test",
   "userspace/tests/heap_test",
   "userspace/tests/print_test",
   "userspace/tests/resource_test",

@@ -274,8 +274,13 @@ pub fn handle_log(ua: &UserAccess, msg_ptr: usize, msg_len: usize) -> SyscallFut
 }
 
 /// Handle environment time operation.
+///
+/// Returns the system uptime in milliseconds, the same time source used by
+/// `OP_PROCESS_SLEEP` (`crate::time::uptime_ms()`), so userspace can measure
+/// elapsed time around a sleep.
 pub fn handle_time() -> SyscallFuture {
-    Box::pin(core::future::ready(SyscallResult::ok(0)))
+    let uptime = crate::time::uptime_ms() as isize;
+    Box::pin(core::future::ready(SyscallResult::ok(uptime)))
 }
 
 /// Map a VFS `FsError` to an `ErrorCode`.

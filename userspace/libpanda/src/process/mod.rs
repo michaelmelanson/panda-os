@@ -10,6 +10,7 @@
 //! - [`getpid()`] - Get the current process ID
 //! - [`wait()`] - Wait for a child process to exit
 //! - [`signal()`] - Send a signal to a process
+//! - [`sleep()`] - Sleep for a duration
 //!
 //! ## High-level types
 //!
@@ -54,4 +55,12 @@ pub fn wait(child_handle: Handle) -> i32 {
 #[inline(always)]
 pub fn signal(process_handle: Handle, sig: u32) -> isize {
     sys::process::signal(process_handle, sig)
+}
+
+/// Sleep for at least `duration_ms` milliseconds.
+///
+/// Returns 0 on success, or negative error code.
+#[inline(always)]
+pub fn sleep(duration_ms: u64) -> isize {
+    sys::process::sleep(duration_ms)
 }

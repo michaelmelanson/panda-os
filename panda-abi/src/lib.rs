@@ -241,6 +241,8 @@ pub enum Operation {
     ProcessSignal = 0x2_0004,
     /// Set program break: (new_brk) -> current_brk or error
     ProcessBrk = 0x2_0005,
+    /// Sleep for a duration: (duration_ms) -> 0 or error
+    ProcessSleep = 0x2_0006,
 
     // Environment operations (0x3_0000 - 0x3_FFFF)
     /// Open file: (path_ptr, path_len, flags) -> handle
@@ -361,6 +363,7 @@ impl Operation {
             0x2_0003 => Some(Self::ProcessWait),
             0x2_0004 => Some(Self::ProcessSignal),
             0x2_0005 => Some(Self::ProcessBrk),
+            0x2_0006 => Some(Self::ProcessSleep),
             0x3_0000 => Some(Self::EnvironmentOpen),
             0x3_0001 => Some(Self::EnvironmentSpawn),
             0x3_0002 => Some(Self::EnvironmentLog),
@@ -427,6 +430,8 @@ pub const OP_PROCESS_SIGNAL: u32 = Operation::ProcessSignal as u32;
 /// If new_brk is 0, returns current break without changing it.
 /// Pages are allocated on demand via page faults.
 pub const OP_PROCESS_BRK: u32 = Operation::ProcessBrk as u32;
+/// Sleep for a duration: (duration_ms) -> 0 or error
+pub const OP_PROCESS_SLEEP: u32 = Operation::ProcessSleep as u32;
 
 // Userspace buffer region constants
 /// Base address of the userspace buffer region.

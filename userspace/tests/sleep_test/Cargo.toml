@@ -1,0 +1,7 @@
+[package]
+name = "sleep_test"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+libpanda = { workspace = true }

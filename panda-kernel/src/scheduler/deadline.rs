@@ -1,22 +1,22 @@
-//! Deadline tracking for kernel tasks.
+//! Deadline tracking for schedulable entities (kernel tasks and processes).
 //!
-//! This module provides the ability to register deadlines for kernel tasks.
-//! When a deadline arrives, the associated task is automatically woken
-//! (moved to Runnable state).
+//! This module provides the ability to register deadlines for kernel tasks
+//! and userspace processes alike. When a deadline arrives, the associated
+//! entity is automatically woken (moved to Runnable state).
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use log::debug;
 
-use crate::executor;
+use super::SchedulableEntity;
 
-/// Deadline tracker for kernel tasks.
+/// Deadline tracker for schedulable entities.
 ///
 /// Uses a BTreeMap for efficient sorted access to deadlines.
-/// Multiple tasks can share the same deadline time.
+/// Multiple entities can share the same deadline time.
 pub struct DeadlineTracker {
-    /// Maps deadline_ms -> list of tasks to wake
-    deadlines: BTreeMap<u64, Vec<executor::TaskId>>,
+    /// Maps deadline_ms -> list of entities to wake
+    deadlines: BTreeMap<u64, Vec<SchedulableEntity>>,
 }
 
 impl Default for DeadlineTracker {
@@ -33,22 +33,22 @@ impl DeadlineTracker {
         }
     }
 
-    /// Register a deadline for a kernel task.
+    /// Register a deadline for a schedulable entity.
     ///
-    /// When the deadline arrives (checked via `wake_expired`), the task will
-    /// be added to the returned list for the caller to wake.
-    pub fn register(&mut self, task_id: executor::TaskId, deadline_ms: u64) {
+    /// When the deadline arrives (checked via `collect_expired`), the entity
+    /// will be added to the returned list for the caller to wake.
+    pub fn register(&mut self, entity: SchedulableEntity, deadline_ms: u64) {
         self.deadlines
             .entry(deadline_ms)
             .or_insert_with(Vec::new)
-            .push(task_id);
+            .push(entity);
     }
 
-    /// Collect tasks whose deadlines have expired.
+    /// Collect entities whose deadlines have expired.
     ///
-    /// Returns a list of task IDs that should be woken. The caller is
+    /// Returns a list of entities that should be woken. The caller is
     /// responsible for actually changing their state.
-    pub fn collect_expired(&mut self, now_ms: u64) -> Vec<executor::TaskId> {
+    pub fn collect_expired(&mut self, now_ms: u64) -> Vec<SchedulableEntity> {
         let mut tasks_to_wake = Vec::new();
         let mut expired_deadlines = Vec::new();
 

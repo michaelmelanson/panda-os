@@ -280,19 +280,33 @@ impl Scheduler {
         debug!("Removed kernel task {:?} from scheduler", task_id);
     }
 
-    /// Register a deadline for a kernel task.
-    /// When the deadline arrives, the task will be woken (moved to Runnable state).
-    pub fn register_deadline(&mut self, task_id: executor::TaskId, deadline_ms: u64) {
-        self.deadline_tracker.register(task_id, deadline_ms);
+    /// Register a deadline for a schedulable entity (kernel task or process).
+    /// When the deadline arrives, the entity will be woken (moved to Runnable state).
+    pub fn register_deadline(&mut self, entity: SchedulableEntity, deadline_ms: u64) {
+        self.deadline_tracker.register(entity, deadline_ms);
     }
 
-    /// Wake tasks whose deadlines have arrived.
-    /// Returns the number of tasks woken.
+    /// Wake entities whose deadlines have arrived.
+    /// Returns the number of entities woken.
     pub fn wake_deadline_tasks(&mut self, now_ms: u64) -> usize {
-        let tasks = self.deadline_tracker.collect_expired(now_ms);
-        let count = tasks.len();
-        for task_id in tasks {
-            self.change_kernel_task_state(task_id, ProcessState::Runnable);
+        let entities = self.deadline_tracker.collect_expired(now_ms);
+        let count = entities.len();
+        for entity in entities {
+            match entity {
+                SchedulableEntity::KernelTask(task_id) => {
+                    self.change_kernel_task_state(task_id, ProcessState::Runnable);
+                }
+                SchedulableEntity::Process(pid) => {
+                    // Only wake if still blocked: the process may have already
+                    // been woken by something else (or exited) since the
+                    // deadline was registered.
+                    if let Some(process) = self.processes.get(&pid) {
+                        if process.state() == ProcessState::Blocked {
+                            self.change_state(pid, ProcessState::Runnable);
+                        }
+                    }
+                }
+            }
         }
         count
     }
@@ -719,6 +733,12 @@ pub unsafe fn yield_current(
             ProcessState::Runnable,
         )
     }
+}
+
+/// Register a deadline for the given schedulable entity. When the deadline
+/// arrives (checked by the timer interrupt handler), the entity is woken.
+pub fn register_deadline(entity: SchedulableEntity, deadline_ms: u64) {
+    with_scheduler_mut(|scheduler| scheduler.register_deadline(entity, deadline_ms));
 }
 
 /// Wake a blocked process, making it runnable again.

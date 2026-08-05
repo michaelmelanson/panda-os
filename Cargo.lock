@@ -840,6 +840,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "sleep_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+]
+
+[[package]]
 name = "spawn_child"
 version = "0.1.0"
 dependencies = [
