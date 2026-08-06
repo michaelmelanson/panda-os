@@ -6,15 +6,27 @@
 //! `SubscriptionRegistry` and mints device tokens as it replays/posts
 //! events).
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use panda_abi::device::{BusType, EVENT_DEVICE_ADDED, EVENT_DEVICE_REMOVED};
+use panda_abi::device::{BusType, DeviceEvent, EVENT_DEVICE_ADDED, EVENT_DEVICE_REMOVED};
+use spinning_top::Spinlock;
 
 use crate::process::ProcessId;
 use crate::resource::MailboxRef;
 
 use super::{DeviceId, DeviceInfo};
+
+/// A subscription's pending, not-yet-drained `DeviceEvent` payloads.
+///
+/// The mailbox only carries an event *bit*
+/// (`EVENT_DEVICE_ADDED`/`EVENT_DEVICE_REMOVED`) — it cannot carry the
+/// bus/identity/claim-token payload a real `DeviceEvent` needs. This queue
+/// is where that payload actually lives; `OP_DEVICE_POLL_EVENT`
+/// (`syscall/device.rs`) drains it one event at a time, mirroring how
+/// `OP_MAILBOX_POLL` drains `MailboxEventResult`.
+pub type EventQueue = Arc<Spinlock<VecDeque<DeviceEvent>>>;
 
 /// A single active subscription: a process listening for devices matching
 /// `match_bytes` (the raw contents of a `*DeviceId` match struct) on
@@ -24,6 +36,7 @@ struct SubscriberEntry {
     match_bytes: Vec<u8>,
     owner_pid: ProcessId,
     mailbox: MailboxRef,
+    queue: EventQueue,
 }
 
 impl SubscriberEntry {
@@ -65,6 +78,7 @@ impl SubscriptionRegistry {
         match_bytes: Vec<u8>,
         owner_pid: ProcessId,
         mailbox: MailboxRef,
+        queue: EventQueue,
         devices: &BTreeMap<DeviceId, DeviceInfo>,
         mint_token: &mut impl FnMut(DeviceId, ProcessId) -> u64,
     ) -> Vec<(DeviceId, u64)> {
@@ -73,6 +87,7 @@ impl SubscriptionRegistry {
             match_bytes,
             owner_pid,
             mailbox,
+            queue,
         };
 
         let replayed = Self::replay_to_new_subscriber(&entry, devices, mint_token);
@@ -94,6 +109,12 @@ impl SubscriptionRegistry {
         for (&id, info) in devices {
             if entry.matches(info.bus_type(), info) {
                 let token = mint_token(id, entry.owner_pid);
+                entry.queue.lock().push_back(DeviceEvent {
+                    bus_type: info.bus_type(),
+                    _pad: [0; 4],
+                    identity: info.identity(),
+                    token,
+                });
                 entry.mailbox.post_event(EVENT_DEVICE_ADDED);
                 replayed.push((id, token));
             }
@@ -113,6 +134,12 @@ impl SubscriptionRegistry {
         for entry in &self.subscribers {
             if entry.matches(info.bus_type(), info) {
                 let token = mint_token(id, entry.owner_pid);
+                entry.queue.lock().push_back(DeviceEvent {
+                    bus_type: info.bus_type(),
+                    _pad: [0; 4],
+                    identity: info.identity(),
+                    token,
+                });
                 entry.mailbox.post_event(EVENT_DEVICE_ADDED);
                 posted.push((entry.owner_pid, token));
             }
@@ -127,6 +154,12 @@ impl SubscriptionRegistry {
     pub fn post_removed(&self, info: &DeviceInfo) {
         for entry in &self.subscribers {
             if entry.matches(info.bus_type(), info) {
+                entry.queue.lock().push_back(DeviceEvent {
+                    bus_type: info.bus_type(),
+                    _pad: [0; 4],
+                    identity: info.identity(),
+                    token: 0,
+                });
                 entry.mailbox.post_event(EVENT_DEVICE_REMOVED);
             }
         }

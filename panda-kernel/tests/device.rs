@@ -55,6 +55,10 @@ fn test_mailbox(tag: u64) -> (alloc::sync::Arc<Mailbox>, MailboxRef) {
     (mailbox, mailbox_ref)
 }
 
+fn test_queue() -> panda_kernel::device::subscription::EventQueue {
+    alloc::sync::Arc::new(spinning_top::Spinlock::new(alloc::collections::VecDeque::new()))
+}
+
 /// Register a device, subscribe after the fact, and confirm the replay
 /// immediately hands back a valid claim token for it.
 fn subscribe_replays_added_with_valid_token() {
@@ -63,7 +67,7 @@ fn subscribe_replays_added_with_valid_token() {
     let device_id = registry.register(pci_info(0x1AF4, 0x1052, 0));
 
     let (_mailbox, mailbox_ref) = test_mailbox(1);
-    let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref);
+    let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref, test_queue());
 
     assert_eq!(replayed.len(), 1);
     let (replayed_device, token) = replayed[0];
@@ -79,7 +83,7 @@ fn token_is_single_use() {
     registry.register(pci_info(0x1AF4, 0x1052, 0));
 
     let (_mailbox, mailbox_ref) = test_mailbox(2);
-    let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref);
+    let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref, test_queue());
     let (_device, token) = replayed[0];
 
     assert!(registry.claim(token, pid).is_ok());
@@ -100,6 +104,7 @@ fn claim_by_non_holder_fails() {
         wildcard_pci_match_bytes(),
         owner_pid,
         mailbox_ref,
+        test_queue(),
     );
     let (_device, token) = replayed[0];
 
@@ -124,6 +129,7 @@ fn wildcard_matching() {
         pci_match_bytes(0xFFFF, 0x1234, 0, 0),
         pid,
         mailbox_ref_a,
+        test_queue(),
     );
     assert_eq!(replayed_a.len(), 1);
 
@@ -134,12 +140,13 @@ fn wildcard_matching() {
         pci_match_bytes(0x8086, 0x1234, 0xFFFFFF, 0),
         pid,
         mailbox_ref_b,
+        test_queue(),
     );
     assert_eq!(replayed_b.len(), 1);
 
     // Fully wildcarded matches everything.
     let (_mailbox_c, mailbox_ref_c) = test_mailbox(6);
-    let replayed_c = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref_c);
+    let replayed_c = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref_c, test_queue());
     assert_eq!(replayed_c.len(), 1);
 
     // A non-matching device id is excluded.
@@ -149,6 +156,7 @@ fn wildcard_matching() {
         pci_match_bytes(0x8086, 0x9999, 0, 0),
         pid,
         mailbox_ref_d,
+        test_queue(),
     );
     assert_eq!(replayed_d.len(), 0);
 }
@@ -165,8 +173,8 @@ fn exclusive_claim_second_process_gets_already_claimed() {
     let (_mailbox_a, mailbox_ref_a) = test_mailbox(8);
     let (_mailbox_b, mailbox_ref_b) = test_mailbox(9);
 
-    let replayed_a = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid_a, mailbox_ref_a);
-    let replayed_b = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid_b, mailbox_ref_b);
+    let replayed_a = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid_a, mailbox_ref_a, test_queue());
+    let replayed_b = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid_b, mailbox_ref_b, test_queue());
 
     let (_device_a, token_a) = replayed_a[0];
     let (_device_b, token_b) = replayed_b[0];
@@ -188,7 +196,7 @@ fn process_exit_releases_claim() {
     let device_id = registry.register(pci_info(0x1AF4, 0x1052, 0));
 
     let (_mailbox, mailbox_ref) = test_mailbox(10);
-    let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref);
+    let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref, test_queue());
     let (_device, token) = replayed[0];
     registry.claim(token, pid).unwrap();
     assert_eq!(registry.owner(device_id), Some(pid));
@@ -198,7 +206,7 @@ fn process_exit_releases_claim() {
     assert_eq!(registry.owner(device_id), None);
 
     let (_mailbox2, mailbox_ref2) = test_mailbox(11);
-    let replayed2 = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref2);
+    let replayed2 = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref2, test_queue());
     let (_device2, token2) = replayed2[0];
     assert!(registry.claim(token2, pid).is_ok());
 }

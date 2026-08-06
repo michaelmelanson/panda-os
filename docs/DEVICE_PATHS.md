@@ -58,6 +58,18 @@ display:/pci/display/0      # The display, opened for exclusive ownership
 block:/pci/00:04.0          # By raw PCI address
 ```
 
+> **Note:** `keyboard:/pci/...` above describes the old kernel-resident
+> `KeyboardScheme`'s device-path resolution, which is retired now that the
+> virtio keyboard driver has moved to userspace (see
+> `plans/device-driver-model.md`, Phase 7). The userspace driver registers
+> `keyboard:` as an ordinary proxy scheme (`docs/DEVICE_DRIVERS.md`) and
+> currently accepts any path under it (it serves exactly one device), so
+> `keyboard:/pci/input/0`-style paths still open successfully, but the path
+> is no longer resolved against `device_path::resolve`. As more kernel
+> drivers move to userspace, their `*:` schemes will follow the same
+> pattern; the PCI class/index path scheme below stays as a resolver for the
+> schemes still kernel-resident until each is ported.
+
 ## Architecture
 
 ```

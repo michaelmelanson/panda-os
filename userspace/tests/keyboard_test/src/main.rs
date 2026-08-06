@@ -3,12 +3,37 @@
 
 use libpanda::environment;
 use libpanda::file;
+use libpanda::ipc::Channel;
 use libpanda::keyboard::{RawInputEvent, keycode_to_char};
 
 const EV_KEY: u16 = 0x01;
 
 libpanda::main! {
     environment::log("Keyboard test starting");
+
+    // This test plays the role of `init` (it's the initrd's `init`
+    // binary), so unlike the real boot path (where `init`'s driver
+    // registry spawns every driver it finds under `initrd:/drivers`) there
+    // is no service manager running to spawn the virtio-keyboard driver —
+    // do it directly, the same way other userspace-scheme-provider tests
+    // spawn their provider (see `userspace/tests/scheme_provider_test`).
+    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-keyboard") else {
+        environment::log("Could not spawn virtio-keyboard driver");
+        return 1;
+    };
+    // Wait for the driver to actually claim the device and register
+    // `keyboard:` before racing `environment::open` against its async
+    // startup (device claim, feature negotiation, virtqueue setup) — see
+    // the driver's "ready" signal in `userspace/drivers/virtio-keyboard`.
+    let Some(driver_channel) = Channel::from_handle_borrowed(driver_handle.into()) else {
+        environment::log("Driver handle is not a channel");
+        return 1;
+    };
+    let mut ready_msg = [0u8; 64];
+    if driver_channel.recv(&mut ready_msg).is_err() {
+        environment::log("Did not receive ready signal from virtio-keyboard driver");
+        return 1;
+    }
 
     // Open the keyboard device at PCI 00:03.0
     let keyboard = if let Ok(h) = environment::open("keyboard:/pci/00:03.0", 0, 0) {
@@ -55,6 +80,21 @@ libpanda::main! {
     }
 
     file::close(keyboard);
+
+    // The virtio-keyboard driver runs forever (it's a persistent driver
+    // process in the real boot path — see `userspace/drivers/virtio-keyboard`'s
+    // main loop), so unlike a normal child process it won't exit on its own.
+    // The kernel only shuts QEMU down via isa-debug-exit once *no* processes
+    // remain (`panda-kernel/src/scheduler/mod.rs`'s `exec_next_runnable`) —
+    // this test plays `init`, so it must ask the driver to exit before
+    // returning itself, or QEMU just runs until the harness's own timeout
+    // even though the test already passed. There's no process-kill syscall
+    // in this kernel (see `SpawnHandle::signal`'s doc comment for why one
+    // isn't safe to add casually), so this is a cooperative request the
+    // driver checks for on its own — see its main loop's handling of
+    // `SHUTDOWN_REQUEST`.
+    let _ = driver_channel.send(b"shutdown");
+
     environment::log("Keyboard test passed - received 10 key events");
     0
 }

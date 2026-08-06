@@ -189,4 +189,12 @@ impl SchemeProvider {
             Response::encode_err(scheme_protocol::MSG_CONNECT, request_id, error, buf)
         })
     }
+
+    /// Push an unsolicited notification for `resource_id`, waking any
+    /// mailbox a client attached to it (via `OP_ENVIRONMENT_OPEN`'s
+    /// `mailbox`/`event_mask` arguments) with `events`. Not a reply to any
+    /// request — see `panda_abi::scheme_protocol::MSG_NOTIFY`.
+    pub fn notify(&self, resource_id: u64, events: u32) -> Result<()> {
+        self.send_encoded(|buf| Response::encode_notify(resource_id, events, buf))
+    }
 }

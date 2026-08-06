@@ -19,14 +19,12 @@ use x86_64::instructions::port::Port;
 use crate::device_path;
 use crate::devices::claims::{ClaimGuard, ClaimOwner};
 use crate::devices::virtio_block;
-use crate::devices::virtio_keyboard::{self, VirtioKeyboard};
-use crate::process::waker::IoWaker;
 use crate::vfs;
 
 use super::Resource;
+use super::MailboxRef;
 use super::char_output::{CharOutError, CharacterOutput};
 use super::directory::{DirEntry, Directory};
-use super::event_source::{Event, EventSource, KeyEvent};
 
 /// Error returned when opening a resource via a scheme fails.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,85 +340,6 @@ impl CharacterOutput for SerialConsoleResource {
 }
 
 // =============================================================================
-// Keyboard Scheme - virtio keyboard access
-// =============================================================================
-
-/// Scheme handler for keyboard devices
-pub struct KeyboardScheme;
-
-#[async_trait]
-impl SchemeHandler for KeyboardScheme {
-    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError> {
-        // Resolve path like "/pci/input/0" or "/pci/00:03.0"
-        let address = device_path::resolve(path).ok_or(OpenError::NotFound)?;
-        let keyboard = virtio_keyboard::get_keyboard(&address).ok_or(OpenError::NotFound)?;
-        Ok(Box::new(KeyboardResource { keyboard }))
-    }
-
-    async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
-        device_path::list(path)
-    }
-}
-
-/// Handle to an open keyboard device
-pub struct KeyboardResource {
-    keyboard: Arc<Spinlock<VirtioKeyboard>>,
-}
-
-impl Resource for KeyboardResource {
-    fn handle_type(&self) -> panda_abi::HandleType {
-        // Keyboard is accessed like a file (read events)
-        panda_abi::HandleType::File
-    }
-
-    fn as_event_source(&self) -> Option<&dyn EventSource> {
-        Some(self)
-    }
-
-    fn waker(&self) -> Option<Arc<IoWaker>> {
-        Some(self.keyboard.lock().waker())
-    }
-
-    fn supported_events(&self) -> u32 {
-        panda_abi::EVENT_KEYBOARD_KEY
-    }
-
-    fn poll_events(&self) -> u32 {
-        // The ring buffer only exposes a has-pending check, not per-event
-        // peeking, so we report the coarse "at least one key event is
-        // buffered" state rather than inventing additional buffering here.
-        // Mailbox delivery of individual key events still happens eagerly
-        // via the wake/post mechanism in `VirtioKeyboard::poll`, independent
-        // of this method.
-        if self.keyboard.lock().has_events() {
-            panda_abi::EVENT_KEYBOARD_KEY
-        } else {
-            0
-        }
-    }
-
-    fn attach_mailbox(&self, mailbox_ref: super::MailboxRef) {
-        self.keyboard.lock().attach_mailbox(mailbox_ref);
-    }
-}
-
-impl EventSource for KeyboardResource {
-    fn poll(&self) -> Option<Event> {
-        let mut kb = self.keyboard.lock();
-        kb.pop_event().map(|event| {
-            Event::Key(KeyEvent {
-                code: event.code,
-                value: event.value,
-            })
-        })
-    }
-
-    fn waker(&self) -> Arc<IoWaker> {
-        self.keyboard.lock().waker()
-    }
-}
-
-// =============================================================================
 // Display Scheme - exclusive display ownership
 // =============================================================================
 
@@ -566,77 +485,6 @@ impl SchemeHandler for SchemeScheme {
 // over a channel (M2.2).
 // =============================================================================
 
-/// A minimal async mutual-exclusion lock built on the same "poll, if busy
-/// register waiter and return Pending" idiom the rest of the kernel uses for
-/// process blocking (see `syscall/channel.rs`'s handlers).
-///
-/// This backs the v1 "one request in flight per provider" concurrency
-/// scope described on [`ProviderState::round_trip`]: it is deliberately not
-/// a fair queue, just a spin-and-retry lock, which is fine given the
-/// kernel's single-core cooperative scheduling.
-///
-/// Unlike [`IoWaker`] (which tracks a single waiting process — fine for its
-/// original one-device/one-waiter use cases), this lock can have multiple
-/// concurrent waiters: several client processes can all be blocked trying to
-/// reach the same userspace scheme provider at once. So waiters are tracked
-/// in a `Vec` rather than a single slot, and release wakes *all* of them,
-/// letting them re-race the `compare_exchange` when re-polled. This is a
-/// "thundering herd" on release, but with this kernel's single-core
-/// cooperative scheduling the herd is bounded (by the number of genuine
-/// waiters) and harmless — and simpler than a real FIFO queue, which this
-/// lock doesn't need or attempt to be.
-struct AsyncLock {
-    busy: core::sync::atomic::AtomicBool,
-    waiters: Spinlock<Vec<crate::process::ProcessId>>,
-}
-
-impl AsyncLock {
-    fn new() -> Self {
-        Self {
-            busy: core::sync::atomic::AtomicBool::new(false),
-            waiters: Spinlock::new(Vec::new()),
-        }
-    }
-
-    async fn acquire(&self) -> AsyncLockGuard<'_> {
-        core::future::poll_fn(|_cx| {
-            use core::sync::atomic::Ordering;
-            if self
-                .busy
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                core::task::Poll::Ready(())
-            } else {
-                let pid = crate::scheduler::current_process_id();
-                let mut waiters = self.waiters.lock();
-                // Dedup: the same process re-polling without a fresh wakeup
-                // shouldn't accumulate duplicate entries in the wake-all set.
-                if !waiters.contains(&pid) {
-                    waiters.push(pid);
-                }
-                core::task::Poll::Pending
-            }
-        })
-        .await;
-        AsyncLockGuard { lock: self }
-    }
-}
-
-struct AsyncLockGuard<'a> {
-    lock: &'a AsyncLock,
-}
-
-impl Drop for AsyncLockGuard<'_> {
-    fn drop(&mut self) {
-        self.lock.busy.store(false, core::sync::atomic::Ordering::Release);
-        let waiters: Vec<_> = core::mem::take(&mut *self.lock.waiters.lock());
-        for pid in waiters {
-            crate::scheduler::wake_process(pid);
-        }
-    }
-}
-
 /// Errors from a provider round trip, distinct from the wire-level
 /// `panda_abi::ErrorCode` the provider itself reports for a given request:
 /// these describe the round trip failing to happen at all.
@@ -657,25 +505,78 @@ fn provider_error_to_error_code(err: ProviderError) -> panda_abi::ErrorCode {
     }
 }
 
+/// One in-flight `round_trip` call's mailbox: the background reader task
+/// (see [`ProviderState::spawn_reader`]) fills in `result` and wakes
+/// `waker` once it reads the matching response frame off the wire.
+struct PendingEntry {
+    result: Option<Result<(Vec<u8>, Option<Arc<dyn Resource>>), ProviderError>>,
+    waker: Option<core::task::Waker>,
+}
+
 /// Shared state for one registered userspace scheme provider.
+///
+/// Request/response correlation and unsolicited event delivery
+/// (`Response::Notify` — see `panda_abi::scheme_protocol::MSG_NOTIFY`) both
+/// need *something* continuously draining `kernel_endpoint`, independent of
+/// whether any client currently has a round trip in flight — otherwise a
+/// `Notify` sent while no client is blocked in `round_trip` (e.g. a client
+/// that already opened a resource and is now just waiting on its mailbox
+/// for `EVENT_KEYBOARD_KEY`-style notifications, per
+/// `mailbox_keyboard_test`) would sit unread forever. `spawn_reader` is
+/// that something: one persistent kernel background task
+/// (`crate::executor::spawn`) per provider, spawned once in [`Self::new`],
+/// that owns every read off the channel for the provider's whole lifetime.
+/// `round_trip`/`round_trip_with_attachment` never read the channel
+/// themselves — they register a [`PendingEntry`] keyed by `request_id` and
+/// await it being filled in.
+///
+/// This also lifts the old v1 "single request in flight per provider"
+/// restriction: since responses are now correlated by `request_id` via
+/// `pending` rather than "whichever response happens to arrive next",
+/// concurrent round trips to the same provider are naturally multiplexed
+/// instead of queueing behind each other.
 struct ProviderState {
     /// The kernel's endpoint of the channel; the provider process holds the
     /// other endpoint and serves requests with the ordinary
     /// `OP_CHANNEL_SEND`/`OP_CHANNEL_RECV` syscalls it already has.
     kernel_endpoint: super::ChannelEndpoint,
-    /// Serializes request/response round trips to this provider (v1 scope:
-    /// single request in flight at a time — see `round_trip`).
-    lock: AsyncLock,
     next_request_id: core::sync::atomic::AtomicU64,
+    /// Round trips awaiting a response, keyed by `request_id`.
+    pending: Spinlock<BTreeMap<u64, PendingEntry>>,
+    /// Mailboxes to notify (`Response::Notify`) for a given `resource_id`,
+    /// registered via `Resource::attach_mailbox` on the `SchemeProxyResource`
+    /// the client got back from `Open`.
+    mailboxes: Spinlock<BTreeMap<u64, Vec<MailboxRef>>>,
+    /// Set once [`spawn_reader`](Self::spawn_reader)'s background task sees
+    /// the provider's channel disconnect, right before that task returns
+    /// (permanently — see its doc comment). Without this, a round trip
+    /// started *after* the reader task has already exited has nothing to
+    /// ever fail it: the task's own disconnect handling only wakes
+    /// round trips already in `pending` *at the moment it observes the
+    /// disconnect*, and once it returns, nothing will ever read the
+    /// channel, dispatch a response, or run that sweep again. Every new
+    /// `round_trip_with_attachment` call checks this flag itself so it
+    /// fails immediately instead of registering a pending entry no one is
+    /// left to resolve — found via `scheme_provider_test`'s
+    /// provider-already-exited case hanging instead of erroring cleanly.
+    disconnected: core::sync::atomic::AtomicBool,
 }
 
 impl ProviderState {
-    fn new(kernel_endpoint: super::ChannelEndpoint) -> Self {
-        Self {
+    /// Construct the shared state and immediately spawn its background
+    /// reader task (see the struct doc comment) — an `Arc` because the
+    /// spawned task needs its own strong reference independent of every
+    /// `SchemeProxyResource`/`UserSchemeProvider` that also holds one.
+    fn new(kernel_endpoint: super::ChannelEndpoint) -> Arc<Self> {
+        let state = Arc::new(Self {
             kernel_endpoint,
-            lock: AsyncLock::new(),
             next_request_id: core::sync::atomic::AtomicU64::new(1),
-        }
+            pending: Spinlock::new(BTreeMap::new()),
+            mailboxes: Spinlock::new(BTreeMap::new()),
+            disconnected: core::sync::atomic::AtomicBool::new(false),
+        });
+        Self::spawn_reader(state.clone());
+        state
     }
 
     fn next_request_id(&self) -> u64 {
@@ -683,24 +584,130 @@ impl ProviderState {
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Register `mailbox_ref` to receive `Response::Notify` events posted
+    /// for `resource_id`. See `SchemeProxyResource::attach_mailbox`.
+    fn attach_mailbox(&self, resource_id: u64, mailbox_ref: MailboxRef) {
+        self.mailboxes
+            .lock()
+            .entry(resource_id)
+            .or_default()
+            .push(mailbox_ref);
+    }
+
+    fn dispatch_notify(&self, resource_id: u64, events: u32) {
+        if let Some(refs) = self.mailboxes.lock().get(&resource_id) {
+            for mailbox_ref in refs {
+                mailbox_ref.post_event(events);
+            }
+        }
+    }
+
+    /// The persistent background task described on the struct doc comment.
+    /// Runs for the provider's whole lifetime (until its channel's peer
+    /// closes), reading one frame at a time and either routing it to the
+    /// `round_trip` it answers (by `request_id`) or, for an unsolicited
+    /// `Response::Notify` (`request_id == 0`), dispatching it to attached
+    /// mailboxes.
+    fn spawn_reader(state: Arc<Self>) {
+        crate::executor::spawn(async move {
+            loop {
+                let mut buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+                let outcome = core::future::poll_fn(|_cx| {
+                    let mut registered = false;
+                    loop {
+                        match state.kernel_endpoint.recv_with_attachment(&mut buf) {
+                            Ok((len, attachment)) => {
+                                return core::task::Poll::Ready(Some((len, attachment)));
+                            }
+                            Err(super::ChannelError::QueueEmpty) => {
+                                if registered {
+                                    return core::task::Poll::Pending;
+                                }
+                                // Register, then retry immediately: a frame
+                                // may arrive (and call `wake()`) between the
+                                // `recv` above and this registration, in
+                                // which case `wake()` would find no
+                                // registered waiter and this task would
+                                // never be woken to read it.
+                                let waker = state.kernel_endpoint.waker();
+                                if let Some(task_id) = crate::executor::current_task_id() {
+                                    waker.set_waiting_task(task_id);
+                                }
+                                registered = true;
+                            }
+                            // Peer closed, or a malformed length: either
+                            // way, nothing more will ever arrive on this
+                            // channel — stop reading.
+                            Err(_) => return core::task::Poll::Ready(None),
+                        }
+                    }
+                })
+                .await;
+
+                let Some((len, attachment)) = outcome else {
+                    // The provider disconnected. Fail every round trip
+                    // still waiting rather than leaving callers blocked
+                    // forever, set `disconnected` so every *future* round
+                    // trip fails immediately too (see that field's doc
+                    // comment), then stop: no more frames will ever arrive.
+                    let mut pending = state.pending.lock();
+                    for entry in pending.values_mut() {
+                        entry.result = Some(Err(ProviderError::Disconnected));
+                        if let Some(waker) = entry.waker.take() {
+                            waker.wake();
+                        }
+                    }
+                    drop(pending);
+                    state.disconnected.store(true, core::sync::atomic::Ordering::Release);
+                    return;
+                };
+                buf.truncate(len);
+
+                if buf.len() < 9 {
+                    // Malformed frame: not attributable to any pending
+                    // round trip, so there's nothing to do but drop it and
+                    // keep reading.
+                    continue;
+                }
+                let request_id = u64::from_le_bytes(buf[1..9].try_into().unwrap());
+
+                if request_id == 0 {
+                    // Unsolicited push (`Response::Notify`) — see
+                    // `panda_abi::scheme_protocol::MSG_NOTIFY`.
+                    if let Some(panda_abi::scheme_protocol::Response::Notify {
+                        resource_id,
+                        events,
+                    }) = panda_abi::scheme_protocol::Response::decode(&buf)
+                    {
+                        state.dispatch_notify(resource_id, events);
+                    }
+                    continue;
+                }
+
+                let mut pending = state.pending.lock();
+                if let Some(entry) = pending.get_mut(&request_id) {
+                    entry.result = Some(Ok((buf, attachment)));
+                    if let Some(waker) = entry.waker.take() {
+                        waker.wake();
+                    }
+                }
+                // Else: an orphaned response (e.g. a fire-and-forget
+                // `Close`'s ack — see `SchemeProxyResource::drop` — whose
+                // caller already stopped waiting). Nothing to deliver it to;
+                // drop it and keep reading.
+            }
+        });
+    }
+
     /// Send `request` and wait for the matching response.
     ///
-    /// **v1 concurrency scope**: this holds `self.lock` for the whole
-    /// send-then-receive round trip, so two callers hitting the same
-    /// provider concurrently queue behind each other here rather than being
-    /// multiplexed by `request_id`. Future work: a `request_id`-keyed
-    /// pending-response map plus a router task would let independent
-    /// requests to the same provider proceed concurrently; not implemented
-    /// here, deliberately, to keep this correct and easy to reason about.
-    ///
-    /// `request_id` is still threaded through the wire format even though
-    /// v1 doesn't need it for correlation *within a single round trip* — it
-    /// pays for itself in exactly the situation handled below: a
-    /// fire-and-forget `Close` (see `SchemeProxyResource`'s `Drop`) can
-    /// leave an orphaned response in the queue ahead of a later request's
-    /// real response. Any response whose `request_id` doesn't match this
-    /// call's own is silently discarded and the receive retried, rather
-    /// than being misdelivered to the wrong caller.
+    /// `request_id` is threaded through the wire format both to correlate
+    /// concurrent round trips (see the struct doc comment) and to pay for
+    /// itself in exactly the situation handled by [`spawn_reader`]'s
+    /// orphaned-response case: a fire-and-forget `Close` (see
+    /// `SchemeProxyResource`'s `Drop`) can leave an orphaned response with
+    /// no matching `pending` entry, which is silently dropped there instead
+    /// of being misdelivered to some later, unrelated caller.
     ///
     /// Delegates to [`round_trip_with_attachment`](Self::round_trip_with_attachment)
     /// and discards the attachment — every request kind except `Connect`
@@ -720,57 +727,57 @@ impl ProviderState {
         request_id: u64,
         request: &[u8],
     ) -> Result<(Vec<u8>, Option<Arc<dyn Resource>>), ProviderError> {
-        let _guard = self.lock.acquire().await;
-
-        self.kernel_endpoint
-            .send(request)
-            .map_err(|_| ProviderError::Disconnected)?;
-
-        loop {
-            let mut buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
-            let (len, attachment) = core::future::poll_fn(|_cx| {
-                let mut registered = false;
-                loop {
-                    match self.kernel_endpoint.recv_with_attachment(&mut buf) {
-                        Ok((len, attachment)) => {
-                            return core::task::Poll::Ready(Ok((len, attachment)));
-                        }
-                        Err(super::ChannelError::QueueEmpty) => {
-                            if registered {
-                                return core::task::Poll::Pending;
-                            }
-                            // Register, then retry immediately: the
-                            // provider's response may arrive (and call
-                            // `wake()`) between the `recv` above and this
-                            // registration, in which case `wake()` finds no
-                            // registered waiter and the response would
-                            // otherwise be missed, leaving this round trip
-                            // blocked forever.
-                            self.kernel_endpoint
-                                .waker()
-                                .set_waiting(crate::scheduler::current_process_id());
-                            registered = true;
-                        }
-                        Err(super::ChannelError::PeerClosed) => {
-                            return core::task::Poll::Ready(Err(ProviderError::Disconnected));
-                        }
-                        Err(_) => return core::task::Poll::Ready(Err(ProviderError::Protocol)),
-                    }
-                }
-            })
-            .await?;
-            buf.truncate(len);
-
-            if buf.len() < 9 {
-                return Err(ProviderError::Protocol);
-            }
-            let response_id = u64::from_le_bytes(buf[1..9].try_into().unwrap());
-            if response_id == request_id {
-                return Ok((buf, attachment));
-            }
-            // Orphaned response (see doc comment above) — keep waiting for
-            // the one that actually matches this call.
+        // Fast path: the reader task already saw the provider disconnect
+        // (and, per `disconnected`'s doc comment, has permanently stopped
+        // running, so nothing will ever resolve a pending entry for us) —
+        // fail immediately instead of registering one.
+        if self.disconnected.load(core::sync::atomic::Ordering::Acquire) {
+            return Err(ProviderError::Disconnected);
         }
+
+        self.pending.lock().insert(
+            request_id,
+            PendingEntry {
+                result: None,
+                waker: None,
+            },
+        );
+
+        if self.kernel_endpoint.send(request).is_err() {
+            self.pending.lock().remove(&request_id);
+            return Err(ProviderError::Disconnected);
+        }
+
+        core::future::poll_fn(|cx| {
+            let mut pending = self.pending.lock();
+            let Some(entry) = pending.get_mut(&request_id) else {
+                // Shouldn't happen (only this call removes its own entry,
+                // and only after taking its result) but fail safe rather
+                // than panic if it ever does.
+                return core::task::Poll::Ready(Err(ProviderError::Disconnected));
+            };
+            match entry.result.take() {
+                Some(result) => {
+                    pending.remove(&request_id);
+                    core::task::Poll::Ready(result)
+                }
+                None => {
+                    // Re-check disconnection here too: the reader task may
+                    // have set the flag and swept `pending` *between* our
+                    // insert above and this poll — if this call raced the
+                    // insert itself (our entry wasn't in `pending` yet when
+                    // the sweep ran), it never got woken at all and would
+                    // otherwise wait forever for a wake that already
+                    // happened.
+                    if self.disconnected.load(core::sync::atomic::Ordering::Acquire) {
+                        return core::task::Poll::Ready(Err(ProviderError::Disconnected));
+                    }
+                    entry.waker = Some(cx.waker().clone());
+                    core::task::Poll::Pending
+                }
+            }
+        })
+        .await
     }
 }
 
@@ -783,7 +790,7 @@ pub struct UserSchemeProvider {
 impl UserSchemeProvider {
     fn new(kernel_endpoint: super::ChannelEndpoint) -> Self {
         Self {
-            state: Arc::new(ProviderState::new(kernel_endpoint)),
+            state: ProviderState::new(kernel_endpoint),
         }
     }
 }
@@ -897,7 +904,22 @@ impl SchemeProxyResource {
     /// Read up to `len` bytes (capped by the caller to
     /// `panda_abi::scheme_protocol::MAX_TRANSFER_SIZE`, which is guaranteed
     /// to fit in one response frame).
-    pub async fn read(&self, len: usize) -> Result<Vec<u8>, panda_abi::ErrorCode> {
+    ///
+    /// `nonblocking` is forwarded to the provider as `Request::Read`'s
+    /// `nonblocking` field — see that field's doc comment. This method
+    /// itself still always awaits one full round trip either way; what
+    /// changes is whether the *provider* is allowed to defer its reply
+    /// until data shows up (blocking) or must answer immediately, even
+    /// with zero bytes, if none is buffered yet (non-blocking). Without
+    /// this, `OP_FILE_READ`'s `FILE_NONBLOCK` flag had no effect at all for
+    /// scheme-proxy resources — a provider that defers empty reads (the
+    /// natural way to give *blocking* reads real semantics over a
+    /// request/response protocol, e.g. `userspace/drivers/virtio-keyboard`)
+    /// made every read through it block, non-blocking or not, which hung
+    /// `mailbox_keyboard_test`'s non-blocking drain loop forever once it
+    /// caught up with the buffered events. See
+    /// `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
+    pub async fn read(&self, len: usize, nonblocking: bool) -> Result<Vec<u8>, panda_abi::ErrorCode> {
         use panda_abi::scheme_protocol::{Request, Response};
 
         let request_id = self.provider.next_request_id();
@@ -906,6 +928,7 @@ impl SchemeProxyResource {
             request_id,
             resource_id: self.resource_id,
             len: len as u32,
+            nonblocking,
         })
         .encode(&mut req_buf) else {
             return Err(panda_abi::ErrorCode::InvalidArgument);
@@ -965,6 +988,18 @@ impl Resource for SchemeProxyResource {
     fn as_scheme_proxy(&self) -> Option<&SchemeProxyResource> {
         Some(self)
     }
+
+    /// Registers `mailbox_ref` to receive `Response::Notify` pushes the
+    /// provider sends for this resource (see
+    /// `panda_abi::scheme_protocol::MSG_NOTIFY` and
+    /// `ProviderState::spawn_reader`) — e.g. the userspace virtio-keyboard
+    /// driver notifying `EVENT_KEYBOARD_KEY` when it buffers a new key
+    /// event, for a client that opened `keyboard:` with a mailbox attached
+    /// (`OP_ENVIRONMENT_OPEN`'s `mailbox`/`event_mask` args, as
+    /// `mailbox_keyboard_test` does).
+    fn attach_mailbox(&self, mailbox_ref: super::MailboxRef) {
+        self.provider.attach_mailbox(self.resource_id, mailbox_ref);
+    }
 }
 
 impl Drop for SchemeProxyResource {
@@ -1013,7 +1048,6 @@ pub fn register_initrd_scheme(fs: Arc<vfs::TarFs>) {
 pub fn init() {
     register_scheme("file", Arc::new(FileScheme));
     register_scheme("console", Arc::new(ConsoleScheme));
-    register_scheme("keyboard", Arc::new(KeyboardScheme));
     register_scheme("display", Arc::new(DisplayScheme));
     register_scheme("block", Arc::new(BlockScheme));
     register_scheme("scheme", Arc::new(SchemeScheme));

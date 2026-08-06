@@ -159,11 +159,15 @@ fn test_stack_variables_preserved() {
 fn test_state_preserved_blocking_read() {
     environment::log("TEST: state_preserved_blocking_read");
 
-    // Open the keyboard (this will be a blocking read)
-    let Ok(keyboard) = environment::open("keyboard:/pci/00:03.0", 0, 0) else {
-        environment::log("SKIP: keyboard not available");
-        return;
-    };
+    // This test used to open the keyboard here to exercise a real blocking
+    // read, but (per the comment below, predating this change) never
+    // actually used it for anything — the real read/state-preservation
+    // check always used a file instead. `keyboard:` is no longer a
+    // kernel-registered scheme (Phase 7 of
+    // plans/device-driver-model.md moved it to a userspace driver process
+    // that must be spawned and claim its device before `keyboard:` exists
+    // at all — see `userspace/tests/keyboard_test`), so there's nothing to
+    // open here any more, and this test doesn't need there to be.
 
     // Set up state before blocking
     let magic1: u64 = 0xAAAABBBBCCCCDDDD;
@@ -177,7 +181,6 @@ fn test_state_preserved_blocking_read() {
     // Open a file from initrd
     let Ok(f) = environment::open("file:/initrd/hello.txt", 0, 0) else {
         environment::log("SKIP: test file not available");
-        file::close(keyboard);
         return;
     };
 
@@ -201,7 +204,6 @@ fn test_state_preserved_blocking_read() {
     }
 
     file::close(f);
-    file::close(keyboard);
 
     environment::log("PASS: state_preserved_blocking_read");
 }

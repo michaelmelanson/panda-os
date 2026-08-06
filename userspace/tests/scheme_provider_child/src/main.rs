@@ -93,6 +93,7 @@ libpanda::main! {
                 request_id,
                 resource_id,
                 len,
+                ..
             })) => {
                 if resource_id == 1 {
                     let n = (len as usize).min(echo_len);

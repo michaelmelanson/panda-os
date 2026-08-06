@@ -1,25 +1,18 @@
 //! Userspace device driver model: ELF device-match tables, `MmioRegion`,
 //! and the `OP_DEVICE_*` syscall wrappers.
 //!
-//! See `plans/device-driver-model.md`. Of the six syscall wrappers below,
-//! only [`device_subscribe`] and [`device_claim`] round-trip to a working
-//! kernel handler (`panda-kernel/src/syscall/device.rs`). The other four —
-//! [`device_map_mmio`], [`dma_alloc`], [`dma_free`], and
-//! [`device_subscribe_irq`] — return `ErrorCode::NotSupported` without
-//! issuing a syscall: their kernel-side implementations require IOMMU
-//! support (a separate, later task), and there is no dispatch for their
-//! `OP_*` codes yet. Returning early here (rather than dispatching to a
-//! syscall that would just hit the kernel's default `NotSupported` arm)
-//! keeps the failure obvious and avoids a partially-wired code path that
-//! looks more complete than it is.
+//! See `plans/device-driver-model.md`. All seven syscall wrappers below
+//! round-trip to real kernel handlers (`panda-kernel/src/syscall/device.rs`)
+//! as of Phase 6.
 
 // `panda_abi::device::Handle` is just `u64`, distinct from (and not
 // re-exported over) `crate::Handle`, libpanda's typed handle wrapper.
 pub use panda_abi::device::{
-    AcpiDeviceId, AcpiPath, BusType, DeviceEvent, DeviceIdentity, EVENT_DEVICE_ADDED,
-    EVENT_DEVICE_IRQ, EVENT_DEVICE_REMOVED, IoPortAddress, IoPortDeviceId, OP_DEVICE_CLAIM,
-    OP_DEVICE_MAP_MMIO, OP_DEVICE_SUBSCRIBE, OP_DEVICE_SUBSCRIBE_IRQ, OP_DMA_ALLOC, OP_DMA_FREE,
-    PCI_MATCH_ANY, PciAddress, PciDeviceId, USB_MATCH_CLASS, USB_MATCH_PRODUCT,
+    AcpiDeviceId, AcpiPath, BusType, DeviceEvent, DeviceIdentity, DmaAllocOut,
+    EVENT_DEVICE_ADDED, EVENT_DEVICE_IRQ, EVENT_DEVICE_REMOVED, IoPortAddress, IoPortDeviceId,
+    MmioMapOut, OP_DEVICE_CLAIM, OP_DEVICE_MAP_MMIO, OP_DEVICE_PCI_CONFIG_READ,
+    OP_DEVICE_POLL_EVENT, OP_DEVICE_SUBSCRIBE, OP_DEVICE_SUBSCRIBE_IRQ, OP_DMA_ALLOC,
+    OP_DMA_FREE, PCI_MATCH_ANY, PciAddress, PciDeviceId, USB_MATCH_CLASS, USB_MATCH_PRODUCT,
     USB_MATCH_PROTOCOL, USB_MATCH_SUBCLASS, USB_MATCH_VENDOR, UsbAddress, UsbDeviceId,
 };
 
@@ -47,41 +40,78 @@ pub fn device_claim(token: Handle) -> Result<Handle> {
     error::from_syscall_handle(sys::device::claim(token))
 }
 
-/// Map a claimed device's MMIO BAR into the caller's address space.
+/// Drain one pending [`DeviceEvent`] off `subscription`'s queue.
 ///
-/// **Not implemented**: requires IOMMU-aware page table setup (Phase 6 of
-/// the device driver model plan). Always returns `NotSupported`.
+/// Returns `Ok(Some(event))` if one was pending, `Ok(None)` if the queue is
+/// empty. The mailbox events `device_subscribe` attaches only carry an
+/// event bit (`EVENT_DEVICE_ADDED`/`EVENT_DEVICE_REMOVED`) — this is how a
+/// subscriber reads back the actual bus/identity/claim-token payload after
+/// waking up (e.g. via `Mailbox::wait`).
 #[inline(always)]
-pub fn device_map_mmio(_device: Handle, _bar_index: u32) -> Result<MmioRegion> {
-    Err(panda_abi::ErrorCode::NotSupported)
+pub fn device_poll_event(subscription: Handle) -> Result<Option<DeviceEvent>> {
+    let mut out = DeviceEvent {
+        bus_type: BusType::Pci,
+        _pad: [0; 4],
+        identity: DeviceIdentity {
+            pci: PciAddress {
+                segment: 0,
+                bus: 0,
+                device: 0,
+                function: 0,
+                _pad: [0; 3],
+            },
+        },
+        token: 0,
+    };
+    let ret = sys::device::poll_event(subscription, &mut out);
+    if ret < 0 {
+        return Err(error::from_code(ret));
+    }
+    Ok(if ret == 1 { Some(out) } else { None })
+}
+
+/// Map a claimed device's MMIO BAR into the caller's address space.
+#[inline(always)]
+pub fn device_map_mmio(device: Handle, bar_index: u32) -> Result<MmioRegion> {
+    let mut out = MmioMapOut::default();
+    error::from_syscall(sys::device::map_mmio(device, bar_index, &mut out))?;
+    // Safety: the kernel just mapped `out.size` bytes of device MMIO at
+    // `out.virt_addr` into this process, and this is the only place a
+    // pointer into that mapping is ever constructed.
+    Ok(unsafe { MmioRegion::new(out.virt_addr as *mut u8, out.size as usize) })
 }
 
 /// Allocate IOMMU-mapped, physically contiguous DMA memory for a claimed
 /// device, returning `(virt_addr, iova)`.
-///
-/// **Not implemented**: requires IOMMU support (Phase 6). Always returns
-/// `NotSupported`.
 #[inline(always)]
-pub fn dma_alloc(_device: Handle, _size: usize) -> Result<(usize, u64)> {
-    Err(panda_abi::ErrorCode::NotSupported)
+pub fn dma_alloc(device: Handle, size: usize) -> Result<(usize, u64)> {
+    let mut out = DmaAllocOut { virt_addr: 0, iova: 0 };
+    error::from_syscall(sys::device::dma_alloc(device, size, &mut out))?;
+    Ok((out.virt_addr as usize, out.iova))
 }
 
 /// Free memory allocated by [`dma_alloc`].
-///
-/// **Not implemented**: requires IOMMU support (Phase 6). Always returns
-/// `NotSupported`.
 #[inline(always)]
-pub fn dma_free(_device: Handle, _virt_addr: usize, _size: usize) -> Result<()> {
-    Err(panda_abi::ErrorCode::NotSupported)
+pub fn dma_free(device: Handle, virt_addr: usize, size: usize) -> Result<()> {
+    error::from_syscall_unit(sys::device::dma_free(device, virt_addr, size))
 }
 
 /// Subscribe to IRQ events (`EVENT_DEVICE_IRQ`) for a claimed device.
-///
-/// **Not implemented**: requires IOMMU-aware IRQ routing setup (Phase 6).
-/// Always returns `NotSupported`.
 #[inline(always)]
-pub fn device_subscribe_irq(_device: Handle, _mailbox: Handle) -> Result<()> {
-    Err(panda_abi::ErrorCode::NotSupported)
+pub fn device_subscribe_irq(device: Handle, mailbox: Handle) -> Result<()> {
+    error::from_syscall_unit(sys::device::subscribe_irq(device, mailbox))
+}
+
+/// Read `width` (1, 2, or 4) bytes of raw PCI config space at `offset` from
+/// a claimed device. See `OP_DEVICE_PCI_CONFIG_READ`'s doc comment for why
+/// this exists (walking a virtio-pci capability list from userspace).
+#[inline(always)]
+pub fn device_pci_config_read(device: Handle, offset: u32, width: u32) -> Result<u32> {
+    let ret = sys::device::pci_config_read(device, offset, width);
+    if ret < 0 {
+        return Err(error::from_code(ret));
+    }
+    Ok(ret as u32)
 }
 
 /// A bounds-checked, volatile-only window onto a device's mapped MMIO

@@ -78,6 +78,30 @@ impl PciDevice {
     pub fn command(&self) -> u16 {
         self.read(0x04)
     }
+
+    /// Set the PCI command register's Memory Space Enable (bit 1) and Bus
+    /// Master Enable (bit 2) bits, leaving every other bit as-is.
+    ///
+    /// A device cannot issue *any* memory-write bus transaction without Bus
+    /// Master Enable set — that includes both DMA (writing descriptors into
+    /// a virtqueue's used ring, e.g.) and MSI/MSI-X interrupt messages
+    /// (which are themselves ordinary memory writes to `0xFEEx_xxxx`, the
+    /// local APIC's address range). Firmware doesn't reliably leave this
+    /// set for every enumerated device, and unlike the kernel-only
+    /// `virtio_drivers` crate's `PciTransport` (which sets this internally
+    /// as part of transport setup), nothing else in the userspace device
+    /// driver model did before this — see
+    /// `plans/device-driver-model.md`'s Phase 7 landed-deviations note for
+    /// how this was found (a virtio-keyboard driver that mapped BARs,
+    /// negotiated features, and set up a virtqueue correctly, but never
+    /// received an interrupt and never saw the device touch memory, because
+    /// the device was never actually permitted to master the bus).
+    pub fn enable_bus_mastering(&self) {
+        let command = self.command();
+        unsafe {
+            self.write(0x04, command | 0x0006u16);
+        }
+    }
     pub fn status(&self) -> u16 {
         self.read(0x06)
     }

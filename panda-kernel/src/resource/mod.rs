@@ -9,6 +9,7 @@ mod block;
 mod buffer;
 mod channel;
 mod char_output;
+pub mod device;
 mod directory;
 mod display;
 mod event_source;
@@ -22,6 +23,7 @@ pub use block::{BlockDevice, BlockError};
 pub use buffer::{Buffer, BufferError, BufferExt, SharedBuffer};
 pub use channel::{ChannelEndpoint, ChannelError};
 pub use char_output::{CharOutError, CharacterOutput};
+pub use device::{DeviceResource, DeviceResourceError, SubscriptionResource};
 pub use directory::{DirEntry, Directory};
 pub use display::{
     DisplayDevice, DisplayError, PixelFormat, Rect, SurfaceError, SurfaceInfo,
@@ -30,11 +32,11 @@ pub use display::{
 pub use event_source::{Event, EventSource, KeyEvent};
 pub use initrd::InitrdScheme;
 pub use mailbox::{Mailbox, MailboxRef};
-pub use process::Process as ProcessInterface;
+pub use process::{Process as ProcessInterface, ProcessError};
 pub use scheme::{
-    ConsoleScheme, DirectoryResource, FileScheme, KeyboardResource, KeyboardScheme, OpenError,
-    SchemeHandler, SchemeProxyResource, UserSchemeProvider, connect, init as init_schemes, open,
-    readdir, register_initrd_scheme, register_scheme, register_user_scheme,
+    ConsoleScheme, DirectoryResource, FileScheme, OpenError, SchemeHandler, SchemeProxyResource,
+    UserSchemeProvider, connect, init as init_schemes, open, readdir, register_initrd_scheme,
+    register_scheme, register_user_scheme,
 };
 pub(crate) use scheme::unregister_scheme_if_present;
 pub use spawn_handle::SpawnHandle;
@@ -145,6 +147,19 @@ pub trait Resource: Send + Sync {
     /// `as_directory` rather than routing it through VFS or `Any`-style
     /// downcasting (neither of which this codebase uses).
     fn as_scheme_proxy(&self) -> Option<&scheme::SchemeProxyResource> {
+        None
+    }
+
+    /// Get this resource as an owned device handle (`OP_DEVICE_CLAIM`'s
+    /// result). Follows the same one-accessor-per-concrete-capability idiom
+    /// as `as_display`/`as_scheme_proxy`.
+    fn as_device(&self) -> Option<&DeviceResource> {
+        None
+    }
+
+    /// Get this resource as an `OP_DEVICE_SUBSCRIBE` subscription handle
+    /// (`OP_DEVICE_POLL_EVENT`'s target).
+    fn as_device_subscription(&self) -> Option<&SubscriptionResource> {
         None
     }
 }

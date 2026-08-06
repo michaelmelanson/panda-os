@@ -112,6 +112,10 @@ pub enum HandleType {
     /// Device event subscription handle, from `OP_DEVICE_SUBSCRIBE`. See
     /// `panda_abi::device`.
     DeviceSubscription = 0x40,
+    /// Owned device handle, from `OP_DEVICE_CLAIM`. The root capability for
+    /// `OP_DEVICE_MAP_MMIO`/`OP_DMA_ALLOC`/`OP_DMA_FREE`/
+    /// `OP_DEVICE_SUBSCRIBE_IRQ`. See `panda_abi::device`.
+    Device = 0x41,
 }
 
 impl HandleType {
@@ -160,6 +164,7 @@ impl HandleType {
             0x31 => Some(Self::Buffer),
             0x32 => Some(Self::Display),
             0x40 => Some(Self::DeviceSubscription),
+            0x41 => Some(Self::Device),
             _ => None,
         }
     }

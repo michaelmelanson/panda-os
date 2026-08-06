@@ -241,10 +241,8 @@ pub const EVENT_DEVICE_IRQ: u32 = 1 << 8;
 // =============================================================================
 // Operation codes
 //
-// Device operations (0xA_0000 - 0xA_FFFF). Defined here for ABI completeness;
-// only OP_DEVICE_SUBSCRIBE and OP_DEVICE_CLAIM have kernel handlers today
-// (see panda-kernel/src/syscall/device.rs). The rest are reserved pending the
-// IOMMU-dependent Phase 6 work.
+// Device operations (0xA_0000 - 0xA_FFFF). All six ops have kernel handlers
+// (see panda-kernel/src/syscall/device.rs) as of Phase 6.
 // =============================================================================
 
 /// Subscribe to device add/remove events for a bus type + match filter:
@@ -255,18 +253,78 @@ pub const OP_DEVICE_SUBSCRIBE: u32 = 0xA_0000;
 /// `(device_token: Handle) -> owned device handle`. Consumes the token.
 pub const OP_DEVICE_CLAIM: u32 = 0xA_0001;
 /// Map a claimed device's MMIO BAR into the caller's address space:
-/// `(device_handle, bar_index: u32) -> *const u8`. Not yet implemented
-/// (requires IOMMU-aware cleanup, Phase 6).
+/// `(device_handle, bar_index: u32, out: *mut MmioMapOut) -> ()`. `out` is
+/// filled with the mapping's `virt_addr` and `size` (the BAR's real size,
+/// read from PCI config space) — the same out-parameter convention
+/// `OP_DMA_ALLOC` uses for `DmaAllocOut`.
 pub const OP_DEVICE_MAP_MMIO: u32 = 0xA_0002;
 /// Allocate IOMMU-mapped DMA memory for a claimed device:
-/// `(device_handle, size: usize) -> (virt_addr, iova)`. Not yet implemented.
+/// `(device_handle, size: usize, out: *mut DmaAllocOut) -> ()`. `out` is
+/// filled with the mapping's `virt_addr` and `iova` (see
+/// [`DmaAllocOut`] — syscalls only return a single `isize`, so a
+/// multi-value result goes through an out-parameter, the same convention
+/// `OP_DISPLAY_INFO` uses for `SurfaceInfoOut`).
 pub const OP_DMA_ALLOC: u32 = 0xA_0003;
 /// Free memory allocated by `OP_DMA_ALLOC`:
-/// `(device_handle, virt_addr, size) -> ()`. Not yet implemented.
+/// `(device_handle, virt_addr, size) -> ()`.
 pub const OP_DMA_FREE: u32 = 0xA_0004;
-/// Subscribe to IRQ events for a claimed device:
-/// `(device_handle, mailbox_handle) -> ()`. Not yet implemented.
+/// Subscribe to IRQ events for a claimed device: `(device_handle,
+/// mailbox_handle) -> ()`. Posts `EVENT_DEVICE_IRQ` to the mailbox on every
+/// interrupt. See `panda-kernel/src/syscall/device.rs` for the current
+/// backend's real capabilities (a small fixed pool of MSI-X vectors, not
+/// general dynamic MSI-X).
 pub const OP_DEVICE_SUBSCRIBE_IRQ: u32 = 0xA_0005;
+/// Drain one pending `DeviceEvent` off a subscription's queue:
+/// `(subscription_handle, out: *mut DeviceEvent) -> bool` (as `0`/`1`).
+/// The mailbox events `OP_DEVICE_SUBSCRIBE` attaches only carry an event
+/// bit (`EVENT_DEVICE_ADDED`/`EVENT_DEVICE_REMOVED`); this is how a
+/// subscriber reads back the actual bus/identity/claim-token payload — see
+/// `panda-kernel/src/syscall/device.rs`'s module doc comment.
+pub const OP_DEVICE_POLL_EVENT: u32 = 0xA_0006;
+/// Read `width` bytes (1, 2, or 4) of raw PCI config space at `offset` from
+/// a claimed device: `(device_handle, offset: u32, width: u32) -> value`.
+///
+/// This is the primitive a userspace driver needs to walk a virtio-pci
+/// (modern, virtio 1.0) device's PCI capability list to find its common
+/// config / notify / ISR / device-specific config structures, since (unlike
+/// the deleted kernel-resident driver, which used the `virtio_drivers`
+/// crate's `PciTransport`) there is no in-kernel virtio-aware transport for
+/// userspace drivers — they must do the capability walk themselves. Added
+/// in Phase 7 when the userspace virtio-keyboard driver needed it; see
+/// `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
+///
+/// `width` must be 1, 2, or 4; `offset + width` must not exceed 256 bytes
+/// (the standard PCI config space size for functions without extended
+/// config space, which the kernel's PCI config accessor doesn't expose).
+/// Returns `InvalidArgument` for a bad width/offset or a device with no PCI
+/// address on record.
+pub const OP_DEVICE_PCI_CONFIG_READ: u32 = 0xA_0007;
+
+/// Out-parameter for `OP_DMA_ALLOC`: the userspace virtual address of the
+/// allocated buffer and the I/O virtual address (IOVA) the device should
+/// use in its descriptor rings (identical to `virt_addr`'s physical address
+/// under the passthrough IOMMU domain, but not necessarily so once a device
+/// has its own isolated domain — always use `iova`, never assume it equals
+/// the buffer's physical address).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DmaAllocOut {
+    pub virt_addr: u64,
+    pub iova: u64,
+}
+
+const _: () = assert!(core::mem::size_of::<DmaAllocOut>() == 16);
+
+/// Out-parameter for `OP_DEVICE_MAP_MMIO`: the userspace virtual address
+/// the BAR was mapped at, and the BAR's real size in bytes.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MmioMapOut {
+    pub virt_addr: u64,
+    pub size: u64,
+}
+
+const _: () = assert!(core::mem::size_of::<MmioMapOut>() == 16);
 
 #[cfg(test)]
 mod tests {

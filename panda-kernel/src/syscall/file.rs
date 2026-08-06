@@ -65,7 +65,7 @@ pub fn handle_read(
     // Scheme-provider proxy resources round-trip to a userspace process
     // instead of going through the VFS or the sync event-source path.
     if let Some(resource) = get_scheme_proxy(handle_id) {
-        return handle_read_scheme_proxy(buf_len, dst, resource);
+        return handle_read_scheme_proxy(buf_len, dst, resource, flags & panda_abi::FILE_NONBLOCK != 0);
     }
 
     // First, check if this is a VFS file (which needs async handling)
@@ -85,13 +85,14 @@ fn handle_read_scheme_proxy(
     buf_len: usize,
     dst: UserSlice,
     resource: Arc<dyn crate::resource::Resource>,
+    nonblocking: bool,
 ) -> SyscallFuture {
     let buf_len = buf_len.min(panda_abi::scheme_protocol::MAX_TRANSFER_SIZE);
     Box::pin(async move {
         // Safety of unwrap: `resource` was resolved by `get_scheme_proxy`,
         // which only returns handles where `as_scheme_proxy()` is `Some`.
         let proxy = resource.as_scheme_proxy().unwrap();
-        match proxy.read(buf_len).await {
+        match proxy.read(buf_len, nonblocking).await {
             Ok(data) => SyscallResult::write_back(data.len() as isize, data, dst),
             Err(code) => SyscallResult::err(code),
         }
@@ -540,10 +541,17 @@ pub fn handle_stat(handle_id: u64, stat_ptr: usize) -> SyscallFuture {
 }
 
 /// Handle file close operation.
+///
+/// Uses `helpers::remove_handle` rather than removing the handle inline so
+/// the removed resource's `Drop` runs after the scheduler lock is
+/// released, not before — see that function's doc comment for why (a
+/// self-deadlock found via `scheme_provider_test`'s child-exit case
+/// hanging instead of erroring cleanly).
 pub fn handle_close(handle_id: u64) -> SyscallFuture {
-    let removed =
-        scheduler::with_current_process(|proc| proc.handles_mut().remove(handle_id).is_some());
-    if removed {
+    let removed = super::helpers::remove_handle(handle_id);
+    let found = removed.is_some();
+    drop(removed);
+    if found {
         Box::pin(core::future::ready(SyscallResult::ok(0)))
     } else {
         Box::pin(core::future::ready(SyscallResult::err(

@@ -243,13 +243,20 @@ impl DeviceRegistry {
         match_bytes: Vec<u8>,
         owner_pid: ProcessId,
         mailbox: MailboxRef,
+        queue: subscription::EventQueue,
     ) -> Vec<(DeviceId, u64)> {
         let tokens = &mut self.tokens;
         let next_token = &mut self.next_token;
         let mut mint = |device, pid| Self::mint_token(tokens, next_token, device, pid);
-        let replayed =
-            self.subscriptions
-                .subscribe(bus_type, match_bytes, owner_pid, mailbox, &self.devices, &mut mint);
+        let replayed = self.subscriptions.subscribe(
+            bus_type,
+            match_bytes,
+            owner_pid,
+            mailbox,
+            queue,
+            &self.devices,
+            &mut mint,
+        );
         log::info!(
             "device: process {:?} subscribed to {:?} ({} existing match(es) replayed)",
             owner_pid,
@@ -290,8 +297,19 @@ impl DeviceRegistry {
 
     /// Release a device's claim (e.g. on device removal or owning-process
     /// exit), posting `EVENT_DEVICE_REMOVED` to all matching subscribers.
+    ///
+    /// Idempotent: a device with no recorded owner (already released) is a
+    /// no-op that does not re-post `EVENT_DEVICE_REMOVED`. This matters
+    /// because a claimed device is released from two independent call
+    /// sites that can both run for the same device on process exit —
+    /// `release_all_owned_by` (via `scheduler::remove_process`, walking
+    /// `owners` directly) and `DeviceResource::drop` (via the owning
+    /// process's handle table being torn down) — and only the first should
+    /// have any effect.
     pub fn release(&mut self, device_id: DeviceId) {
-        let owner = self.owners.remove(&device_id);
+        let Some(owner) = self.owners.remove(&device_id) else {
+            return;
+        };
         if let Some(info) = self.devices.get(&device_id) {
             self.subscriptions.post_removed(info);
         }
@@ -317,6 +335,13 @@ impl DeviceRegistry {
     /// The current owner of a device, if claimed.
     pub fn owner(&self, device_id: DeviceId) -> Option<ProcessId> {
         self.owners.get(&device_id).copied()
+    }
+
+    /// Look up a device's bus-specific info by ID. Used by the Phase 6
+    /// hardware-access syscalls (`handle_device_claim`/`handle_device_map_mmio`)
+    /// to recover the `PciAddress` behind an owned device handle.
+    pub fn info(&self, device_id: DeviceId) -> Option<DeviceInfo> {
+        self.devices.get(&device_id).copied()
     }
 }
 
@@ -377,6 +402,10 @@ mod tests {
         (mailbox, mailbox_ref)
     }
 
+    fn test_queue() -> subscription::EventQueue {
+        alloc::sync::Arc::new(spinning_top::Spinlock::new(alloc::collections::VecDeque::new()))
+    }
+
     #[test]
     fn subscribe_replays_added_with_valid_token() {
         let mut registry = DeviceRegistry::new();
@@ -384,7 +413,7 @@ mod tests {
         let device_id = registry.register(pci_info(0x1AF4, 0x1052));
 
         let (_mailbox, mailbox_ref) = test_mailbox();
-        let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref);
+        let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref, test_queue());
 
         assert_eq!(replayed.len(), 1);
         let (replayed_device, token) = replayed[0];
@@ -399,7 +428,7 @@ mod tests {
         registry.register(pci_info(0x1AF4, 0x1052));
 
         let (_mailbox, mailbox_ref) = test_mailbox();
-        let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref);
+        let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref, test_queue());
         let (_device, token) = replayed[0];
 
         assert!(registry.claim(token, pid).is_ok());
@@ -414,7 +443,7 @@ mod tests {
         registry.register(pci_info(0x1AF4, 0x1052));
 
         let (_mailbox, mailbox_ref) = test_mailbox();
-        let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), owner_pid, mailbox_ref);
+        let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), owner_pid, mailbox_ref, test_queue());
         let (_device, token) = replayed[0];
 
         assert_eq!(
@@ -432,7 +461,7 @@ mod tests {
         registry.register(pci_info(0x8086, 0x1234));
 
         let (_mailbox, mailbox_ref) = test_mailbox();
-        let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref);
+        let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref, test_queue());
         assert_eq!(replayed.len(), 1);
     }
 
@@ -446,8 +475,8 @@ mod tests {
         let (_mailbox_a, mailbox_ref_a) = test_mailbox();
         let (_mailbox_b, mailbox_ref_b) = test_mailbox();
 
-        let replayed_a = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid_a, mailbox_ref_a);
-        let replayed_b = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid_b, mailbox_ref_b);
+        let replayed_a = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid_a, mailbox_ref_a, test_queue());
+        let replayed_b = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid_b, mailbox_ref_b, test_queue());
 
         let (_device_a, token_a) = replayed_a[0];
         let (_device_b, token_b) = replayed_b[0];
@@ -467,7 +496,7 @@ mod tests {
         let device_id = registry.register(pci_info(0x1AF4, 0x1052));
 
         let (_mailbox, mailbox_ref) = test_mailbox();
-        let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref);
+        let replayed = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref, test_queue());
         let (_device, token) = replayed[0];
         registry.claim(token, pid).unwrap();
         assert_eq!(registry.owner(device_id), Some(pid));
@@ -477,7 +506,7 @@ mod tests {
 
         // Resources are fully freed: a fresh subscribe + claim succeeds again.
         let (_mailbox2, mailbox_ref2) = test_mailbox();
-        let replayed2 = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref2);
+        let replayed2 = registry.subscribe(BusType::Pci, wildcard_pci_match_bytes(), pid, mailbox_ref2, test_queue());
         let (_device2, token2) = replayed2[0];
         assert!(registry.claim(token2, pid).is_ok());
     }

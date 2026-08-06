@@ -98,6 +98,7 @@ libpanda::main! {
                 request_id,
                 resource_id,
                 len,
+                ..
             })) => {
                 let idx = resource_id.wrapping_sub(1) as usize;
                 if resource_id != 0 && idx < MAX_RESOURCES {

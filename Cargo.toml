@@ -13,6 +13,7 @@ members = [
   "userspace/libpanda",
   "userspace/compositor",
   "userspace/compositor-protocol",
+  "userspace/drivers/virtio-keyboard",
   "userspace/tests/vfs_test",
   "userspace/tests/preempt_test",
   "userspace/tests/preempt_child",

@@ -10,6 +10,7 @@
 
 use libpanda::environment;
 use libpanda::file;
+use libpanda::ipc::Channel;
 use libpanda::keyboard::{RawInputEvent, keycode_to_char};
 use libpanda::mailbox::{Event, InputEvent, Mailbox};
 use panda_abi::EVENT_KEYBOARD_KEY;
@@ -75,6 +76,24 @@ fn process_keyboard_events(keyboard: libpanda::Handle, events_read: &mut usize) 
 libpanda::main! {
     environment::log("Mailbox keyboard test starting");
 
+    // This test plays the role of `init` — spawn the virtio-keyboard
+    // driver directly and wait for its readiness signal before opening
+    // `keyboard:`. See `userspace/tests/keyboard_test` for the identical
+    // pattern and rationale.
+    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-keyboard") else {
+        environment::log("Could not spawn virtio-keyboard driver");
+        return 1;
+    };
+    let Some(driver_channel) = Channel::from_handle_borrowed(driver_handle.into()) else {
+        environment::log("Driver handle is not a channel");
+        return 1;
+    };
+    let mut ready_msg = [0u8; 64];
+    if driver_channel.recv(&mut ready_msg).is_err() {
+        environment::log("Did not receive ready signal from virtio-keyboard driver");
+        return 1;
+    }
+
     // Get the default mailbox
     let mailbox = Mailbox::default();
 
@@ -114,6 +133,13 @@ libpanda::main! {
     }
 
     file::close(keyboard);
+
+    // See `userspace/tests/keyboard_test`'s identical cleanup step: the
+    // virtio-keyboard driver runs forever, so this test (which plays
+    // `init`) must ask it to exit before returning, or QEMU never sees "no
+    // processes remaining" and just runs until the harness's timeout.
+    let _ = driver_channel.send(b"shutdown");
+
     environment::log("Mailbox keyboard test passed");
     0
 }

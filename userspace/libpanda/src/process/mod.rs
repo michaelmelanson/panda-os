@@ -18,7 +18,7 @@
 
 mod child;
 
-pub use child::{Child, ChildBuilder, ExitStatus};
+pub use child::{Child, ChildBuilder, ExitStatus, Signal};
 
 use crate::Handle;
 use crate::sys;

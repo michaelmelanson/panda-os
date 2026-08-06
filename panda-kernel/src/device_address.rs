@@ -39,6 +39,7 @@ impl fmt::Display for DeviceAddress {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
 
     #[test]
     fn test_parse_bdf() {

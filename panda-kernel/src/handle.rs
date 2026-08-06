@@ -14,7 +14,8 @@ use panda_abi::HandleType;
 
 use crate::process::waker::IoWaker;
 use crate::resource::{
-    Buffer, CharacterOutput, Directory, EventSource, ProcessInterface, Resource, VfsFile,
+    Buffer, CharacterOutput, Directory, DeviceResource, EventSource, ProcessInterface, Resource,
+    VfsFile,
 };
 
 /// Maximum number of open handles per process.
@@ -142,6 +143,16 @@ impl Handle {
     /// Get this handle's resource as a scheme provider proxy resource (M2.2).
     pub fn as_scheme_proxy(&self) -> Option<&crate::resource::SchemeProxyResource> {
         self.resource.as_scheme_proxy()
+    }
+
+    /// Get this handle's resource as an owned device handle.
+    pub fn as_device(&self) -> Option<&DeviceResource> {
+        self.resource.as_device()
+    }
+
+    /// Get this handle's resource as a device subscription.
+    pub fn as_device_subscription(&self) -> Option<&crate::resource::SubscriptionResource> {
+        self.resource.as_device_subscription()
     }
 
     /// Get supported events for this resource.

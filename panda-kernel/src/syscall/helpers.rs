@@ -100,3 +100,31 @@ pub(super) fn complete_mailbox_attach(proc: &Process, mailbox: &Mailbox, handle_
         handle.attach_mailbox(MailboxRef::new(mailbox, handle_id));
     }
 }
+
+/// Remove `handle_id` from the current process's handle table, returning
+/// the removed [`Handle`] (if any) to the caller *without* dropping it —
+/// **do not** discard the return value or immediately consume it in a way
+/// that drops it before your own function returns (e.g.
+/// `remove_handle(id).is_some()`); bind it, do your own bookkeeping with
+/// the `bool`/whatever you need, and let it drop only once execution has
+/// clearly left this function (a bare `let removed = remove_handle(id);`
+/// followed by later, unrelated code is enough — Rust drops it at the end
+/// of the enclosing scope, which by then is safely outside any lock).
+///
+/// This matters because dropping certain resources — most notably
+/// `ChannelEndpoint`, whose `Drop` impl calls the peer's `close()`, which
+/// calls `IoWaker::wake()` on whoever's blocked reading it — can itself
+/// need the scheduler lock (`scheduler::wake_process` for a blocked
+/// process, `crate::executor::wake_task` for a blocked kernel task, e.g.
+/// `resource::scheme::ProviderState`'s background reader). This function
+/// already returns *after* releasing the lock it used to reach the handle
+/// table (`scheduler::with_current_process`'s own guard), so a normal call
+/// site — `let removed = remove_handle(id); /* use it */` — naturally
+/// can't reintroduce the self-deadlock class documented on
+/// `panda-kernel/src/syscall/device.rs::handle_device_subscribe` and hit
+/// again (independently) in `handle_close`, before this helper existed to
+/// prevent a third copy of the same mistake. See
+/// `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
+pub(super) fn remove_handle(handle_id: u64) -> Option<Handle> {
+    scheduler::with_current_process(|proc| proc.handles_mut().remove(handle_id))
+}
