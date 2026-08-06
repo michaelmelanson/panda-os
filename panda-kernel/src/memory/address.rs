@@ -15,6 +15,24 @@ use super::recursive;
 /// Used to translate heap virtual addresses back to physical and vice versa.
 static HEAP_PHYS_BASE: AtomicU64 = AtomicU64::new(0);
 
+/// Size in bytes of the kernel heap region, set alongside `HEAP_PHYS_BASE`.
+static HEAP_PHYS_SIZE: AtomicU64 = AtomicU64::new(0);
+
+/// Record the heap's physical size (paired with `set_heap_phys_base`).
+pub fn set_heap_phys_size(size: u64) {
+    HEAP_PHYS_SIZE.store(size, Ordering::Release);
+}
+
+/// The physical address range `DmaBuffer`/`allocate_physical` draws frames
+/// from: `(base, size)`. Every physical address handed out by the frame
+/// allocator falls within this range.
+pub fn heap_phys_range() -> (u64, u64) {
+    (
+        HEAP_PHYS_BASE.load(Ordering::Acquire),
+        HEAP_PHYS_SIZE.load(Ordering::Acquire),
+    )
+}
+
 /// Convert a virtual address back to physical by walking the page tables.
 ///
 /// This works for any mapped address regardless of which region it's in.

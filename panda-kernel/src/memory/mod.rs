@@ -23,7 +23,7 @@ pub mod recursive;
 pub mod smap;
 mod write_protection;
 
-pub use address::{inspect_virtual_address, virtual_address_to_physical};
+pub use address::{heap_phys_range, inspect_virtual_address, virtual_address_to_physical};
 pub use address_space::{
     KERNEL_HEAP_BASE, KERNEL_IMAGE_BASE, MMIO_REGION_BASE, USER_ADDR_MAX,
     get_kernel_image_phys_base, identity_to_higher_half, jump_to_higher_half,
@@ -88,6 +88,7 @@ pub unsafe fn init_from_uefi(uefi_info: &crate::uefi::UefiInfo) {
 
         // Store heap physical base for address translation
         address::set_heap_phys_base(heap_phys_base as u64);
+        address::set_heap_phys_size(heap_size as u64);
 
         // Map heap to KERNEL_HEAP_BASE before initializing the allocator.
         // This way the heap uses higher-half addresses from the start.

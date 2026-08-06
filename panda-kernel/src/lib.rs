@@ -22,6 +22,7 @@ pub mod devices;
 pub mod executor;
 pub mod handle;
 pub mod interrupts;
+pub mod iommu;
 pub mod logging;
 pub mod memory;
 pub mod pci;
@@ -71,6 +72,7 @@ pub fn init_after_higher_half_jump(acpi2_rsdp: x86_64::PhysAddr) {
     interrupts::init();
     apic::init();
     pci::init();
+    iommu::init();
     devices::init();
 }
 

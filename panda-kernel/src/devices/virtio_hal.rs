@@ -36,14 +36,25 @@ unsafe impl Hal for VirtioHal {
         // Store the Frame so it can be reclaimed on dealloc
         DMA_FRAMES.lock().insert(phys_addr.as_u64(), frame);
 
-        (phys_addr.as_u64(), NonNull::new(ptr).unwrap())
+        // Route through the IOMMU manager to obtain the IOVA the device should
+        // use. In the current passthrough-only configuration this returns the
+        // physical address unchanged, so behaviour is identical to before the
+        // IOMMU was wired in.
+        let iova = crate::iommu::manager::dma_map(
+            phys_addr.as_u64(),
+            pages * 4096,
+            ::iommu::IommuFlags::READ_WRITE,
+        );
+
+        (iova, NonNull::new(ptr).unwrap())
     }
 
     unsafe fn dma_dealloc(
         paddr: virtio_drivers::PhysAddr,
         _vaddr: NonNull<u8>,
-        _pages: usize,
+        pages: usize,
     ) -> i32 {
+        crate::iommu::manager::dma_unmap(paddr, pages * 4096);
         // Remove and drop the Frame to deallocate
         DMA_FRAMES.lock().remove(&paddr);
         0
