@@ -30,8 +30,9 @@ fi
 # Base QEMU command
 QEMU_CMD=(
     qemu-system-x86_64 -nodefaults
-    -machine q35 -m 1G
+    -machine q35,kernel-irqchip=split -m 1G
     -cpu qemu64,+smap
+    -device intel-iommu
     -serial stdio
     -boot menu=off
     -device virtio-gpu

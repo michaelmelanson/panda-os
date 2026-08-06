@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/iommu",
   "crates/panda-elf",
   "panda-abi",
   "panda-kernel",

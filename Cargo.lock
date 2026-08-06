@@ -464,6 +464,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "iommu"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "spinning_top 0.3.0",
+]
+
+[[package]]
 name = "keyboard_test"
 version = "0.1.0"
 dependencies = [
@@ -589,6 +597,7 @@ dependencies = [
  "acpi",
  "async-trait",
  "goblin",
+ "iommu",
  "linked_list_allocator",
  "log",
  "panda-abi",
