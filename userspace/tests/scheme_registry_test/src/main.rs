@@ -59,7 +59,17 @@ libpanda::main! {
     }
 
     // Test 2: the well-known built-in schemes must all be present.
-    for expected in ["file", "console", "keyboard", "display", "block", "scheme"] {
+    //
+    // "keyboard" is deliberately *not* in this list any more: Phase 7 of
+    // plans/device-driver-model.md moved it out of
+    // `resource/scheme.rs::init`'s kernel-resident registrations into
+    // `userspace/drivers/virtio-keyboard`, a driver process that registers
+    // `keyboard:` dynamically once it claims its device — no different in
+    // kind from `scheme_provider_test`'s "echo" scheme. It's no longer
+    // registered at boot at all, so it doesn't belong in a test that
+    // "pins the exact set of schemes registered at boot" (see this file's
+    // module doc comment).
+    for expected in ["file", "console", "display", "block", "scheme"] {
         if !names.iter().any(|n| n.as_str() == expected) {
             environment::log(&format!(
                 "FAIL: scheme '{}' missing from scheme:/ listing",

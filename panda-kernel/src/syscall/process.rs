@@ -88,10 +88,28 @@ pub fn handle_sleep(duration_ms: u64) -> SyscallFuture {
 }
 
 /// Handle process signal operation.
-pub fn handle_signal() -> SyscallFuture {
-    Box::pin(core::future::ready(SyscallResult::err(
-        panda_abi::ErrorCode::NotSupported,
-    )))
+///
+/// Delivers `sig` (a raw `libpanda::process::Signal` value) to the process
+/// identified by `handle_id`. See `resource::SpawnHandle::signal` for what's
+/// actually implemented (`Signal::Kill` only) and why.
+pub fn handle_signal(handle_id: u64, sig: u32) -> SyscallFuture {
+    let resource = resolve_resource(handle_id, |h| h.as_process().is_some());
+    let result = match downcast_or_invalid(&resource, |r| r.as_process()) {
+        Some(process_iface) => match process_iface.signal(sig) {
+            Ok(()) => SyscallResult::ok(0),
+            Err(crate::resource::ProcessError::NotSupported) => {
+                SyscallResult::err(panda_abi::ErrorCode::NotSupported)
+            }
+            Err(crate::resource::ProcessError::NotFound) => {
+                SyscallResult::err(panda_abi::ErrorCode::InvalidHandle)
+            }
+            Err(crate::resource::ProcessError::PermissionDenied) => {
+                SyscallResult::err(panda_abi::ErrorCode::PermissionDenied)
+            }
+        },
+        None => SyscallResult::err(panda_abi::ErrorCode::InvalidHandle),
+    };
+    Box::pin(core::future::ready(result))
 }
 
 /// Handle process brk operation.

@@ -45,7 +45,15 @@ alpha_test_EXTRAS := compositor_test_child
 partial_refresh_test_EXTRAS := compositor_test_child
 window_move_test_EXTRAS := compositor_test_child
 compositor_protocol_test_EXTRAS := compositor_test_child
-export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS mailbox_overflow_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS fault_recovery_test_EXTRAS handle_transfer_test_EXTRAS claim_test_EXTRAS buffer_transfer_test_EXTRAS buffer_owner_test_EXTRAS scheme_provider_test_EXTRAS scheme_provider_concurrency_test_EXTRAS window_test_EXTRAS multi_window_test_EXTRAS alpha_test_EXTRAS partial_refresh_test_EXTRAS window_move_test_EXTRAS compositor_protocol_test_EXTRAS
+# keyboard_test/mailbox_keyboard_test act as their own `init` (no service
+# manager runs to spawn drivers from `initrd:/drivers` — see
+# `userspace/init/src/driver_registry.rs`), so they spawn the
+# virtio-keyboard driver directly by path, the same way `scheme_provider_test`
+# spawns its provider child. It needs to be present in the initrd for that
+# `environment::spawn("file:/initrd/virtio-keyboard")` call to resolve.
+keyboard_test_EXTRAS := virtio-keyboard
+mailbox_keyboard_test_EXTRAS := virtio-keyboard
+export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS mailbox_overflow_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS fault_recovery_test_EXTRAS handle_transfer_test_EXTRAS claim_test_EXTRAS buffer_transfer_test_EXTRAS buffer_owner_test_EXTRAS scheme_provider_test_EXTRAS scheme_provider_concurrency_test_EXTRAS window_test_EXTRAS multi_window_test_EXTRAS alpha_test_EXTRAS partial_refresh_test_EXTRAS window_move_test_EXTRAS compositor_protocol_test_EXTRAS keyboard_test_EXTRAS mailbox_keyboard_test_EXTRAS
 export PROFILE_DIR CARGO_PROFILE
 
 # Cargo commands for custom targets (require build-std for no_std targets)
@@ -55,7 +63,7 @@ KERNEL_TARGET := --target ./x86_64-panda-uefi.json
 USERSPACE_TARGET := --target ./x86_64-panda-userspace.json
 
 # Build targets
-build: panda-kernel init compositor terminal hello ls cat
+build: panda-kernel init compositor terminal hello ls cat virtio-keyboard
 	mkdir -p build/run/efi/boot
 	mkdir -p build/run/initrd
 	cp target/x86_64-panda-uefi/$(PROFILE_DIR)/panda-kernel.efi build/run/efi/boot/bootx64.efi
@@ -88,6 +96,9 @@ ls:
 cat:
 	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package cat $(USERSPACE_TARGET)
 
+virtio-keyboard:
+	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package virtio-keyboard $(USERSPACE_TARGET)
+
 run: build ext2-image
 	$(QEMU_COMMON) \
 		-drive format=raw,file=fat:rw:build/run \
@@ -99,7 +110,7 @@ run: build ext2-image
 # Create ext2 test disk image
 ext2-image: $(EXT2_IMAGE)
 
-$(EXT2_IMAGE): compositor terminal hello ls cat
+$(EXT2_IMAGE): compositor terminal hello ls cat virtio-keyboard
 	@echo "Creating ext2 test image..."
 	@mkdir -p build
 	dd if=/dev/zero of=$(EXT2_IMAGE) bs=1M count=32 2>/dev/null
@@ -109,7 +120,7 @@ $(EXT2_IMAGE): compositor terminal hello ls cat
 	@echo "Nested file content" > build/nested.txt
 	@dd if=/dev/urandom of=build/large.bin bs=1024 count=8 2>/dev/null
 	@echo "Deep file" > build/deep.txt
-	@debugfs -w $(EXT2_IMAGE) -f /dev/stdin <<< $$'mkdir subdir\nmkdir a\nmkdir a/b\nmkdir a/b/c\nwrite build/hello.txt hello.txt\nwrite build/nested.txt subdir/nested.txt\nwrite build/large.bin large.bin\nwrite build/deep.txt a/b/c/deep.txt\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/compositor compositor\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/terminal terminal\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/hello hello\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/ls ls\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/cat cat' 2>/dev/null
+	@debugfs -w $(EXT2_IMAGE) -f /dev/stdin <<< $$'mkdir subdir\nmkdir a\nmkdir a/b\nmkdir a/b/c\nmkdir drivers\nwrite build/hello.txt hello.txt\nwrite build/nested.txt subdir/nested.txt\nwrite build/large.bin large.bin\nwrite build/deep.txt a/b/c/deep.txt\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/compositor compositor\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/terminal terminal\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/hello hello\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/ls ls\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/cat cat\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/virtio-keyboard drivers/virtio-keyboard' 2>/dev/null
 	@rm -f build/hello.txt build/nested.txt build/large.bin build/deep.txt
 	@echo "Ext2 image created: $(EXT2_IMAGE)"
 

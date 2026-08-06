@@ -412,6 +412,169 @@ Delete the kernel virtio keyboard driver and replace it with a userspace driver 
 
 **Validation:** run `keyboard_test` and `mailbox_keyboard_test` userspace tests. Pass means the full stack — subscription, claim, MMIO, IRQ delivery, and service registration — works end-to-end.
 
+---
+
+### Phases 6–8: landed status and deviations (commit `<fill in after commit>`)
+
+**Phase 6 — ✅ landed.** All five `OP_DEVICE_*`/`OP_DMA_*` hardware-access
+syscalls have real kernel handlers, plus one syscall this plan didn't
+anticipate:
+
+- `iommu::manager::create_device_domain(PciAddress) -> Result<DomainId, _>`
+  (not the plan's assumed name/signature, which predates the landed IOMMU
+  crate's actual API) creates a genuine per-device domain via the `Iommu`
+  trait's `create_domain`/`assign_device` — this is real per-device
+  isolation, not a passthrough shim. `destroy_device_domain`,
+  `dma_map_for_device`/`dma_unmap_for_device` round out the API the plan
+  called `dma_map`/`dma_unmap` (renamed to make the per-device vs.
+  passthrough-global distinction explicit at the call site).
+- **Deviation — MMIO caching flags:** `OP_DEVICE_MAP_MMIO` maps the BAR via
+  the existing `map_external` helper without setting non-cacheable
+  (PAT/PCD) bits, because no PAT/PCD support exists anywhere in
+  `panda-kernel/src/memory/` yet. The "MMIO non-cacheable mapping" kernel
+  test this plan's Testing section describes was not written for the same
+  reason — there is no PAT plumbing yet to assert against. Tracked as a
+  follow-up in `panda-kernel/src/resource/device.rs`.
+- **Deviation — IRQ subscription is a fixed pool, not general dynamic
+  MSI-X:** `OP_DEVICE_SUBSCRIBE_IRQ` draws from a fixed pool of 8
+  pre-generated vector handlers (MSI-X entry 0 only per device), because
+  the interrupt layer only supports statically-known per-vector handlers.
+  This caps concurrent device IRQ subscriptions at 8 system-wide. See
+  `DeviceResource::subscribe_irq`'s doc comment.
+- **Addition — `OP_DEVICE_POLL_EVENT` (not in this plan's syscall table):**
+  discovered missing while wiring Phase 7. `OP_DEVICE_SUBSCRIBE`'s mailbox
+  attachment can only post an event *bit*
+  (`EVENT_DEVICE_ADDED`/`EVENT_DEVICE_REMOVED`); it has no way to carry the
+  matched `DeviceEvent` payload (bus type, identity, and — critically — the
+  claim token `OP_DEVICE_CLAIM` needs). `OP_DEVICE_POLL_EVENT
+  (subscription_handle, out: *mut DeviceEvent) -> bool` drains one event at
+  a time off a per-subscription queue (`resource::SubscriptionResource`),
+  the same `MailboxEventResult`-out-parameter convention `OP_MAILBOX_POLL`
+  uses. Without this syscall, no driver can ever get a real token to claim
+  with. See `panda-kernel/src/syscall/device.rs`'s module doc comment.
+- **Addition — `MmioMapOut` out-parameter:** `OP_DEVICE_MAP_MMIO` was
+  originally speced to return just a virtual address as the syscall's
+  `isize`. It also needs to return the BAR's real size (so userspace can
+  safely bounds-check `MmioRegion` accesses) — landed as a `DmaAllocOut`-style
+  out-parameter (`{virt_addr, size}`) instead.
+
+**Phase 7 — ✅ landed, `keyboard_test`/`mailbox_keyboard_test` pass.** The
+atomic cutover is complete: `panda-kernel/src/devices/virtio_keyboard.rs`
+and every reference to it are deleted (`grep -rn virtio_keyboard
+panda-kernel/` is empty), and `userspace/drivers/virtio-keyboard/` hand-rolls
+the full virtio-pci modern transport (capability walk, feature negotiation,
+split-virtqueue setup/kick/drain, MSI-X) against the Phase 6 syscalls, with
+no dependency on the kernel-only `vendor/virtio-drivers` crate. Getting from
+"builds and runs the syscall sequence" to "actually receives key events"
+took five separate, independently-diagnosed bugs — each confirmed with a
+concrete repro (mostly QEMU's own `-trace virtqueue_pop`/`virtio_pci_notify_write`/
+`msix_write_config` output, cross-checked against `vendor/virtio-drivers`'
+known-good sequence) before being fixed:
+
+1. **A kernel deadlock in `OP_DEVICE_SUBSCRIBE`.** `handle_device_subscribe`
+   called `scheduler::current_process_id()` (takes `SCHEDULER.read()`) from
+   inside `scheduler::with_current_process`'s closure (already holds
+   `SCHEDULER.write()`) — a self-deadlock on the non-reentrant
+   `RwSpinlock`, hit on *every* call with a non-zero mailbox. Never
+   exercised end-to-end before (`panda-kernel/tests/device.rs`'s unit tests
+   call `DeviceRegistry::subscribe` directly, bypassing the syscall
+   handler). Fixed by using `proc.id()` instead — see
+   `panda-kernel/src/syscall/device.rs::handle_device_subscribe`.
+2. **Wrong device claimed.** `vendor_id`/`device_id` alone don't identify a
+   virtio-input device: QEMU's virtio-mouse-pci and virtio-keyboard-pci
+   share the identical PCI ID `0x1AF4:0x1052`, distinguished only by PCI
+   class code (0x0900 = keyboard, 0x0902 = mouse). The driver's match
+   entry had `class: 0, class_mask: 0` (matches both), so it claimed
+   whichever device's `EVENT_DEVICE_ADDED` replayed first — the mouse.
+   Every virtqueue/capability/notify computation was correct but wired to
+   a device that structurally never receives keyboard input. Found by
+   noticing the claimed device's PCI address (00:02.0, via a kernel debug
+   log) didn't match `info pci`'s keyboard entry (00:03.0). Fixed by
+   adding `class: 0x0900, class_mask: 0xFFFF` to the match entry — see
+   `userspace/drivers/virtio-keyboard/src/main.rs`'s `main!` block.
+3. **`EVENT_DEVICE_IRQ` silently dropped.** `handle_device_subscribe_irq`
+   built a `MailboxRef` and handed it to `DeviceResource::subscribe_irq`
+   without ever calling `mailbox.attach(device_handle, EVENT_DEVICE_IRQ)`
+   first — `MailboxInner::post_event`'s `self.attached.get(&handle_id)`
+   check silently drops any event for an unattached handle. Confirmed via
+   a kernel debug log that the MSI-X interrupt handler (`dynamic_irq_common`)
+   *did* fire on every real keypress; the driver process just never saw it.
+   Fixed by attaching before constructing the `MailboxRef` — see
+   `panda-kernel/src/syscall/device.rs::handle_device_subscribe_irq`.
+4. **`OP_FILE_READ`'s `FILE_NONBLOCK` flag had no effect for scheme-proxy
+   resources.** `handle_read_scheme_proxy` always awaited a full
+   request/response round trip regardless of the caller's blocking
+   intent, and the wire protocol (`scheme_protocol::Request::Read`) had no
+   field to express "don't wait" to the provider. Any scheme provider that
+   defers an empty read to give *blocking* reads real semantics (this
+   driver's `pending_reads`, needed for `keyboard_test`'s `file::read`)
+   made `file::try_read` block too, hanging `mailbox_keyboard_test`'s
+   non-blocking drain loop forever once it caught up with the buffered
+   events. Fixed by adding a `nonblocking: bool` field to `Request::Read`,
+   threading `FILE_NONBLOCK` through `SchemeProxyResource::read`, and
+   having the driver reply immediately with zero bytes instead of
+   deferring when set.
+5. **The persistent driver process had no way to let the test's QEMU
+   instance shut down.** `keyboard_test`/`mailbox_keyboard_test` act as
+   their own `init` (no service manager runs in the userspace-test
+   harness) and spawn `virtio-keyboard` directly, but it — correctly, by
+   design — never exits. The kernel only shuts QEMU down via
+   isa-debug-exit once *no* processes remain
+   (`scheduler::exec_next_runnable`), so the test hung past its own
+   `PASSED` point. `OP_PROCESS_SIGNAL`/kill was considered and abandoned:
+   forcibly removing a process holding an active `DeviceResource` from
+   *outside* its own call stack caused a page fault in the caller (see
+   `resource::spawn_handle::SpawnHandle::signal`'s doc comment for why).
+   Fixed with a cooperative shutdown request instead: the test sends
+   `b"shutdown"` on the spawn channel, and the driver's main loop checks
+   for it each iteration and exits normally through the same
+   `OP_PROCESS_EXIT` path every other process uses.
+
+Fixing bug 4 (a persistent background reader task now owns every
+`ProviderState`'s channel — see the M2.2-era doc comment on that struct)
+surfaced two more pre-existing deadlock/hang classes, general to *any*
+userspace scheme provider, not specific to virtio-keyboard, caught by
+`scheme_provider_test`/`scheme_provider_concurrency_test`/the compositor
+and window tests going from PASSED to TIMEOUT:
+
+6. **Same deadlock class as bug 1, independently, in `OP_FILE_CLOSE`.**
+   `handle_close` dropped the removed handle's resource (e.g. a
+   `ChannelEndpoint`, whose `Drop` wakes the peer's blocked reader) while
+   still holding `with_current_process`'s scheduler lock. Once a *kernel
+   task* (the new background reader) could be a channel's blocked reader
+   too, this became reachable and hung `scheme_provider_test`'s
+   provider-process-exit case. Fixed generally, not just at this one call
+   site: added `syscall::helpers::remove_handle`, which returns the
+   removed handle to the caller *after* releasing the lock, so the
+   resource drops outside it. `handle_close` now uses it; see that
+   helper's doc comment for the full hazard writeup.
+7. **A round trip started after a provider's channel already disconnected
+   had nothing to ever fail it.** The background reader task's disconnect
+   handling only wakes round trips already registered *at the moment it
+   observes the disconnect*, then returns permanently — a later
+   `round_trip_with_attachment` call would register a pending entry and
+   wait forever for a reader that no longer exists. Fixed with a
+   `disconnected: AtomicBool` on `ProviderState`, set right before the
+   reader task's final return and checked by every round trip (both before
+   registering and inside its poll, to close the race between the two).
+
+`scheme_registry_test` and `state_test` needed small updates independent of
+the above: both hardcoded `keyboard:` as an always-available built-in
+scheme, true when it was kernel-resident and false now that it's an opt-in
+userspace driver — the same adjustment `keyboard_test`/
+`mailbox_keyboard_test` themselves needed (see Phase 7's file list above).
+`scripts/list-tests.sh`'s `check-extras` validator was extended to accept
+`_EXTRAS` crates living under `userspace/drivers/`, not just
+`userspace/tests/`, so `keyboard_test_EXTRAS`/`mailbox_keyboard_test_EXTRAS
+:= virtio-keyboard` validates. `block_test` (the plan's named
+DMA-regression check) passes with no regression. Full `nix develop -c make
+test` is clean, twice in a row.
+
+**Phase 8 — ✅ landed.** `docs/DEVICE_DRIVERS.md` documents the real,
+implemented API (including `OP_DEVICE_POLL_EVENT` and the `MmioMapOut`
+out-parameter above, and Phase 7's virtqueue gap). `docs/DEVICE_PATHS.md`
+and `CLAUDE.md` updated per the Phase 8 file list.
+
 ### Phase 8: Documentation
 
 Write `docs/DEVICE_DRIVERS.md` after Phase 7 so it documents the real implemented API.

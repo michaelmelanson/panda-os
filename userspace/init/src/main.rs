@@ -17,10 +17,6 @@ libpanda::main! {
     // where the block driver that would mount the root filesystem must
     // itself be read from somewhere first.
     //
-    // Note: subscribing to device events and spawning matched drivers
-    // (the rest of the service manager's role) is not wired up yet — this
-    // scan demonstrates the registry is buildable at the right point in
-    // boot, ahead of that follow-on work.
     let mut drivers = DriverRegistry::new();
     drivers.scan("initrd:/drivers");
 
@@ -35,6 +31,18 @@ libpanda::main! {
     // binaries. `scan` adds to the registry without clearing what Phase 5a
     // already found.
     drivers.scan("file:/mnt/drivers");
+
+    // Spawn every discovered driver — see `DriverRegistry::binary_paths`'s
+    // doc comment for why this is unconditional rather than filtered by a
+    // specific enumerated device's identity. Each driver subscribes to and
+    // claims only the device(s) its own `.panda_devices.<bus>` table
+    // matches, so spawning a driver whose device isn't present is harmless:
+    // it just sits waiting on `EVENT_DEVICE_ADDED` forever.
+    for path in drivers.binary_paths() {
+        if environment::spawn(path).is_err() {
+            environment::log("init: failed to spawn driver");
+        }
+    }
 
     // Spawn the compositor. It claims the display and serves windows over
     // the protocol; until the in-kernel compositor is deleted (Phase 5 of

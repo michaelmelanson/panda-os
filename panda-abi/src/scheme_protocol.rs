@@ -47,6 +47,17 @@ pub const MSG_CLOSE: u8 = 5;
 /// channel, rather than a file-like `resource_id` (see [`Request::Connect`]
 /// and the "Connect" section of the module docs above the request enum).
 pub const MSG_CONNECT: u8 = 6;
+/// Response-direction-only kind: an unsolicited push from the provider to
+/// the kernel telling it a resource has new events ready (e.g. buffered
+/// keyboard input), so the kernel can wake any mailbox a client attached to
+/// that resource with `OP_ENVIRONMENT_OPEN`'s `mailbox`/`event_mask`
+/// arguments. Not a reply to any request — always carries `request_id ==
+/// 0` (see [`Response::encode_notify`]/[`ProviderState`]'s background
+/// reader in `panda-kernel/src/resource/scheme.rs`, which routes frames
+/// with `request_id == 0` to attached mailboxes instead of a pending
+/// round-trip). Added in Phase 7 for the userspace virtio-keyboard driver;
+/// see `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
+pub const MSG_NOTIFY: u8 = 7;
 
 /// Response status byte: the operation succeeded.
 pub const STATUS_OK: u8 = 0;
@@ -120,7 +131,7 @@ fn u8_to_error(byte: u8) -> ErrorCode {
 pub enum Request<'a> {
     Open { request_id: u64, path: &'a str },
     Readdir { request_id: u64, path: &'a str },
-    Read { request_id: u64, resource_id: u64, len: u32 },
+    Read { request_id: u64, resource_id: u64, len: u32, nonblocking: bool },
     Write { request_id: u64, resource_id: u64, data: &'a [u8] },
     Close { request_id: u64, resource_id: u64 },
     Connect { request_id: u64, path: &'a str },
@@ -168,8 +179,9 @@ impl<'a> Request<'a> {
                 request_id,
                 resource_id,
                 len,
+                nonblocking,
             } => {
-                let total = HEADER_LEN + 8 + 4;
+                let total = HEADER_LEN + 8 + 4 + 1;
                 if total > buf.len() {
                     return None;
                 }
@@ -177,6 +189,7 @@ impl<'a> Request<'a> {
                 buf[1..9].copy_from_slice(&request_id.to_le_bytes());
                 buf[9..17].copy_from_slice(&resource_id.to_le_bytes());
                 buf[17..21].copy_from_slice(&len.to_le_bytes());
+                buf[21] = nonblocking as u8;
                 Some(total)
             }
             Request::Write {
@@ -241,10 +254,16 @@ impl<'a> Request<'a> {
                 }
                 let resource_id = u64::from_le_bytes(buf[9..17].try_into().ok()?);
                 let len = u32::from_le_bytes(buf[17..21].try_into().ok()?);
+                // `nonblocking` was added after this frame's initial 21-byte
+                // layout shipped — treat a truncated (pre-existing, 21-byte)
+                // frame as blocking (`false`) rather than rejecting it, so
+                // older encoders (if any linger) still decode.
+                let nonblocking = buf.get(21).copied().unwrap_or(0) != 0;
                 Some(Request::Read {
                     request_id,
                     resource_id,
                     len,
+                    nonblocking,
                 })
             }
             MSG_WRITE => {
@@ -305,6 +324,8 @@ pub enum Response<'a> {
     /// here beyond the header.
     ConnectOk { request_id: u64 },
     ConnectErr { request_id: u64, error: ErrorCode },
+    /// Unsolicited push — see [`MSG_NOTIFY`]. `request_id` is always `0`.
+    Notify { resource_id: u64, events: u32 },
 }
 
 impl<'a> Response<'a> {
@@ -322,6 +343,7 @@ impl<'a> Response<'a> {
             | Response::CloseErr { request_id, .. }
             | Response::ConnectOk { request_id }
             | Response::ConnectErr { request_id, .. } => request_id,
+            Response::Notify { .. } => 0,
         }
     }
 
@@ -434,6 +456,18 @@ impl<'a> Response<'a> {
         Some(total)
     }
 
+    /// Encode `Notify` — see [`MSG_NOTIFY`]. Always uses `request_id == 0`.
+    pub fn encode_notify(resource_id: u64, events: u32, buf: &mut [u8]) -> Option<usize> {
+        let total = RESP_HEADER_LEN + 8 + 4;
+        if total > buf.len() {
+            return None;
+        }
+        Self::header(MSG_NOTIFY, 0, STATUS_OK, buf)?;
+        buf[10..18].copy_from_slice(&resource_id.to_le_bytes());
+        buf[18..22].copy_from_slice(&events.to_le_bytes());
+        Some(total)
+    }
+
     /// Decode a response frame from `buf`. Returns `None` on truncated or
     /// malformed input.
     pub fn decode(buf: &'a [u8]) -> Option<Response<'a>> {
@@ -443,6 +477,11 @@ impl<'a> Response<'a> {
         let kind = buf[0];
         let request_id = u64::from_le_bytes(buf[1..9].try_into().ok()?);
         let status = buf[9];
+        if kind == MSG_NOTIFY {
+            let resource_id = u64::from_le_bytes(buf.get(10..18)?.try_into().ok()?);
+            let events = u32::from_le_bytes(buf.get(18..22)?.try_into().ok()?);
+            return Some(Response::Notify { resource_id, events });
+        }
         if status == STATUS_ERR {
             let error = u8_to_error(*buf.get(10)?);
             return Some(match kind {

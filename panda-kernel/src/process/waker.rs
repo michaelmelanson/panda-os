@@ -16,16 +16,28 @@ use spinning_top::Spinlock;
 use crate::process::ProcessId;
 use crate::scheduler;
 
-/// A waker that can unblock a process waiting for I/O.
+/// Who's currently registered as waiting on an [`IoWaker`].
+///
+/// Originally this was always a userspace process (a syscall handler
+/// blocked on device I/O). Phase 7 added persistent kernel background
+/// tasks (`crate::executor::spawn`) that also need to block on an
+/// `IoWaker` — e.g. `resource::scheme::ProviderState`'s reader task
+/// waiting on a `ChannelEndpoint`'s waker — so this now covers both.
+enum Waiter {
+    Process(ProcessId),
+    Task(crate::executor::TaskId),
+}
+
+/// A waker that can unblock a process or kernel task waiting for I/O.
 ///
 /// Devices create wakers and return them via `FsError::WouldBlock`.
 /// The syscall layer then blocks the process on the waker.
-/// When the device has data, it calls `wake()` to unblock the process.
+/// When the device has data, it calls `wake()` to unblock the waiter.
 pub struct IoWaker {
     /// Whether the waker has been signaled (data available)
     signaled: AtomicBool,
-    /// Process waiting on this waker (if any)
-    waiting: Spinlock<Option<ProcessId>>,
+    /// Process or kernel task waiting on this waker (if any)
+    waiting: Spinlock<Option<Waiter>>,
 }
 
 impl IoWaker {
@@ -38,11 +50,14 @@ impl IoWaker {
     }
 
     /// Called by device when data is available.
-    /// Wakes the waiting process if any.
+    /// Wakes the waiting process or kernel task, if any.
     pub fn wake(&self) {
         self.signaled.store(true, Ordering::Release);
-        if let Some(pid) = self.waiting.lock().take() {
-            scheduler::wake_process(pid);
+        if let Some(waiter) = self.waiting.lock().take() {
+            match waiter {
+                Waiter::Process(pid) => scheduler::wake_process(pid),
+                Waiter::Task(task_id) => crate::executor::wake_task(task_id),
+            }
         }
     }
 
@@ -59,7 +74,13 @@ impl IoWaker {
     /// Register a process as waiting on this waker.
     /// Called by scheduler when blocking.
     pub fn set_waiting(&self, pid: ProcessId) {
-        *self.waiting.lock() = Some(pid);
+        *self.waiting.lock() = Some(Waiter::Process(pid));
+    }
+
+    /// Register a kernel background task (`crate::executor::spawn`) as
+    /// waiting on this waker. See [`Waiter`]'s doc comment.
+    pub fn set_waiting_task(&self, task_id: crate::executor::TaskId) {
+        *self.waiting.lock() = Some(Waiter::Task(task_id));
     }
 }
 

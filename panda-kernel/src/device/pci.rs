@@ -32,3 +32,25 @@ pub fn register_enumerated_devices() {
         DEVICE_REGISTRY.lock().register(info);
     });
 }
+
+/// Find the live [`PciDevice`] (config-space accessor) for a `PciAddress`
+/// recorded in [`DeviceInfo::Pci`], for the Phase 6 hardware-access
+/// syscalls (`OP_DEVICE_MAP_MMIO`/`OP_DMA_ALLOC`/`OP_DEVICE_SUBSCRIBE_IRQ`),
+/// which need to read BARs / configure MSI-X, not just the bus-agnostic
+/// identity `DeviceRegistry` stores.
+///
+/// `enumerate_pci_devices` is the only way to recover a `PciDevice` from an
+/// address today (there is no bus/slot/function-indexed lookup), so this
+/// re-enumerates and matches — the same approach `register_enumerated_devices`
+/// itself uses.
+pub fn find_by_address(target: PciAddress) -> Option<PciDevice> {
+    let found = core::cell::RefCell::new(None);
+    pci::enumerate_pci_devices(|pci_device: PciDevice| {
+        let addr = pci_device.address();
+        if addr.bus == target.bus && addr.slot == target.device && addr.function == target.function
+        {
+            *found.borrow_mut() = Some(pci_device);
+        }
+    });
+    found.into_inner()
+}

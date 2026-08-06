@@ -217,7 +217,7 @@ fn build_future(
         // Process operations (yield and exit are handled above as diverging)
         OP_PROCESS_GET_PID => Ok(process::handle_get_pid()),
         OP_PROCESS_WAIT => Ok(process::handle_wait(handle)),
-        OP_PROCESS_SIGNAL => Ok(process::handle_signal()),
+        OP_PROCESS_SIGNAL => Ok(process::handle_signal(handle, arg0 as u32)),
         OP_PROCESS_BRK => Ok(process::handle_brk(arg0)),
         OP_PROCESS_SLEEP => Ok(process::handle_sleep(arg0 as u64)),
 
@@ -276,13 +276,36 @@ fn build_future(
         // Scheme operations
         OP_SCHEME_REGISTER => Ok(scheme::handle_register(ua, arg0, arg1)),
 
-        // Device operations (only SUBSCRIBE/CLAIM are implemented; the rest
-        // are reserved pending IOMMU support and fall through to
-        // NotSupported below, same as any unrecognised operation).
+        // Device operations.
         panda_abi::device::OP_DEVICE_SUBSCRIBE => {
             Ok(self::device::handle_device_subscribe(ua, arg0, arg1, arg2, arg3))
         }
         panda_abi::device::OP_DEVICE_CLAIM => Ok(self::device::handle_device_claim(handle)),
+        panda_abi::device::OP_DEVICE_MAP_MMIO => Ok(self::device::handle_device_map_mmio(
+            ua,
+            handle,
+            arg0,
+            user_ptr::UserPtr::new(arg1),
+        )),
+        panda_abi::device::OP_DMA_ALLOC => Ok(self::device::handle_dma_alloc(
+            ua,
+            handle,
+            arg0,
+            user_ptr::UserPtr::new(arg1),
+        )),
+        panda_abi::device::OP_DMA_FREE => {
+            Ok(self::device::handle_dma_free(handle, arg0 as u64, arg1))
+        }
+        panda_abi::device::OP_DEVICE_SUBSCRIBE_IRQ => Ok(self::device::handle_device_subscribe_irq(
+            handle,
+            arg0 as u64,
+        )),
+        panda_abi::device::OP_DEVICE_POLL_EVENT => {
+            Ok(self::device::handle_device_poll_event(ua, handle, arg0))
+        }
+        panda_abi::device::OP_DEVICE_PCI_CONFIG_READ => Ok(
+            self::device::handle_device_pci_config_read(handle, arg0, arg1),
+        ),
 
         _ => {
             error!("Unknown operation: {:#x}", operation);

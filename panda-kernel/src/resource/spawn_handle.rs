@@ -93,7 +93,22 @@ impl Process for SpawnHandle {
     }
 
     fn signal(&self, _signal: u32) -> Result<(), ProcessError> {
-        // TODO: Implement signal delivery
+        // Not implemented: an earlier attempt at this (forcibly calling
+        // `scheduler::remove_process` on the target from within another
+        // process's syscall context, to let a test that spawned a
+        // persistent driver — see `userspace/drivers/virtio-keyboard` —
+        // terminate it before exiting) caused a page fault in the *caller*
+        // immediately after the target was removed while it still held an
+        // active `DeviceResource` (MMIO mapped, DMA allocated, IRQ
+        // subscribed). Tearing down a running process's hardware claims
+        // synchronously from a different process's call stack isn't
+        // exercised or proven safe anywhere else in this kernel — every
+        // other process removal happens via `OP_PROCESS_EXIT`, which runs
+        // in the *target's own* context. Cooperative self-exit (the target
+        // process observing a request and exiting normally) is the safe
+        // alternative used instead — see the shutdown-request handling in
+        // `userspace/drivers/virtio-keyboard`'s main loop and
+        // `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
         Err(ProcessError::NotSupported)
     }
 

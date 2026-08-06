@@ -81,8 +81,16 @@ check_extras() {
         var="${var%% }"
         values="${extras_line#*:=}"
         for name in $values; do
-            if [ ! -d "$PROJECT_DIR/userspace/tests/$name" ]; then
-                echo "error: $var references nonexistent crate '$name' (no userspace/tests/$name)" >&2
+            # Extras are usually test-helper crates under userspace/tests/
+            # (spawn_child, scheme_provider_child, etc.), but a test that
+            # needs a real userspace driver process running alongside it
+            # (e.g. keyboard_test/mailbox_keyboard_test spawning
+            # virtio-keyboard directly, since they act as their own `init`
+            # with no service manager to spawn it for them — see
+            # `userspace/tests/keyboard_test`) references one under
+            # userspace/drivers/ instead.
+            if [ ! -d "$PROJECT_DIR/userspace/tests/$name" ] && [ ! -d "$PROJECT_DIR/userspace/drivers/$name" ]; then
+                echo "error: $var references nonexistent crate '$name' (no userspace/tests/$name or userspace/drivers/$name)" >&2
                 status=1
             fi
             echo "$name"

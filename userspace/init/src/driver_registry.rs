@@ -4,12 +4,15 @@
 //! `[device]` section in a TOML config. See
 //! `plans/device-driver-model.md` ("Service manager role").
 //!
-//! `find_driver` and the matching it depends on are not called from
-//! `main.rs` yet: spawning a driver on `EVENT_DEVICE_ADDED` (subscribing to
-//! device events and reacting to them) is follow-on work building on top of
-//! the kernel's `OP_DEVICE_SUBSCRIBE`/`OP_DEVICE_CLAIM` handlers landed
-//! alongside this module. `#[allow(dead_code)]` documents that gap rather
-//! than hiding it.
+//! `main.rs` spawns every driver `binary_paths()` discovers at boot (see
+//! that method's doc comment for why, given `DeviceEvent`'s payload, it
+//! spawns unconditionally rather than pre-filtering by identity).
+//! `find_driver` and the `DeviceIdentityBytes`-based matching it depends on
+//! remain unused for now — a true "spawn only the driver(s) a specific
+//! enumerated device needs" path would need a way to read a not-yet-claimed
+//! device's identity, which doesn't exist yet (see `binary_paths`'s doc
+//! comment). `#[allow(dead_code)]` documents that gap rather than hiding
+//! it.
 
 #![allow(dead_code)]
 
@@ -129,6 +132,34 @@ impl DriverRegistry {
                 None
             }
         })
+    }
+
+    /// Every distinct driver binary path discovered by `scan`, in
+    /// first-seen order, with no duplicates (a driver can declare several
+    /// match-table entries across one or more buses, all sharing the same
+    /// `binary_path`).
+    ///
+    /// Used by `main.rs` to spawn every discovered driver at boot: `Self`
+    /// has no way to identify a *specific* enumerated device's vendor/
+    /// product ids from a bare `DeviceEvent` (its payload carries only a
+    /// bus address — see `panda_abi::device::DeviceEvent`/`DeviceIdentity` —
+    /// not identity, and reading that back out requires a claimed device
+    /// handle a not-yet-spawned driver doesn't have), so rather than
+    /// building a separate pre-claim identification path, every discovered
+    /// driver is spawned unconditionally; each one only actually claims
+    /// hardware for the device(s) matching its own `.panda_devices.<bus>`
+    /// table (via its own `device_subscribe` call, which is itself the
+    /// filter — see `plans/device-driver-model.md`'s Phase 7
+    /// landed-deviations note).
+    pub fn binary_paths(&self) -> Vec<&str> {
+        let mut paths: Vec<&str> = Vec::new();
+        for entry in &self.entries {
+            let path = entry.binary_path.as_str();
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+        paths
     }
 }
 
