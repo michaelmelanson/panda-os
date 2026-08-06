@@ -6,6 +6,7 @@
 use panda_abi::HandleType;
 
 mod block;
+pub mod block_client;
 mod buffer;
 mod channel;
 mod char_output;
@@ -20,6 +21,7 @@ pub(crate) mod scheme;
 mod spawn_handle;
 
 pub use block::{BlockDevice, BlockError};
+pub use block_client::{SchemeBlockDevice, SchemeBlockDeviceError};
 pub use buffer::{Buffer, BufferError, BufferExt, SharedBuffer};
 pub use channel::{ChannelEndpoint, ChannelError};
 pub use char_output::{CharOutError, CharacterOutput};

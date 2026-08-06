@@ -920,6 +920,16 @@ impl SchemeProxyResource {
     /// caught up with the buffered events. See
     /// `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
     pub async fn read(&self, len: usize, nonblocking: bool) -> Result<Vec<u8>, panda_abi::ErrorCode> {
+        self.read_at(0, len, nonblocking).await
+    }
+
+    /// As [`read`](Self::read), but at a specific byte `offset` — used by
+    /// [`super::block_client::SchemeBlockDevice`] (M4's block driver
+    /// service) for random-access reads. Stream-like providers (the only
+    /// kind [`read`](Self::read) itself is used against today, e.g.
+    /// `keyboard:`) are free to ignore `offset` — see `Request::Read`'s doc
+    /// comment.
+    pub async fn read_at(&self, offset: u64, len: usize, nonblocking: bool) -> Result<Vec<u8>, panda_abi::ErrorCode> {
         use panda_abi::scheme_protocol::{Request, Response};
 
         let request_id = self.provider.next_request_id();
@@ -927,6 +937,7 @@ impl SchemeProxyResource {
         let Some(n) = (Request::Read {
             request_id,
             resource_id: self.resource_id,
+            offset,
             len: len as u32,
             nonblocking,
         })
@@ -951,6 +962,12 @@ impl SchemeProxyResource {
     /// Write `data` (capped by the caller to
     /// `panda_abi::scheme_protocol::MAX_TRANSFER_SIZE`).
     pub async fn write(&self, data: &[u8]) -> Result<usize, panda_abi::ErrorCode> {
+        self.write_at(0, data).await
+    }
+
+    /// As [`write`](Self::write), but at a specific byte `offset` — see
+    /// [`read_at`](Self::read_at)'s doc comment.
+    pub async fn write_at(&self, offset: u64, data: &[u8]) -> Result<usize, panda_abi::ErrorCode> {
         use panda_abi::scheme_protocol::{Request, Response};
 
         let request_id = self.provider.next_request_id();
@@ -958,6 +975,7 @@ impl SchemeProxyResource {
         let Some(n) = (Request::Write {
             request_id,
             resource_id: self.resource_id,
+            offset,
             data,
         })
         .encode(&mut req_buf) else {
@@ -974,6 +992,38 @@ impl SchemeProxyResource {
         match Response::decode(&resp) {
             Some(Response::WriteOk { written, .. }) => Ok(written as usize),
             Some(Response::WriteErr { error, .. }) => Err(error),
+            _ => Err(panda_abi::ErrorCode::Protocol),
+        }
+    }
+
+    /// Query the resource's byte size — see `Request::Size`'s doc comment.
+    /// Used by [`super::block_client::SchemeBlockDevice`] once, at open
+    /// time, to populate the synchronous `BlockDevice::size()` accessor
+    /// (the wire protocol only supports async round trips, so it can't be
+    /// queried per-call).
+    pub async fn size(&self) -> Result<u64, panda_abi::ErrorCode> {
+        use panda_abi::scheme_protocol::{Request, Response};
+
+        let request_id = self.provider.next_request_id();
+        let mut req_buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let Some(n) = (Request::Size {
+            request_id,
+            resource_id: self.resource_id,
+        })
+        .encode(&mut req_buf) else {
+            return Err(panda_abi::ErrorCode::InvalidArgument);
+        };
+        req_buf.truncate(n);
+
+        let resp = self
+            .provider
+            .round_trip(request_id, &req_buf)
+            .await
+            .map_err(provider_error_to_error_code)?;
+
+        match Response::decode(&resp) {
+            Some(Response::SizeOk { size, .. }) => Ok(size),
+            Some(Response::SizeErr { error, .. }) => Err(error),
             _ => Err(panda_abi::ErrorCode::Protocol),
         }
     }

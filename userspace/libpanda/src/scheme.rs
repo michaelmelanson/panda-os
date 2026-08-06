@@ -190,6 +190,19 @@ impl SchemeProvider {
         })
     }
 
+    /// Reply to a `Size` request with the resource's byte size.
+    pub fn reply_size_ok(&self, request_id: u64, size: u64) -> Result<()> {
+        self.send_encoded(|buf| Response::encode_size_ok(request_id, size, buf))
+    }
+
+    /// Reply to a `Size` request with an error (e.g. `NotSupported` for a
+    /// stream-like resource with no addressable size).
+    pub fn reply_size_err(&self, request_id: u64, error: ErrorCode) -> Result<()> {
+        self.send_encoded(|buf| {
+            Response::encode_err(scheme_protocol::MSG_SIZE, request_id, error, buf)
+        })
+    }
+
     /// Push an unsolicited notification for `resource_id`, waking any
     /// mailbox a client attached to it (via `OP_ENVIRONMENT_OPEN`'s
     /// `mailbox`/`event_mask` arguments) with `events`. Not a reply to any

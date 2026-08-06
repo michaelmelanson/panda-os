@@ -58,6 +58,14 @@ pub const MSG_CONNECT: u8 = 6;
 /// round-trip). Added in Phase 7 for the userspace virtio-keyboard driver;
 /// see `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
 pub const MSG_NOTIFY: u8 = 7;
+/// Request/response kind: query a provider resource's byte size. Added for
+/// M4's block driver service (`resource::block_client::SchemeBlockDevice`):
+/// the kernel's `BlockDevice` trait needs a synchronous `size()` accessor,
+/// so the size is fetched once (via this request) and cached at open time
+/// rather than being queryable per-call. Not meaningful for stream-like
+/// resources (e.g. `keyboard:`'s eventq) — those providers should reply
+/// `SizeErr(NotSupported)`.
+pub const MSG_SIZE: u8 = 8;
 
 /// Response status byte: the operation succeeded.
 pub const STATUS_OK: u8 = 0;
@@ -131,10 +139,18 @@ fn u8_to_error(byte: u8) -> ErrorCode {
 pub enum Request<'a> {
     Open { request_id: u64, path: &'a str },
     Readdir { request_id: u64, path: &'a str },
-    Read { request_id: u64, resource_id: u64, len: u32, nonblocking: bool },
-    Write { request_id: u64, resource_id: u64, data: &'a [u8] },
+    /// `offset` is a byte offset into the resource, meaningful for
+    /// random-access resources (e.g. block devices, via
+    /// `resource::block_client::SchemeBlockDevice`). Stream-like providers
+    /// (e.g. `keyboard:`'s eventq) may ignore it — they have no addressable
+    /// position, only a FIFO of buffered data.
+    Read { request_id: u64, resource_id: u64, offset: u64, len: u32, nonblocking: bool },
+    /// `offset` — see `Request::Read`'s doc comment.
+    Write { request_id: u64, resource_id: u64, offset: u64, data: &'a [u8] },
     Close { request_id: u64, resource_id: u64 },
     Connect { request_id: u64, path: &'a str },
+    /// Query a resource's byte size — see [`MSG_SIZE`].
+    Size { request_id: u64, resource_id: u64 },
 }
 
 impl<'a> Request<'a> {
@@ -146,7 +162,8 @@ impl<'a> Request<'a> {
             | Request::Read { request_id, .. }
             | Request::Write { request_id, .. }
             | Request::Close { request_id, .. }
-            | Request::Connect { request_id, .. } => request_id,
+            | Request::Connect { request_id, .. }
+            | Request::Size { request_id, .. } => request_id,
         }
     }
 
@@ -178,34 +195,38 @@ impl<'a> Request<'a> {
             Request::Read {
                 request_id,
                 resource_id,
+                offset,
                 len,
                 nonblocking,
             } => {
-                let total = HEADER_LEN + 8 + 4 + 1;
+                let total = HEADER_LEN + 8 + 8 + 4 + 1;
                 if total > buf.len() {
                     return None;
                 }
                 buf[0] = MSG_READ;
                 buf[1..9].copy_from_slice(&request_id.to_le_bytes());
                 buf[9..17].copy_from_slice(&resource_id.to_le_bytes());
-                buf[17..21].copy_from_slice(&len.to_le_bytes());
-                buf[21] = nonblocking as u8;
+                buf[17..25].copy_from_slice(&offset.to_le_bytes());
+                buf[25..29].copy_from_slice(&len.to_le_bytes());
+                buf[29] = nonblocking as u8;
                 Some(total)
             }
             Request::Write {
                 request_id,
                 resource_id,
+                offset,
                 data,
             } => {
-                let total = HEADER_LEN + 8 + 4 + data.len();
+                let total = HEADER_LEN + 8 + 8 + 4 + data.len();
                 if total > buf.len() {
                     return None;
                 }
                 buf[0] = MSG_WRITE;
                 buf[1..9].copy_from_slice(&request_id.to_le_bytes());
                 buf[9..17].copy_from_slice(&resource_id.to_le_bytes());
-                buf[17..21].copy_from_slice(&(data.len() as u32).to_le_bytes());
-                buf[21..21 + data.len()].copy_from_slice(data);
+                buf[17..25].copy_from_slice(&offset.to_le_bytes());
+                buf[25..29].copy_from_slice(&(data.len() as u32).to_le_bytes());
+                buf[29..29 + data.len()].copy_from_slice(data);
                 Some(total)
             }
             Request::Close {
@@ -217,6 +238,19 @@ impl<'a> Request<'a> {
                     return None;
                 }
                 buf[0] = MSG_CLOSE;
+                buf[1..9].copy_from_slice(&request_id.to_le_bytes());
+                buf[9..17].copy_from_slice(&resource_id.to_le_bytes());
+                Some(total)
+            }
+            Request::Size {
+                request_id,
+                resource_id,
+            } => {
+                let total = HEADER_LEN + 8;
+                if total > buf.len() {
+                    return None;
+                }
+                buf[0] = MSG_SIZE;
                 buf[1..9].copy_from_slice(&request_id.to_le_bytes());
                 buf[9..17].copy_from_slice(&resource_id.to_le_bytes());
                 Some(total)
@@ -249,34 +283,34 @@ impl<'a> Request<'a> {
                 })
             }
             MSG_READ => {
-                if buf.len() < 21 {
+                if buf.len() < 29 {
                     return None;
                 }
                 let resource_id = u64::from_le_bytes(buf[9..17].try_into().ok()?);
-                let len = u32::from_le_bytes(buf[17..21].try_into().ok()?);
-                // `nonblocking` was added after this frame's initial 21-byte
-                // layout shipped — treat a truncated (pre-existing, 21-byte)
-                // frame as blocking (`false`) rather than rejecting it, so
-                // older encoders (if any linger) still decode.
-                let nonblocking = buf.get(21).copied().unwrap_or(0) != 0;
+                let offset = u64::from_le_bytes(buf[17..25].try_into().ok()?);
+                let len = u32::from_le_bytes(buf[25..29].try_into().ok()?);
+                let nonblocking = buf.get(29).copied().unwrap_or(0) != 0;
                 Some(Request::Read {
                     request_id,
                     resource_id,
+                    offset,
                     len,
                     nonblocking,
                 })
             }
             MSG_WRITE => {
-                if buf.len() < 21 {
+                if buf.len() < 29 {
                     return None;
                 }
                 let resource_id = u64::from_le_bytes(buf[9..17].try_into().ok()?);
-                let data_len = u32::from_le_bytes(buf[17..21].try_into().ok()?) as usize;
-                let end = 21usize.checked_add(data_len)?;
-                let data = buf.get(21..end)?;
+                let offset = u64::from_le_bytes(buf[17..25].try_into().ok()?);
+                let data_len = u32::from_le_bytes(buf[25..29].try_into().ok()?) as usize;
+                let end = 29usize.checked_add(data_len)?;
+                let data = buf.get(29..end)?;
                 Some(Request::Write {
                     request_id,
                     resource_id,
+                    offset,
                     data,
                 })
             }
@@ -286,6 +320,16 @@ impl<'a> Request<'a> {
                 }
                 let resource_id = u64::from_le_bytes(buf[9..17].try_into().ok()?);
                 Some(Request::Close {
+                    request_id,
+                    resource_id,
+                })
+            }
+            MSG_SIZE => {
+                if buf.len() < 17 {
+                    return None;
+                }
+                let resource_id = u64::from_le_bytes(buf[9..17].try_into().ok()?);
+                Some(Request::Size {
                     request_id,
                     resource_id,
                 })
@@ -324,6 +368,9 @@ pub enum Response<'a> {
     /// here beyond the header.
     ConnectOk { request_id: u64 },
     ConnectErr { request_id: u64, error: ErrorCode },
+    /// Answers `Request::Size` — see [`MSG_SIZE`].
+    SizeOk { request_id: u64, size: u64 },
+    SizeErr { request_id: u64, error: ErrorCode },
     /// Unsolicited push — see [`MSG_NOTIFY`]. `request_id` is always `0`.
     Notify { resource_id: u64, events: u32 },
 }
@@ -342,7 +389,9 @@ impl<'a> Response<'a> {
             | Response::CloseOk { request_id }
             | Response::CloseErr { request_id, .. }
             | Response::ConnectOk { request_id }
-            | Response::ConnectErr { request_id, .. } => request_id,
+            | Response::ConnectErr { request_id, .. }
+            | Response::SizeOk { request_id, .. }
+            | Response::SizeErr { request_id, .. } => request_id,
             Response::Notify { .. } => 0,
         }
     }
@@ -456,6 +505,17 @@ impl<'a> Response<'a> {
         Some(total)
     }
 
+    /// Encode `SizeOk`.
+    pub fn encode_size_ok(request_id: u64, size: u64, buf: &mut [u8]) -> Option<usize> {
+        let total = RESP_HEADER_LEN + 8;
+        if total > buf.len() {
+            return None;
+        }
+        Self::header(MSG_SIZE, request_id, STATUS_OK, buf)?;
+        buf[10..18].copy_from_slice(&size.to_le_bytes());
+        Some(total)
+    }
+
     /// Encode `Notify` — see [`MSG_NOTIFY`]. Always uses `request_id == 0`.
     pub fn encode_notify(resource_id: u64, events: u32, buf: &mut [u8]) -> Option<usize> {
         let total = RESP_HEADER_LEN + 8 + 4;
@@ -491,6 +551,7 @@ impl<'a> Response<'a> {
                 MSG_WRITE => Response::WriteErr { request_id, error },
                 MSG_CLOSE => Response::CloseErr { request_id, error },
                 MSG_CONNECT => Response::ConnectErr { request_id, error },
+                MSG_SIZE => Response::SizeErr { request_id, error },
                 _ => return None,
             });
         }
@@ -523,6 +584,10 @@ impl<'a> Response<'a> {
             }
             MSG_CLOSE => Some(Response::CloseOk { request_id }),
             MSG_CONNECT => Some(Response::ConnectOk { request_id }),
+            MSG_SIZE => {
+                let size = u64::from_le_bytes(buf.get(10..18)?.try_into().ok()?);
+                Some(Response::SizeOk { request_id, size })
+            }
             _ => None,
         }
     }

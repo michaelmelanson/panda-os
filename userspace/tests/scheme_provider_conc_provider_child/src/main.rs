@@ -112,6 +112,7 @@ libpanda::main! {
                 request_id,
                 resource_id,
                 data,
+                ..
             })) => {
                 let idx = resource_id.wrapping_sub(1) as usize;
                 if resource_id != 0 && idx < MAX_RESOURCES {
@@ -131,6 +132,9 @@ libpanda::main! {
             }
             Ok(Some(Request::Connect { request_id, .. })) => {
                 let _ = provider.reply_connect_err(request_id, ErrorCode::NotSupported);
+            }
+            Ok(Some(Request::Size { request_id, .. })) => {
+                let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
             }
             Ok(None) => {
                 process::yield_now();

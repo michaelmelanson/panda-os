@@ -972,6 +972,12 @@ fn serve_provider_requests(
             Request::Connect { request_id, .. } => {
                 let _ = provider.reply_connect_err(request_id, ErrorCode::NotSupported);
             }
+            Request::Size { request_id, .. } => {
+                // The eventq has no addressable size (see `Request::Size`'s
+                // doc comment) — only `resource::block_client::SchemeBlockDevice`
+                // (M4's block driver service) uses this request.
+                let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
+            }
         }
     }
 }

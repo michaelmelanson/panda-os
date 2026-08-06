@@ -106,6 +106,7 @@ libpanda::main! {
                 request_id,
                 resource_id,
                 data,
+                ..
             })) => {
                 if resource_id == 1 {
                     let n = data.len().min(echo_data.len());
@@ -121,6 +122,9 @@ libpanda::main! {
             }
             Ok(Some(Request::Connect { request_id, .. })) => {
                 let _ = provider.reply_connect_err(request_id, ErrorCode::NotSupported);
+            }
+            Ok(Some(Request::Size { request_id, .. })) => {
+                let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
             }
             Ok(None) => {
                 process::yield_now();

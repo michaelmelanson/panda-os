@@ -190,6 +190,9 @@ impl Compositor {
                 SchemeRequest::Close { request_id, .. } => {
                     let _ = provider.reply_close_ok(request_id);
                 }
+                SchemeRequest::Size { request_id, .. } => {
+                    let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
+                }
             }
         }
 
