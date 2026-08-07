@@ -1055,6 +1055,7 @@ version = "0.1.0"
 dependencies = [
  "libpanda",
  "panda-abi",
+ "virtio-pci",
 ]
 
 [[package]]
@@ -1076,10 +1077,20 @@ version = "0.1.0"
 dependencies = [
  "libpanda",
  "panda-abi",
+ "virtio-pci",
 ]
 
 [[package]]
 name = "virtio-keyboard"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+ "virtio-pci",
+]
+
+[[package]]
+name = "virtio-pci"
 version = "0.1.0"
 dependencies = [
  "libpanda",

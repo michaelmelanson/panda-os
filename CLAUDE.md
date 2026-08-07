@@ -20,7 +20,7 @@ This file is a table of contents into the docs/ directory. Keep detailed documen
 - [docs/IPC.md](docs/IPC.md) - Channels, mailboxes, and process communication
 - [docs/PIPELINES.md](docs/PIPELINES.md) - Structured Value-based pipelines
 - [docs/COMPOSITOR.md](docs/COMPOSITOR.md) - Userspace compositor architecture and protocol
-- [docs/DEVICE_DRIVERS.md](docs/DEVICE_DRIVERS.md) - Userspace device driver model: ELF device tables, claim/MMIO/DMA/IRQ syscalls, driver lifecycle
+- [docs/DEVICE_DRIVERS.md](docs/DEVICE_DRIVERS.md) - Userspace device driver model: ELF device tables, claim/MMIO/DMA/IRQ syscalls, driver lifecycle, shared virtio-pci transport crate
 
 ## Quick Reference
 

@@ -9,32 +9,16 @@
 //! register the `keyboard:` scheme, and serve clients until
 //! `EVENT_DEVICE_REMOVED`.
 //!
-//! # Virtio transport: hand-rolled, not `virtio_drivers`
+//! # Virtio transport: the shared `virtio-pci` crate
 //!
-//! The deleted kernel driver used the `virtio_drivers` crate's
-//! `PciTransport`, which is kernel-only (it assumes direct physical-memory
-//! access and a `Hal` trait implemented against kernel internals — see
-//! `panda-kernel/src/devices/virtio_hal.rs`). A userspace driver has none of
-//! that: it only has `OP_DEVICE_*`/`OP_DMA_*` syscalls
-//! (`libpanda::device`). Two consequences drove what's implemented here:
-//!
-//! 1. **PCI capability walk**: a modern (virtio 1.0) virtio-pci device
-//!    exposes its common-config/notify/ISR/device-config register blocks
-//!    through PCI capabilities (vendor-specific capability id `0x09`), each
-//!    naming a BAR + byte offset — it is *not* safe to assume BAR 0 offset 0
-//!    is the common config, unlike a naive legacy-virtio-pci reading.
-//!    `OP_DEVICE_MAP_MMIO` only maps a BAR by index; it does not know
-//!    anything about virtio. So this driver reads raw PCI config space
-//!    itself via `OP_DEVICE_PCI_CONFIG_READ` (added in this phase — see its
-//!    doc comment in `panda_abi::device`) and walks the capability list by
-//!    hand (`find_virtio_caps`) to find the common-config and notify
-//!    capabilities' BAR/offset, matching what `PciTransport::new` does
-//!    internally in the kernel driver's dependency.
-//! 2. **Split virtqueue**: with no in-kernel virtio transport to build the
-//!    descriptor table/avail ring/used ring, this driver lays them out by
-//!    hand in the DMA buffer `init_device` allocates (`setup_eventq`), and
-//!    drains the used ring itself in `poll_device` — see that function's
-//!    doc comment for the recycle-and-renotify loop.
+//! The PCI capability walk, BAR mapping, feature negotiation, split-virtqueue
+//! layout and doorbell computation all live in `userspace/virtio-pci` (see
+//! that crate's doc comment for why they are hand-rolled against the
+//! `OP_DEVICE_*`/`OP_DMA_*` syscalls instead of using the kernel-only
+//! `virtio_drivers` crate, and for the three transport landmines it
+//! encapsulates). This driver only supplies what is specific to virtio-input:
+//! one fixed-size event buffer per descriptor, all published up front, and
+//! the recycle-and-renotify drain loop in `DeviceState::poll_ring`.
 //!
 //! Only the virtio-input **eventq** (queue index 0) is set up; the
 //! statusq (index 1, host->guest LED state etc.) is not needed to read key
@@ -50,17 +34,15 @@ use alloc::vec::Vec;
 
 use libpanda::device::{
     self, BusType, DeviceEvent, EVENT_DEVICE_ADDED, EVENT_DEVICE_IRQ, EVENT_DEVICE_REMOVED,
-    MmioRegion, PciDeviceId,
+    PciDeviceId,
 };
+use virtio_pci::{QueueConfig, VIRTQ_DESC_F_WRITE, VirtQueue, VirtioTransport};
 use libpanda::error::Result;
 use libpanda::keyboard::RawInputEvent;
 use libpanda::mailbox::Mailbox;
 use libpanda::scheme::SchemeProvider;
 use libpanda::{Handle, environment, process};
 
-/// Alias for readability at device-syscall call sites: a claimed device's
-/// handle, as returned by `device::device_claim`.
-type DeviceHandle = Handle;
 use panda_abi::ErrorCode;
 use panda_abi::scheme_protocol::{Request, Response};
 
@@ -78,477 +60,77 @@ libpanda::pci_device_table![{ vendor: VIRTIO_VENDOR_ID, device: VIRTIO_INPUT_DEV
 const EV_KEY: u16 = 0x01;
 
 // =============================================================================
-// PCI config space: status register, capabilities list, virtio-pci caps
-// (virtio-v1.1 spec section 4.1.4).
+// virtio-input eventq setup. Everything generic to virtio-pci modern
+// transport (capability walk, feature negotiation, virtqueue layout, doorbell
+// computation) lives in the shared `virtio-pci` crate.
 // =============================================================================
-
-/// PCI config space offset of the 16-bit status register. Bit 4
-/// (`PCI_STATUS_CAP_LIST`) indicates a capabilities list is present.
-const PCI_STATUS_OFFSET: u32 = 0x06;
-const PCI_STATUS_CAP_LIST: u32 = 1 << 4;
-/// PCI config space offset of the 8-bit "capabilities pointer" (offset of
-/// the first capability, only valid if `PCI_STATUS_CAP_LIST` is set).
-const PCI_CAPABILITIES_POINTER_OFFSET: u32 = 0x34;
-/// Standard PCI capability ID for a vendor-specific capability — every
-/// virtio-pci capability structure uses this ID (virtio-v1.1 4.1.4).
-const PCI_CAP_ID_VNDR: u8 = 0x09;
-
-/// `cfg_type` values from `struct virtio_pci_cap` (virtio-v1.1 4.1.4.3).
-const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
-const VIRTIO_PCI_CAP_NOTIFY_CFG: u8 = 2;
-
-/// One located virtio-pci capability: which BAR it lives in, and the byte
-/// offset/length within that BAR. `notify_off_multiplier` is only
-/// meaningful for the notify capability (see `find_virtio_caps`).
-#[derive(Clone, Copy)]
-struct VirtioCap {
-    bar: u8,
-    offset: u32,
-    #[allow(dead_code)] // Read for documentation/bounds-checking purposes; not otherwise used.
-    length: u32,
-    notify_off_multiplier: u32,
-}
-
-/// Walk `device_handle`'s PCI capability list (via
-/// `OP_DEVICE_PCI_CONFIG_READ`) to find the virtio-pci common-config and
-/// notify capabilities. See the module doc comment for why this can't be
-/// assumed to be BAR 0 offset 0.
-fn find_virtio_caps(device_handle: DeviceHandle) -> Result<(VirtioCap, VirtioCap)> {
-    let status = device::device_pci_config_read(device_handle, PCI_STATUS_OFFSET, 2)?;
-    if status & PCI_STATUS_CAP_LIST == 0 {
-        return Err(ErrorCode::NotSupported);
-    }
-
-    let mut common: Option<VirtioCap> = None;
-    let mut notify: Option<VirtioCap> = None;
-
-    let mut cap_ptr =
-        (device::device_pci_config_read(device_handle, PCI_CAPABILITIES_POINTER_OFFSET, 1)? as u8) & 0xFC;
-    // Bound the walk: a well-formed capability list is a few entries long
-    // and null-terminated, but a malformed/adversarial device could form a
-    // cycle — cap this at a generous limit rather than looping forever.
-    for _ in 0..64 {
-        if cap_ptr == 0 {
-            break;
-        }
-        let cap_id = device::device_pci_config_read(device_handle, cap_ptr as u32, 1)? as u8;
-        let next = device::device_pci_config_read(device_handle, cap_ptr as u32 + 1, 1)? as u8;
-
-        if cap_id == PCI_CAP_ID_VNDR {
-            let cfg_type = device::device_pci_config_read(device_handle, cap_ptr as u32 + 3, 1)? as u8;
-            let bar = device::device_pci_config_read(device_handle, cap_ptr as u32 + 4, 1)? as u8;
-            let offset = device::device_pci_config_read(device_handle, cap_ptr as u32 + 8, 4)?;
-            let length = device::device_pci_config_read(device_handle, cap_ptr as u32 + 12, 4)?;
-            match cfg_type {
-                VIRTIO_PCI_CAP_COMMON_CFG => {
-                    common = Some(VirtioCap { bar, offset, length, notify_off_multiplier: 0 });
-                }
-                VIRTIO_PCI_CAP_NOTIFY_CFG => {
-                    let notify_off_multiplier =
-                        device::device_pci_config_read(device_handle, cap_ptr as u32 + 16, 4)?;
-                    notify = Some(VirtioCap { bar, offset, length, notify_off_multiplier });
-                }
-                _ => {}
-            }
-        }
-
-        cap_ptr = next & 0xFC;
-    }
-
-    match (common, notify) {
-        (Some(common), Some(notify)) => Ok((common, notify)),
-        _ => Err(ErrorCode::NotSupported),
-    }
-}
-
-// =============================================================================
-// Virtio device status/feature negotiation (virtio-v1.1 spec section 2.1,
-// 4.1.4.3's `device_status`/`device_feature*`/`driver_feature*` fields of
-// `struct virtio_pci_common_cfg`).
-// =============================================================================
-
-const VIRTIO_STATUS_ACKNOWLEDGE: u8 = 1;
-const VIRTIO_STATUS_DRIVER: u8 = 2;
-const VIRTIO_STATUS_DRIVER_OK: u8 = 4;
-const VIRTIO_STATUS_FEATURES_OK: u8 = 8;
-
-/// Feature bit 32 (`VIRTIO_F_VERSION_1`) — the one feature a modern-only
-/// driver like this one must accept; without it the device would fall back
-/// to legacy semantics this driver doesn't implement.
-const VIRTIO_F_VERSION_1_HIGH_BIT: u32 = 1 << 0; // bit 32 overall = bit 0 of the high dword
-
-/// Byte offsets into `struct virtio_pci_common_cfg` (virtio-v1.1 4.1.4.3).
-mod common_cfg {
-    pub const DEVICE_FEATURE_SELECT: usize = 0;
-    pub const DEVICE_FEATURE: usize = 4;
-    pub const DRIVER_FEATURE_SELECT: usize = 8;
-    pub const DRIVER_FEATURE: usize = 12;
-    // Documented for completeness (full `virtio_pci_common_cfg` layout) even
-    // though this driver never assigns a config-change interrupt vector.
-    #[allow(dead_code)]
-    pub const MSIX_CONFIG: usize = 16;
-    pub const DEVICE_STATUS: usize = 20;
-    pub const QUEUE_SELECT: usize = 22;
-    pub const QUEUE_SIZE: usize = 24;
-    pub const QUEUE_MSIX_VECTOR: usize = 26;
-    pub const QUEUE_ENABLE: usize = 28;
-    pub const QUEUE_NOTIFY_OFF: usize = 30;
-    pub const QUEUE_DESC: usize = 32;
-    pub const QUEUE_DRIVER: usize = 40; // avail ring
-    pub const QUEUE_DEVICE: usize = 48; // used ring
-}
 
 /// The eventq (virtio-input queue index 0) — the only queue this driver
 /// uses (see the module doc comment).
 const EVENTQ_INDEX: u16 = 0;
 
-/// MSI-X table entry this driver's single interrupt subscription
-/// configures (`DeviceResource::subscribe_irq` always configures table
-/// entry 0 — see that method's doc comment). Routing the eventq's
-/// interrupts there means no ISR-status register read is needed to
-/// acknowledge interrupts (that's only required for the legacy/no-MSI-X
-/// interrupt path).
-const MSIX_VECTOR_0: u16 = 0;
-
 /// Maximum key events buffered before the oldest is dropped, matching the
 /// deleted kernel driver's `RingBuffer<64>`. Also the eventq's requested
-/// queue size, clamped to the device's actual maximum in `setup_eventq`.
+/// queue size, clamped to the device's actual maximum by
+/// `VirtioTransport::setup_queue`.
 const EVENT_BUFFER_CAPACITY: usize = 64;
 
-/// Reset the device, negotiate `VIRTIO_F_VERSION_1` only (this driver needs
-/// no optional virtio-input feature bits), and confirm `FEATURES_OK` stuck
-/// — the modern virtio feature negotiation handshake (virtio-v1.1 3.1.1).
-fn negotiate_features(common: &MmioRegion, common_off: usize) -> Result<()> {
-    common.write::<u8>(common_off + common_cfg::DEVICE_STATUS, 0);
-    common.write::<u8>(common_off + common_cfg::DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
-    common.write::<u8>(
-        common_off + common_cfg::DEVICE_STATUS,
-        VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER,
-    );
+/// Bytes per eventq buffer: one `struct virtio_input_event` (virtio-v1.1
+/// 5.8.6), which matches `libpanda::keyboard::RawInputEvent`'s layout.
+const INPUT_EVENT_LEN: usize = 8;
 
-    // Select the high feature dword (bits 32-63) and accept only
-    // VIRTIO_F_VERSION_1 (bit 32). We don't need any low (0-31) feature
-    // bits, so driver_feature_select=0/driver_feature=0 covers those.
-    common.write::<u32>(common_off + common_cfg::DEVICE_FEATURE_SELECT, 1);
-    let device_feature_high = common.read::<u32>(common_off + common_cfg::DEVICE_FEATURE);
-    if device_feature_high & VIRTIO_F_VERSION_1_HIGH_BIT == 0 {
-        // Not a modern (virtio 1.0+) device — this driver can't speak
-        // legacy virtio.
-        return Err(ErrorCode::NotSupported);
-    }
-    common.write::<u32>(common_off + common_cfg::DRIVER_FEATURE_SELECT, 0);
-    common.write::<u32>(common_off + common_cfg::DRIVER_FEATURE, 0);
-    common.write::<u32>(common_off + common_cfg::DRIVER_FEATURE_SELECT, 1);
-    common.write::<u32>(
-        common_off + common_cfg::DRIVER_FEATURE,
-        VIRTIO_F_VERSION_1_HIGH_BIT,
-    );
-
-    common.write::<u8>(
-        common_off + common_cfg::DEVICE_STATUS,
-        VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK,
-    );
-    let status = common.read::<u8>(common_off + common_cfg::DEVICE_STATUS);
-    if status & VIRTIO_STATUS_FEATURES_OK == 0 {
-        return Err(ErrorCode::NotSupported);
-    }
-    Ok(())
-}
-
-// =============================================================================
-// Split virtqueue (virtio-v1.1 spec section 2.6): descriptor table, avail
-// ring, used ring, laid out by hand in the DMA buffer `init_device`
-// allocates, since there is no in-kernel virtio transport for userspace
-// drivers to delegate this to (see the module doc comment).
-// =============================================================================
-
-const VIRTQ_DESC_F_WRITE: u16 = 2;
-const DESC_ENTRY_LEN: usize = 16; // addr:u64 + len:u32 + flags:u16 + next:u16
-const USED_ENTRY_LEN: usize = 8; // id:u32 + len:u32
-const INPUT_EVENT_LEN: usize = 8; // matches libpanda::keyboard::RawInputEvent
-
-fn align_up(value: usize, align: usize) -> usize {
-    (value + align - 1) & !(align - 1)
-}
-
-/// Byte layout of the eventq's split virtqueue plus its event-buffer pool,
-/// all packed into one DMA allocation. Offsets are relative to the DMA
-/// buffer's base (both `virt_addr`, for driver-side reads/writes through
-/// `ring`, and `iova`, for the addresses programmed into the device's
-/// `queue_desc`/`queue_driver`/`queue_device` registers and each
-/// descriptor's `addr` field).
-struct QueueLayout {
-    qsize: u16,
-    desc_off: usize,
-    avail_off: usize,
-    used_off: usize,
-    events_off: usize,
-    total_len: usize,
-}
-
-impl QueueLayout {
-    fn compute(qsize: u16) -> Self {
-        let qsize_usize = qsize as usize;
-        let desc_off = 0;
-        let avail_off = desc_off + DESC_ENTRY_LEN * qsize_usize;
-        let avail_len = 4 + 2 * qsize_usize; // flags:u16 + idx:u16 + ring[qsize]:u16
-        let used_off = align_up(avail_off + avail_len, 4);
-        let used_len = 4 + USED_ENTRY_LEN * qsize_usize; // flags:u16 + idx:u16 + ring[qsize]
-        let events_off = align_up(used_off + used_len, 8);
-        let total_len = events_off + INPUT_EVENT_LEN * qsize_usize;
-        Self { qsize, desc_off, avail_off, used_off, events_off, total_len }
-    }
-
-    fn desc_addr_off(&self, i: u16) -> usize {
-        self.desc_off + DESC_ENTRY_LEN * i as usize
-    }
-
-    fn avail_ring_off(&self, i: u16) -> usize {
-        self.avail_off + 4 + 2 * i as usize
-    }
-
-    fn used_ring_off(&self, i: u16) -> usize {
-        self.used_off + 4 + USED_ENTRY_LEN * i as usize
-    }
-
-    fn event_buf_off(&self, i: u16) -> usize {
-        self.events_off + INPUT_EVENT_LEN * i as usize
-    }
-}
-
-/// Claim the device, walk its virtio-pci capabilities, map the common
-/// config / notify BARs, negotiate features, allocate and lay out the
-/// eventq, enable it, subscribe to IRQs, and set `device_status` to
-/// `DRIVER_OK`. Mirrors `panda-kernel/src/devices/virtio_keyboard.rs
-/// ::init_from_pci_device`'s sequence (claim -> transport setup -> feature
-/// negotiation -> queue setup -> `DRIVER_OK` -> IRQ registration), but
-/// through the userspace `OP_DEVICE_*` syscalls and a hand-rolled virtio
-/// transport instead of the kernel-only `virtio_drivers` crate.
+/// Claim the device, bring up the virtio transport, allocate and populate the
+/// eventq, subscribe to IRQs, and set `DRIVER_OK`. Mirrors
+/// `panda-kernel/src/devices/virtio_keyboard.rs::init_from_pci_device`'s
+/// sequence (claim -> transport setup -> feature negotiation -> queue setup
+/// -> `DRIVER_OK` -> IRQ registration), but through the userspace
+/// `OP_DEVICE_*` syscalls and the shared `virtio-pci` transport instead of the
+/// kernel-only `virtio_drivers` crate.
 fn init_device(token: Handle) -> Result<DeviceState> {
-    let device_handle: DeviceHandle = device::device_claim(token)?;
+    // No virtio-input feature bits are needed beyond the mandatory
+    // `VIRTIO_F_VERSION_1` the transport always negotiates.
+    let transport = VirtioTransport::claim_and_init(token, 0)?;
 
-    let (common_cap, notify_cap) = find_virtio_caps(device_handle)?;
-
-    let common_mmio = device::device_map_mmio(device_handle, common_cap.bar as u32)?;
-    // The notify capability is very often on the same BAR as common config
-    // (QEMU's virtio-pci puts everything on BAR 4) — avoid mapping the same
-    // BAR twice, which would otherwise carve out two separate ranges of
-    // this process's address space for the same physical pages.
-    let notify_mmio = if notify_cap.bar == common_cap.bar {
-        None
-    } else {
-        Some(device::device_map_mmio(device_handle, notify_cap.bar as u32)?)
-    };
-
-    negotiate_features(&common_mmio, common_cap.offset as usize)?;
-
-    // Subscribe to (and thereby enable, via `enable_msix` —
-    // `DeviceResource::subscribe_irq`) the device's MSI-X vector *before*
-    // `setup_eventq` programs `queue_msix_vector` to point at it and
-    // *before* `DRIVER_OK` is set, so the device never has a window where
-    // it could complete a request against an interrupt source that isn't
-    // wired up yet (virtio-v1.1 3.1.1 describes `DRIVER_OK` as the last
-    // status bit set, after the device is fully configured).
+    // Subscribe to (and thereby enable) the device's MSI-X vector *before*
+    // `setup_queue` programs `queue_msix_vector` to point at it and *before*
+    // `DRIVER_OK` is set — see `VirtioTransport::subscribe_irq`'s doc comment.
     let mailbox = Mailbox::default();
-    device::device_subscribe_irq(device_handle, mailbox.handle())?;
+    transport.subscribe_irq(&mailbox)?;
 
-    let queue = setup_eventq(device_handle, &common_mmio, common_cap.offset as usize)?;
+    let mut queue = transport.setup_queue(QueueConfig {
+        index: EVENTQ_INDEX,
+        wanted_size: EVENT_BUFFER_CAPACITY as u16,
+        min_size: 1,
+        scratch_len: 0,
+        scratch_len_per_descriptor: INPUT_EVENT_LEN,
+    })?;
 
-    // Kick the queue once, immediately, *before* `DRIVER_OK`: the device
-    // does not proactively poll the avail ring on its own (virtio-v1.1
-    // 2.6.13 — a driver must notify after making buffers available), and
-    // every descriptor was just published as available in `setup_eventq`
-    // before the device had any reason to look. Without this initial kick,
-    // the eventq sits idle forever: `poll_device`'s own `kick` call only
-    // fires *after* draining a used-ring entry, so the very first event
-    // would never arrive to trigger it.
-    //
-    // This ordering — kick *before* `DRIVER_OK`, not after — matches the
-    // deleted kernel driver's dependency
-    // (`vendor/virtio-drivers/src/device/input.rs::VirtIOInput::new`,
-    // via `Transport::finish_init`): it calls `transport.notify(QUEUE_EVENT)`
-    // right after populating the avail ring, then only afterwards calls
-    // `finish_init()` to set `DRIVER_OK`. An earlier version of this driver
-    // kicked *after* `DRIVER_OK` instead (reasoning from virtio-v1.1
-    // 3.1.1's description of `DRIVER_OK` as "last" step), which turned out
-    // to be the actual bug behind Phase 7's virtqueue never being touched
-    // by QEMU — see `plans/device-driver-model.md`'s landed-deviations
-    // note.
-    let notify_region = notify_mmio.as_ref().unwrap_or(&common_mmio);
-    queue.kick(device_handle, Some(notify_region), notify_cap.offset as usize, notify_cap.notify_off_multiplier);
-
-    common_mmio.write::<u8>(
-        common_cap.offset as usize + common_cfg::DEVICE_STATUS,
-        VIRTIO_STATUS_ACKNOWLEDGE
-            | VIRTIO_STATUS_DRIVER
-            | VIRTIO_STATUS_FEATURES_OK
-            | VIRTIO_STATUS_DRIVER_OK,
-    );
-
-    Ok(DeviceState {
-        device_handle,
-        common_mmio,
-        notify_mmio,
-        notify_off: notify_cap.offset as usize,
-        notify_off_multiplier: notify_cap.notify_off_multiplier,
-        queue,
-        events: Vec::with_capacity(EVENT_BUFFER_CAPACITY),
-    })
-}
-
-/// Select the eventq, size it (clamped to the device's advertised maximum,
-/// rounded down to a power of two), allocate its DMA backing (descriptor
-/// table + avail ring + used ring + one fixed event buffer per descriptor),
-/// pre-populate every descriptor as a device-writable buffer and make all
-/// of them available (this queue is purely device-to-driver: the driver
-/// never fills in event *contents*, only supplies empty buffers for the
-/// device to write into — see `poll_device`), and enable the queue.
-fn setup_eventq(device_handle: DeviceHandle, common: &MmioRegion, common_off: usize) -> Result<EventQueue> {
-    common.write::<u16>(common_off + common_cfg::QUEUE_SELECT, EVENTQ_INDEX);
-    let max_size = common.read::<u16>(common_off + common_cfg::QUEUE_SIZE);
-    if max_size == 0 {
-        return Err(ErrorCode::NotSupported);
-    }
-    let mut qsize = (EVENT_BUFFER_CAPACITY as u16).min(max_size);
-    // Round down to a power of two (virtio queue sizes must be a power of
-    // two; the device's own max is guaranteed to be one, but our clamp
-    // might not be).
-    qsize = 1u16 << (15 - qsize.leading_zeros() as u16).min(15);
-
-    let layout = QueueLayout::compute(qsize);
-    let (virt_addr, iova) = device::dma_alloc(device_handle, layout.total_len)?;
-    // Safety: `dma_alloc` just mapped `layout.total_len` bytes of
-    // DMA-visible memory at `virt_addr` into this process, exclusively for
-    // this queue's use — `MmioRegion` here is repurposed for its
-    // bounds-checked volatile-only access, not because this is device MMIO.
-    let ring = unsafe { MmioRegion::new(virt_addr as *mut u8, layout.total_len) };
-
-    for i in 0..qsize {
-        let desc_off = layout.desc_addr_off(i);
-        let buf_iova = iova + layout.event_buf_off(i) as u64;
-        ring.write::<u64>(desc_off, buf_iova); // addr
-        ring.write::<u32>(desc_off + 8, INPUT_EVENT_LEN as u32); // len
-        ring.write::<u16>(desc_off + 12, VIRTQ_DESC_F_WRITE); // flags
-        ring.write::<u16>(desc_off + 14, 0); // next (unused: single-descriptor chains)
-
-        ring.write::<u16>(layout.avail_ring_off(i), i);
-    }
-    ring.write::<u16>(layout.avail_off, 0); // avail.flags
-    ring.write::<u16>(layout.avail_off + 2, qsize); // avail.idx: every buffer is available
-    ring.write::<u16>(layout.used_off, 0); // used.flags
-    ring.write::<u16>(layout.used_off + 2, 0); // used.idx
-
-    let desc_iova = iova + layout.desc_off as u64;
-    let avail_iova = iova + layout.avail_off as u64;
-    let used_iova = iova + layout.used_off as u64;
-    common.write::<u64>(common_off + common_cfg::QUEUE_DESC, desc_iova);
-    common.write::<u64>(common_off + common_cfg::QUEUE_DRIVER, avail_iova);
-    common.write::<u64>(common_off + common_cfg::QUEUE_DEVICE, used_iova);
-    common.write::<u16>(common_off + common_cfg::QUEUE_MSIX_VECTOR, MSIX_VECTOR_0);
-    let queue_notify_off = common.read::<u16>(common_off + common_cfg::QUEUE_NOTIFY_OFF);
-    common.write::<u16>(common_off + common_cfg::QUEUE_ENABLE, 1);
-    Ok(EventQueue {
-        ring,
-        _virt_addr: virt_addr,
-        _dma_size: layout.total_len,
-        layout,
-        queue_notify_off,
-        last_used_idx: 0,
-        next_avail_idx: qsize,
-    })
-}
-
-/// The eventq's virtqueue state: the DMA-backed ring memory plus the
-/// driver-side cursors needed to drain the used ring and recycle
-/// descriptors back onto the avail ring (see `poll_device`).
-struct EventQueue {
-    ring: MmioRegion,
-    /// Kept only so the DMA allocation's virtual address is available for
-    /// `dma_free` if this driver ever needs to tear it down explicitly
-    /// (today it doesn't: `DeviceState` is simply dropped on
-    /// `EVENT_DEVICE_REMOVED`, and `OP_DEVICE_CLAIM`'s handle teardown frees
-    /// every DMA allocation associated with the device — see
-    /// `DeviceResource::teardown`).
-    #[allow(dead_code)]
-    _virt_addr: usize,
-    #[allow(dead_code)]
-    _dma_size: usize,
-    layout: QueueLayout,
-    /// `common_cfg.queue_notify_off` for this queue, read once at setup
-    /// time (constant for the queue's lifetime) — combined with the notify
-    /// capability's `notify_off_multiplier` to compute the notify register
-    /// address in `kick`.
-    queue_notify_off: u16,
-    /// Driver-side copy of how many used-ring entries have been consumed so
-    /// far; compared against the device-owned `used.idx` to find new
-    /// entries.
-    last_used_idx: u16,
-    /// Driver-side copy of how many avail-ring entries have been published
-    /// so far (starts at `qsize`, since every descriptor is made available
-    /// up front in `setup_eventq`); advanced by one for every descriptor
-    /// recycled back onto the avail ring in `poll_device`.
-    next_avail_idx: u16,
-}
-
-impl EventQueue {
-    /// Drain every newly-completed used-ring entry, decode its event,
-    /// recycle the descriptor back onto the avail ring so the device can
-    /// reuse it, and notify the device once if anything was recycled.
-    /// Returns the decoded `EV_KEY` events, oldest first.
-    fn drain(&mut self, device_handle: DeviceHandle, notify_mmio: Option<&MmioRegion>, notify_off: usize, notify_off_multiplier: u32) -> Vec<RawInputEvent> {
-        let used_idx = self.ring.read::<u16>(self.layout.used_off + 2);
-        let mut decoded = Vec::new();
-        let mut recycled = false;
-
-        while self.last_used_idx != used_idx {
-            let ring_index = self.last_used_idx % self.layout.qsize;
-            let used_entry_off = self.layout.used_ring_off(ring_index);
-            let desc_index = self.ring.read::<u32>(used_entry_off) as u16;
-
-            let event_off = self.layout.event_buf_off(desc_index);
-            let event_type = self.ring.read::<u16>(event_off);
-            let code = self.ring.read::<u16>(event_off + 2);
-            let value = self.ring.read::<u32>(event_off + 4);
-            if event_type == EV_KEY {
-                decoded.push(RawInputEvent { event_type, code, value });
-            }
-
-            // Recycle: the buffer at `desc_index` is free again (the
-            // descriptor table entry itself doesn't need rewriting — it
-            // still points at the same buffer with the same
-            // `VIRTQ_DESC_F_WRITE` flags from `setup_eventq`), so just
-            // republish it on the avail ring.
-            let avail_slot = self.next_avail_idx % self.layout.qsize;
-            self.ring.write::<u16>(self.layout.avail_ring_off(avail_slot), desc_index);
-            self.next_avail_idx = self.next_avail_idx.wrapping_add(1);
-            self.ring.write::<u16>(self.layout.avail_off + 2, self.next_avail_idx);
-            recycled = true;
-
-            self.last_used_idx = self.last_used_idx.wrapping_add(1);
-        }
-
-        if recycled {
-            self.kick(device_handle, notify_mmio, notify_off, notify_off_multiplier);
-        }
-        decoded
+    // Pre-populate every descriptor as a device-writable buffer and make all
+    // of them available: this queue is purely device-to-driver — the driver
+    // never fills in event *contents*, only supplies empty buffers for the
+    // device to write into (see `DeviceState::poll_ring`).
+    for i in 0..queue.size() {
+        queue.set_descriptor(
+            i,
+            queue.scratch_iova(INPUT_EVENT_LEN * i as usize),
+            INPUT_EVENT_LEN as u32,
+            VIRTQ_DESC_F_WRITE,
+            0, // next (unused: single-descriptor chains)
+        );
+        queue.publish(i);
     }
 
-    /// Ring the device's doorbell for this queue (virtio-v1.1 4.1.4.4): a
-    /// 16-bit little-endian write of the queue index to the notify
-    /// capability's BAR at `offset + queue_notify_off *
-    /// notify_off_multiplier`.
-    fn kick(&self, _device_handle: DeviceHandle, notify_mmio: Option<&MmioRegion>, notify_off: usize, notify_off_multiplier: u32) {
-        // `notify_mmio` is `None` when the notify capability shares the
-        // same BAR as common config (see `init_device`) — in that case the
-        // common-config `MmioRegion` itself covers the notify offset too,
-        // and `self.ring`/`notify_mmio` being distinct regions doesn't
-        // apply; the caller (`poll_device`) always passes the right region
-        // for this queue's notify capability.
-        if let Some(notify) = notify_mmio {
-            let off = notify_off + self.queue_notify_off as usize * notify_off_multiplier as usize;
-            notify.write::<u16>(off, EVENTQ_INDEX);
-        }
-    }
+    // Kick the queue once, immediately, *before* `DRIVER_OK`: every
+    // descriptor was just published as available, and the device does not
+    // proactively poll the avail ring. Without this initial kick the eventq
+    // sits idle forever — `poll_ring`'s own kick only fires *after* draining
+    // a used-ring entry, so the very first event would never arrive to
+    // trigger it. See `VirtioTransport::set_driver_ok`'s doc comment for the
+    // full incident history behind this ordering.
+    queue.kick(transport.notify_region());
+    transport.set_driver_ok();
+
+    Ok(DeviceState { transport, queue, events: Vec::with_capacity(EVENT_BUFFER_CAPACITY) })
 }
 
 /// A client `Read` request that couldn't be satisfied immediately because no
@@ -567,51 +149,57 @@ struct PendingRead {
 /// State for the one virtio-keyboard device this driver currently owns.
 /// Torn down (implicitly, by dropping) on `EVENT_DEVICE_REMOVED`.
 struct DeviceState {
-    /// Held (rather than dropped immediately) because closing it early
-    /// would release every MMIO mapping/DMA allocation/IRQ subscription
-    /// this driver is supposed to be holding (see
-    /// `DeviceResource::teardown`).
-    device_handle: DeviceHandle,
-    /// Kept alive so the common-config mapping isn't unmapped early; its
-    /// registers aren't touched again after `init_device` (this driver
-    /// doesn't reset the device on removal — dropping `device_handle` tears
-    /// the whole claim down, registers included).
-    #[allow(dead_code)]
-    common_mmio: MmioRegion,
-    /// `None` when the notify capability shares `common_mmio`'s BAR (see
-    /// `init_device`) — `notify_off` is then an offset into `common_mmio`
-    /// instead.
-    notify_mmio: Option<MmioRegion>,
-    notify_off: usize,
-    notify_off_multiplier: u32,
-    queue: EventQueue,
+    /// Owns the claimed device handle and its MMIO mappings. Held (rather
+    /// than dropped immediately) because dropping it releases every MMIO
+    /// mapping/DMA allocation/IRQ subscription this driver is supposed to be
+    /// holding (see `DeviceResource::teardown`). This driver never resets the
+    /// device on removal — dropping the claim tears it down, registers
+    /// included.
+    transport: VirtioTransport,
+    queue: VirtQueue,
     events: Vec<RawInputEvent>,
 }
 
 impl DeviceState {
-    /// Drain the virtqueue's used ring into `self.events`, dropping the
-    /// oldest buffered event past `EVENT_BUFFER_CAPACITY` (matching the
-    /// deleted kernel driver's ring buffer behaviour). Returns whether any
-    /// new events were buffered.
+    /// Drain every newly-completed used-ring entry, decode its event, recycle
+    /// the descriptor back onto the avail ring so the device can reuse it,
+    /// and notify the device once if anything was recycled. Decoded `EV_KEY`
+    /// events are buffered oldest-first, dropping the oldest past
+    /// `EVENT_BUFFER_CAPACITY` (matching the deleted kernel driver's ring
+    /// buffer behaviour). Returns whether any new events were buffered.
     fn poll_ring(&mut self) -> bool {
-        let notify_region_is_common = self.notify_mmio.is_none();
-        let (queue, notify_mmio, notify_off, notify_off_multiplier) = (
-            &mut self.queue,
-            if notify_region_is_common { Some(&self.common_mmio) } else { self.notify_mmio.as_ref() },
-            self.notify_off,
-            self.notify_off_multiplier,
-        );
-        let decoded = queue.drain(self.device_handle, notify_mmio, notify_off, notify_off_multiplier);
-        if decoded.is_empty() {
-            return false;
-        }
-        for event in decoded {
-            if self.events.len() >= EVENT_BUFFER_CAPACITY {
-                self.events.remove(0);
+        let mut buffered_new = false;
+        let mut recycled = false;
+
+        while let Some(used) = self.queue.pop_used() {
+            let desc_index = used.id as u16;
+
+            let (ring, scratch_off) = self.queue.scratch();
+            let event_off = scratch_off + INPUT_EVENT_LEN * desc_index as usize;
+            let event_type = ring.read::<u16>(event_off);
+            let code = ring.read::<u16>(event_off + 2);
+            let value = ring.read::<u32>(event_off + 4);
+            if event_type == EV_KEY {
+                if self.events.len() >= EVENT_BUFFER_CAPACITY {
+                    self.events.remove(0);
+                }
+                self.events.push(RawInputEvent { event_type, code, value });
+                buffered_new = true;
             }
-            self.events.push(event);
+
+            // Recycle: the buffer at `desc_index` is free again (the
+            // descriptor table entry itself doesn't need rewriting — it still
+            // points at the same buffer with the same `VIRTQ_DESC_F_WRITE`
+            // flags from `init_device`), so just republish it on the avail
+            // ring.
+            self.queue.publish(desc_index);
+            recycled = true;
         }
-        true
+
+        if recycled {
+            self.queue.kick(self.transport.notify_region());
+        }
+        buffered_new
     }
 
     /// Encode buffered events (oldest first) as packed `RawInputEvent`

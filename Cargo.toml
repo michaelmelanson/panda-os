@@ -11,6 +11,7 @@ members = [
   "userspace/ls",
   "userspace/cat",
   "userspace/libpanda",
+  "userspace/virtio-pci",
   "userspace/compositor",
   "userspace/compositor-protocol",
   "userspace/drivers/virtio-keyboard",
@@ -107,6 +108,7 @@ tar-no-std = { version = "0.4", default-features = false }
 async-trait = "0.1"
 ring-buffer = { path = "crates/ring-buffer" }
 libpanda = { path = "userspace/libpanda" }
+virtio-pci = { path = "userspace/virtio-pci" }
 
 # Required for no_std with -Zbuild-std: ensures core/alloc are built with
 # abort-on-panic since we have no unwinding runtime support.
