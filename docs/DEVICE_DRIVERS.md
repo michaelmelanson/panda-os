@@ -255,14 +255,87 @@ fn main() {
 
 `userspace/drivers/virtio-keyboard/src/main.rs` is the real, non-simplified
 version of this pattern — see it for how PendingRead-style deferred replies,
-virtio feature negotiation, and scheme-client serving fit together. Its
-module doc comment also records the one piece of this driver that is not
-yet real: the virtqueue (descriptor table/avail ring/used ring) is not
-implemented, so `poll_device` never actually decodes hardware-provided
-events yet, even though the claim/map/DMA/IRQ/scheme plumbing around it is
-real and working.
+virtqueue draining, and scheme-client serving fit together. A virtio driver
+should not hand-roll its transport: see the next section.
 
-## 10. Service manager integration
+## 10. Shared virtio-pci transport (`userspace/virtio-pci`)
+
+All three landed virtio drivers (`userspace/drivers/virtio-keyboard`,
+`.../virtio-blk`, `.../virtio-gpu`) speak the same virtio-pci **modern**
+(virtio 1.0+) transport. That transport lives once, in the
+`userspace/virtio-pci` crate. A fourth virtio driver must use it rather than
+re-deriving it — the three drivers each derived it independently first, and
+each rediscovered the same bugs.
+
+The kernel-only `virtio_drivers` crate is not an option for a userspace
+driver: it assumes direct physical-memory access and a `Hal` implemented
+against kernel internals. `virtio-pci` implements the equivalent against the
+`OP_DEVICE_*`/`OP_DMA_*` syscalls (`libpanda::device`) instead.
+
+### API
+
+- `VirtioTransport::claim_and_init(token, driver_features)` — claims the
+  device, walks its PCI capability list (`find_virtio_caps`), maps the BARs
+  the common-config/notify/device-config capabilities live in, and runs the
+  feature-negotiation handshake. Returns with the device at
+  `ACKNOWLEDGE | DRIVER | FEATURES_OK`; `DRIVER_OK` is deliberately left
+  unset. `VIRTIO_F_VERSION_1` is always required and accepted; extra bits
+  come from `driver_features` (today every driver passes `0`).
+- `transport.subscribe_irq(&mailbox)` — routes the device's MSI-X vector to
+  a mailbox as `EVENT_DEVICE_IRQ`. Call it before setting up queues.
+- `transport.setup_queue(QueueConfig { index, wanted_size, min_size,
+  scratch_len, scratch_len_per_descriptor })` — sizes the queue, allocates
+  and lays out one DMA region holding the descriptor table, avail ring, used
+  ring and a driver-owned scratch area, programs the device's queue
+  registers, and enables the queue. Returns a `VirtQueue`.
+- `transport.device_config()` — the device-specific config region and
+  offset, `None` if the device has no such capability (virtio-blk reads its
+  `capacity` here; keyboard and GPU don't use theirs).
+- `transport.notify_region()` / `transport.common()` /
+  `transport.device_handle()` — the mapped regions and the claim handle, for
+  a driver's own needs (e.g. virtio-gpu's framebuffer `dma_alloc`).
+- `transport.set_driver_ok()` — finishes the handshake.
+- `VirtQueue`: `size()`, `scratch()` / `scratch_iova(off)`,
+  `set_descriptor(index, addr, len, flags, next)`, `publish(head)`,
+  `pop_used() -> Option<UsedElem>`, `kick(notify_region)`, `notify_addr()`.
+
+The crate deliberately owns only the *generic* mechanics. Payload layout is
+the driver's: virtio-input puts one fixed-size event buffer per descriptor in
+the scratch area and lets the device fill it; virtio-blk puts a
+header/data/status triple there and builds three-descriptor chains;
+virtio-gpu puts a send/recv command buffer pair there. There is no generic
+"virtio framework" here and there should not be one.
+
+### Landmine invariants
+
+Three details each caused a real, hard-to-diagnose bug. They are implemented
+in the crate so no driver has to rediscover them; the full incident histories
+are in the doc comments named below.
+
+1. **Notify address** (`find_virtio_caps`, `VirtQueue::notify_addr`):
+   `notify_addr = notify_cap.offset + queue_notify_off * notify_off_multiplier`.
+   `notify_off_multiplier` is a 4-byte field appended *after* the standard
+   16-byte `virtio_pci_cap` header (i.e. at `cap_ptr + 16`) and exists only
+   for `cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG`. Reading it through a generic
+   capability struct silently yields `0`, which collapses every queue's
+   doorbell onto the notify region's base — invisible on a single-queue
+   device, fatal on a multi-queue one.
+2. **Kick before `DRIVER_OK`, not after**
+   (`VirtioTransport::set_driver_ok`): a driver whose queue already has
+   buffers published at init time must `kick()` *before* setting
+   `DRIVER_OK`. This is why `set_driver_ok` is a separate call rather than
+   something `setup_queue` does. virtio-keyboard needs it (its eventq
+   publishes every descriptor at setup); virtio-blk and virtio-gpu start
+   with empty queues and have nothing to kick. Getting this backwards made
+   QEMU never touch the eventq at all.
+3. **Queue-size clamp *and* writeback** (`VirtioTransport::setup_queue`):
+   the driver's clamped queue size must be written back to `queue_size`
+   before `queue_enable` (virtio-v1.1 4.1.4.3.2). The device computes ring
+   positions modulo *that register*, not its own maximum, so omitting the
+   write makes it read out of bounds past a smaller driver-side ring once
+   `avail.idx` wraps. `setup_queue` performs the write unconditionally.
+
+## 11. Service manager integration
 
 At startup, the service manager (`userspace/init/`) builds a
 `DriverRegistry` by scanning driver binaries for `.panda_devices.*`

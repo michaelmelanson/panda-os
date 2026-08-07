@@ -9,18 +9,15 @@
 //! `userspace/compositor`) — that contract is permanent; only the provider
 //! moved to userspace.
 //!
-//! # Virtio transport: hand-rolled, not `virtio_drivers`
+//! # Virtio transport: the shared `virtio-pci` crate
 //!
-//! Same rationale as `userspace/drivers/virtio-keyboard` (see that module's
-//! doc comment in full): the kernel-only `virtio_drivers` crate assumes
-//! direct physical memory access, which a userspace process doesn't have.
-//! This driver re-derives the virtio-pci modern-transport plumbing (PCI
-//! capability walk, feature negotiation, split virtqueue) by hand, against
-//! the `OP_DEVICE_*`/`OP_DMA_*` syscalls, duplicating
-//! `userspace/drivers/virtio-keyboard`'s equivalent code rather than
-//! factoring a shared crate (acceptable given time constraints — see
-//! `plans/device-driver-model.md`'s M4 landed-deviations note for this as
-//! tracked follow-up debt).
+//! The virtio-pci modern-transport plumbing (PCI capability walk, feature
+//! negotiation, split virtqueue, doorbell computation) lives in
+//! `userspace/virtio-pci`, shared with `userspace/drivers/virtio-keyboard`
+//! and `userspace/drivers/virtio-blk` — see that crate's doc comment for why
+//! it is hand-rolled against the `OP_DEVICE_*`/`OP_DMA_*` syscalls instead of
+//! using the kernel-only `virtio_drivers` crate, and for the three transport
+//! landmines it encapsulates.
 //!
 //! # Only the control queue; no cursor queue
 //!
@@ -75,7 +72,7 @@
 
 extern crate alloc;
 
-use libpanda::device::{self, BusType, EVENT_DEVICE_ADDED, EVENT_DEVICE_REMOVED, MmioRegion, PciDeviceId};
+use libpanda::device::{self, BusType, EVENT_DEVICE_ADDED, EVENT_DEVICE_REMOVED, PciDeviceId};
 use libpanda::error::Result;
 use libpanda::mailbox::Mailbox;
 use libpanda::scheme::SchemeProvider;
@@ -83,7 +80,7 @@ use libpanda::{Handle, environment, process};
 use panda_abi::ErrorCode;
 use panda_abi::scheme_protocol::Request;
 
-type DeviceHandle = Handle;
+use virtio_pci::{QueueConfig, VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE, VirtQueue, VirtioTransport};
 
 // 0x1AF4 is the Red Hat/virtio PCI vendor ID; 0x1050 is the "virtio 1.0 GPU
 // device" ID (see the deleted `panda-kernel/src/devices/virtio_gpu/mod.rs`
@@ -98,148 +95,15 @@ const VIRTIO_GPU_DEVICE_ID: u16 = 0x1050;
 libpanda::pci_device_table![{ vendor: VIRTIO_VENDOR_ID, device: VIRTIO_GPU_DEVICE_ID }];
 
 // =============================================================================
-// PCI config space / virtio-pci capability walk — identical in structure to
-// `userspace/drivers/virtio-keyboard`'s copy; see that module for the
-// virtio-v1.1 spec citations.
+// virtio-gpu controlq: a small, fixed-size queue used for one synchronous
+// request/response at a time (mirrors
+// `virtio_drivers::device::gpu::VirtIOGpu::request`, which also serialises on
+// one in-flight descriptor chain). Everything generic to virtio-pci modern
+// transport (capability walk, feature negotiation, virtqueue layout, doorbell
+// computation) lives in the shared `virtio-pci` crate.
 // =============================================================================
-
-const PCI_STATUS_OFFSET: u32 = 0x06;
-const PCI_STATUS_CAP_LIST: u32 = 1 << 4;
-const PCI_CAPABILITIES_POINTER_OFFSET: u32 = 0x34;
-const PCI_CAP_ID_VNDR: u8 = 0x09;
-
-const VIRTIO_PCI_CAP_COMMON_CFG: u8 = 1;
-const VIRTIO_PCI_CAP_NOTIFY_CFG: u8 = 2;
-
-#[derive(Clone, Copy)]
-struct VirtioCap {
-    bar: u8,
-    offset: u32,
-    #[allow(dead_code)]
-    length: u32,
-    notify_off_multiplier: u32,
-}
-
-fn find_virtio_caps(device_handle: DeviceHandle) -> Result<(VirtioCap, VirtioCap)> {
-    let status = device::device_pci_config_read(device_handle, PCI_STATUS_OFFSET, 2)?;
-    if status & PCI_STATUS_CAP_LIST == 0 {
-        return Err(ErrorCode::NotSupported);
-    }
-
-    let mut common: Option<VirtioCap> = None;
-    let mut notify: Option<VirtioCap> = None;
-
-    let mut cap_ptr =
-        (device::device_pci_config_read(device_handle, PCI_CAPABILITIES_POINTER_OFFSET, 1)? as u8) & 0xFC;
-    for _ in 0..64 {
-        if cap_ptr == 0 {
-            break;
-        }
-        let cap_id = device::device_pci_config_read(device_handle, cap_ptr as u32, 1)? as u8;
-        let next = device::device_pci_config_read(device_handle, cap_ptr as u32 + 1, 1)? as u8;
-
-        if cap_id == PCI_CAP_ID_VNDR {
-            let cfg_type = device::device_pci_config_read(device_handle, cap_ptr as u32 + 3, 1)? as u8;
-            let bar = device::device_pci_config_read(device_handle, cap_ptr as u32 + 4, 1)? as u8;
-            let offset = device::device_pci_config_read(device_handle, cap_ptr as u32 + 8, 4)?;
-            let length = device::device_pci_config_read(device_handle, cap_ptr as u32 + 12, 4)?;
-            match cfg_type {
-                VIRTIO_PCI_CAP_COMMON_CFG => {
-                    common = Some(VirtioCap { bar, offset, length, notify_off_multiplier: 0 });
-                }
-                VIRTIO_PCI_CAP_NOTIFY_CFG => {
-                    let notify_off_multiplier =
-                        device::device_pci_config_read(device_handle, cap_ptr as u32 + 16, 4)?;
-                    notify = Some(VirtioCap { bar, offset, length, notify_off_multiplier });
-                }
-                _ => {}
-            }
-        }
-
-        cap_ptr = next & 0xFC;
-    }
-
-    match (common, notify) {
-        (Some(common), Some(notify)) => Ok((common, notify)),
-        _ => Err(ErrorCode::NotSupported),
-    }
-}
-
-// =============================================================================
-// Virtio device status/feature negotiation.
-// =============================================================================
-
-const VIRTIO_STATUS_ACKNOWLEDGE: u8 = 1;
-const VIRTIO_STATUS_DRIVER: u8 = 2;
-const VIRTIO_STATUS_DRIVER_OK: u8 = 4;
-const VIRTIO_STATUS_FEATURES_OK: u8 = 8;
-
-const VIRTIO_F_VERSION_1_HIGH_BIT: u32 = 1 << 0; // bit 32 overall = bit 0 of the high dword
-
-mod common_cfg {
-    pub const DEVICE_FEATURE_SELECT: usize = 0;
-    pub const DEVICE_FEATURE: usize = 4;
-    pub const DRIVER_FEATURE_SELECT: usize = 8;
-    pub const DRIVER_FEATURE: usize = 12;
-    pub const DEVICE_STATUS: usize = 20;
-    pub const QUEUE_SELECT: usize = 22;
-    pub const QUEUE_SIZE: usize = 24;
-    pub const QUEUE_MSIX_VECTOR: usize = 26;
-    pub const QUEUE_ENABLE: usize = 28;
-    pub const QUEUE_NOTIFY_OFF: usize = 30;
-    pub const QUEUE_DESC: usize = 32;
-    pub const QUEUE_DRIVER: usize = 40;
-    pub const QUEUE_DEVICE: usize = 48;
-}
 
 const CONTROLQ_INDEX: u16 = 0;
-/// The single MSI-X vector `DeviceResource::subscribe_irq` configures
-/// (table entry 0) — see the module doc comment.
-const MSIX_VECTOR_0: u16 = 0;
-
-fn negotiate_features(common: &MmioRegion, common_off: usize) -> Result<()> {
-    common.write::<u8>(common_off + common_cfg::DEVICE_STATUS, 0);
-    common.write::<u8>(common_off + common_cfg::DEVICE_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
-    common.write::<u8>(
-        common_off + common_cfg::DEVICE_STATUS,
-        VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER,
-    );
-
-    common.write::<u32>(common_off + common_cfg::DEVICE_FEATURE_SELECT, 1);
-    let device_feature_high = common.read::<u32>(common_off + common_cfg::DEVICE_FEATURE);
-    if device_feature_high & VIRTIO_F_VERSION_1_HIGH_BIT == 0 {
-        return Err(ErrorCode::NotSupported);
-    }
-    common.write::<u32>(common_off + common_cfg::DRIVER_FEATURE_SELECT, 0);
-    common.write::<u32>(common_off + common_cfg::DRIVER_FEATURE, 0);
-    common.write::<u32>(common_off + common_cfg::DRIVER_FEATURE_SELECT, 1);
-    common.write::<u32>(
-        common_off + common_cfg::DRIVER_FEATURE,
-        VIRTIO_F_VERSION_1_HIGH_BIT,
-    );
-
-    common.write::<u8>(
-        common_off + common_cfg::DEVICE_STATUS,
-        VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER | VIRTIO_STATUS_FEATURES_OK,
-    );
-    let status = common.read::<u8>(common_off + common_cfg::DEVICE_STATUS);
-    if status & VIRTIO_STATUS_FEATURES_OK == 0 {
-        return Err(ErrorCode::NotSupported);
-    }
-    Ok(())
-}
-
-// =============================================================================
-// Split virtqueue: a small, fixed-size controlq used for one synchronous
-// request/response at a time (mirrors
-// `virtio_drivers::device::gpu::VirtIOGpu::request`, which also serialises
-// on one in-flight descriptor chain).
-// =============================================================================
-
-const VIRTQ_DESC_F_NEXT: u16 = 1;
-const VIRTQ_DESC_F_WRITE: u16 = 2;
-const DESC_ENTRY_LEN: usize = 16;
-const USED_ENTRY_LEN: usize = 8;
 
 /// Fixed queue size: only one request is ever in flight, so two descriptors
 /// (send + recv) is enough; virtqueue sizes must be a power of two.
@@ -249,155 +113,12 @@ const QSIZE: u16 = 2;
 /// reads (`RESP_DISPLAY_INFO` at 32 bytes).
 const CMD_BUF_LEN: usize = 256;
 
-fn align_up(value: usize, align: usize) -> usize {
-    (value + align - 1) & !(align - 1)
-}
-
-struct QueueLayout {
-    desc_off: usize,
-    avail_off: usize,
-    used_off: usize,
-    send_off: usize,
-    recv_off: usize,
-    total_len: usize,
-}
-
-impl QueueLayout {
-    fn compute() -> Self {
-        let qsize = QSIZE as usize;
-        let desc_off = 0;
-        let avail_off = desc_off + DESC_ENTRY_LEN * qsize;
-        let avail_len = 4 + 2 * qsize;
-        let used_off = align_up(avail_off + avail_len, 4);
-        let used_len = 4 + USED_ENTRY_LEN * qsize;
-        let send_off = align_up(used_off + used_len, 8);
-        let recv_off = send_off + CMD_BUF_LEN;
-        let total_len = recv_off + CMD_BUF_LEN;
-        Self { desc_off, avail_off, used_off, send_off, recv_off, total_len }
-    }
-
-    fn desc_addr_off(&self, i: u16) -> usize {
-        self.desc_off + DESC_ENTRY_LEN * i as usize
-    }
-
-    fn avail_ring_off(&self, i: u16) -> usize {
-        self.avail_off + 4 + 2 * (i % QSIZE) as usize
-    }
-
-    fn used_ring_off(&self, i: u16) -> usize {
-        self.used_off + 4 + USED_ENTRY_LEN * (i % QSIZE) as usize
-    }
-}
-
-struct ControlQueue {
-    ring: MmioRegion,
-    #[allow(dead_code)]
-    virt_addr: usize,
-    #[allow(dead_code)]
-    dma_size: usize,
-    layout: QueueLayout,
-    send_iova: u64,
-    recv_iova: u64,
-    queue_notify_off: u16,
-    /// Next avail-ring slot / used-ring slot to consume — both advance by
-    /// one per request, since exactly one descriptor chain (head index 0)
-    /// is reused for every request.
-    next_idx: u16,
-    /// Dedicated mailbox `EVENT_DEVICE_IRQ` is posted to (via
-    /// `DeviceResource::subscribe_irq`, called once in `init_device`) —
-    /// `wait_for_response` blocks on this rather than polling the used
-    /// ring. Kept separate from the driver's main event-subscription
-    /// mailbox so blocking here can never swallow an
-    /// `EVENT_DEVICE_ADDED`/`EVENT_DEVICE_REMOVED` the main loop needs to
-    /// see.
-    irq_mailbox: Mailbox,
-}
-
-impl ControlQueue {
-    /// Publish a descriptor chain for `cmd` (already encoded into the send
-    /// buffer via [`Self::write_send`]) onto the avail ring. Returns the
-    /// avail/used slot this request occupies, to pass to
-    /// [`Self::wait_for_response`] — split from that method (rather than one
-    /// combined `request`) so the caller can ring the notify doorbell
-    /// (a separate `MmioRegion`, possibly a distinct struct field) in
-    /// between without holding two conflicting borrows of `self` at once.
-    fn prepare(&mut self, cmd_len: usize) -> u16 {
-        let head = 0u16;
-        let desc0 = self.layout.desc_addr_off(head);
-        self.ring.write::<u64>(desc0, self.send_iova);
-        self.ring.write::<u32>(desc0 + 8, cmd_len as u32);
-        self.ring.write::<u16>(desc0 + 12, VIRTQ_DESC_F_NEXT);
-        self.ring.write::<u16>(desc0 + 14, 1);
-
-        let desc1 = self.layout.desc_addr_off(1);
-        self.ring.write::<u64>(desc1, self.recv_iova);
-        self.ring.write::<u32>(desc1 + 8, CMD_BUF_LEN as u32);
-        self.ring.write::<u16>(desc1 + 12, VIRTQ_DESC_F_WRITE);
-        self.ring.write::<u16>(desc1 + 14, 0);
-
-        let avail_slot = self.next_idx;
-        self.ring.write::<u16>(self.layout.avail_ring_off(avail_slot), head);
-        let next_avail = avail_slot.wrapping_add(1);
-        self.ring.write::<u16>(self.layout.avail_off, 0); // flags
-        self.ring.write::<u16>(self.layout.avail_off + 2, next_avail);
-        avail_slot
-    }
-
-    /// Ring the controlq's doorbell: a 16-bit write of the queue index to
-    /// the notify capability's BAR at `notify_off` (already includes
-    /// `queue_notify_off * notify_off_multiplier` — see `Gpu::request`).
-    fn kick(&self, notify: &MmioRegion, notify_off: usize) {
-        notify.write::<u16>(notify_off, CONTROLQ_INDEX);
-    }
-
-    /// Block until `avail_slot`'s request completes, then return the number
-    /// of bytes the device wrote into the recv buffer.
-    ///
-    /// Checks the used ring first (a cheap in-memory read) in case the
-    /// completion already posted before this call — e.g. a very fast QEMU
-    /// response beating the driver back here — then blocks on
-    /// `irq_mailbox.recv()` for the MSI-X interrupt otherwise, re-checking
-    /// after every wake. This costs no CPU while waiting (unlike a spin/
-    /// yield poll loop — see the module doc comment for why that mattered
-    /// under `make test`'s default parallelism) and wakes promptly on the
-    /// real interrupt. Bounded to `MAX_WAKES` blocking waits so a
-    /// completely wedged device (e.g. misconfigured MSI-X routing) fails
-    /// loudly by returning stale/zeroed data instead of hanging this
-    /// process forever — in practice this never gets close to the bound,
-    /// since the mailbox is dedicated to this one IRQ source (see
-    /// `ControlQueue::irq_mailbox`'s doc comment) and every wake is a real
-    /// completion.
-    fn wait_for_response(&mut self, avail_slot: u16) -> usize {
-        const MAX_WAKES: u32 = 1000;
-        let target_used = avail_slot.wrapping_add(1);
-        let mut wakes = 0u32;
-        while self.ring.read::<u16>(self.layout.used_off + 2) != target_used {
-            if wakes >= MAX_WAKES {
-                break;
-            }
-            self.irq_mailbox.recv();
-            wakes += 1;
-        }
-        self.next_idx = target_used;
-
-        let used_entry_off = self.layout.used_ring_off(avail_slot);
-        self.ring.read::<u32>(used_entry_off + 4) as usize
-    }
-
-    fn send_buf(&self, len: usize) -> alloc::vec::Vec<u8> {
-        alloc::vec::Vec::with_capacity(len)
-    }
-
-    fn write_send(&self, bytes: &[u8]) {
-        for (i, b) in bytes.iter().enumerate() {
-            self.ring.write::<u8>(self.layout.send_off + i, *b);
-        }
-    }
-
-    fn read_recv(&self, len: usize) -> alloc::vec::Vec<u8> {
-        (0..len).map(|i| self.ring.read::<u8>(self.layout.recv_off + i)).collect()
-    }
-}
+/// Sub-layout of the queue's driver-owned scratch area: the send buffer (the
+/// command this driver writes) followed by the recv buffer (the response the
+/// device writes). Offsets are relative to the scratch area's base.
+const SEND_OFF: usize = 0;
+const RECV_OFF: usize = SEND_OFF + CMD_BUF_LEN;
+const SCRATCH_LEN: usize = RECV_OFF + CMD_BUF_LEN;
 
 /// One decoded GPU display-info response: whether scanout 0 is enabled, and
 /// its rectangle.
@@ -439,36 +160,95 @@ fn read_u32(buf: &[u8], off: usize) -> u32 {
 }
 
 struct Gpu {
-    queue: ControlQueue,
-    /// The notify capability's offset within whichever `MmioRegion` this
-    /// driver ends up writing the doorbell through (already includes
-    /// `queue_notify_off * notify_off_multiplier` — see `init_device`).
-    notify_off: usize,
-    /// Kept alive so the common-config mapping isn't unmapped early; its
-    /// registers aren't touched again after `init_device`.
-    #[allow(dead_code)]
-    common_mmio: MmioRegion,
-    /// `Some` only when the notify capability lives in a BAR distinct from
-    /// common config — see [`Self::notify_region`].
-    notify_mmio: Option<MmioRegion>,
-    #[allow(dead_code)]
-    device_handle: DeviceHandle,
+    /// Owns the claimed device handle and its MMIO mappings — dropping it
+    /// releases every MMIO mapping/DMA allocation/IRQ subscription (see
+    /// `DeviceResource::teardown`).
+    transport: VirtioTransport,
+    queue: VirtQueue,
+    /// Dedicated mailbox `EVENT_DEVICE_IRQ` is posted to (via
+    /// `VirtioTransport::subscribe_irq`, called once in `init_device`) —
+    /// `wait_for_response` blocks on this rather than polling the used ring.
+    /// Kept separate from the driver's main event-subscription mailbox so
+    /// blocking here can never swallow an
+    /// `EVENT_DEVICE_ADDED`/`EVENT_DEVICE_REMOVED` the main loop needs to
+    /// see.
+    irq_mailbox: Mailbox,
     width: u32,
     height: u32,
     framebuffer_iova: u64,
 }
 
 impl Gpu {
+    /// One synchronous controlq round trip: write `cmd_bytes` into the send
+    /// buffer, publish the send/recv descriptor chain, ring the doorbell, and
+    /// block until the device answers.
     fn request(&mut self, cmd_bytes: &[u8]) -> alloc::vec::Vec<u8> {
-        self.queue.write_send(cmd_bytes);
-        let avail_slot = self.queue.prepare(cmd_bytes.len());
-        self.queue.kick(self.notify_mmio.as_ref().unwrap_or(&self.common_mmio), self.notify_off);
-        let len = self.queue.wait_for_response(avail_slot);
-        self.queue.read_recv(len)
+        let (ring, scratch) = self.queue.scratch();
+        for (i, b) in cmd_bytes.iter().enumerate() {
+            ring.write::<u8>(scratch + SEND_OFF + i, *b);
+        }
+
+        // Descriptor 0: the command (device-readable), chained to
+        // descriptor 1: the response buffer (device-writable).
+        self.queue.set_descriptor(
+            0,
+            self.queue.scratch_iova(SEND_OFF),
+            cmd_bytes.len() as u32,
+            VIRTQ_DESC_F_NEXT,
+            1,
+        );
+        self.queue.set_descriptor(
+            1,
+            self.queue.scratch_iova(RECV_OFF),
+            CMD_BUF_LEN as u32,
+            VIRTQ_DESC_F_WRITE,
+            0,
+        );
+        self.queue.publish(0);
+        self.queue.kick(self.transport.notify_region());
+
+        let len = self.wait_for_response();
+        let (ring, scratch) = self.queue.scratch();
+        (0..len).map(|i| ring.read::<u8>(scratch + RECV_OFF + i)).collect()
+    }
+
+    /// Block until the in-flight request completes, then return the number of
+    /// bytes the device wrote into the recv buffer.
+    ///
+    /// Checks the used ring first (a cheap in-memory read) in case the
+    /// completion already posted before this call — e.g. a very fast QEMU
+    /// response beating the driver back here — then blocks on
+    /// `irq_mailbox.recv()` for the MSI-X interrupt otherwise, re-checking
+    /// after every wake. This costs no CPU while waiting (unlike a spin/
+    /// yield poll loop — see the module doc comment for why that mattered
+    /// under `make test`'s default parallelism) and wakes promptly on the
+    /// real interrupt. Bounded to `MAX_WAKES` blocking waits so a completely
+    /// wedged device (e.g. misconfigured MSI-X routing) fails loudly by
+    /// returning an empty response instead of hanging this process forever —
+    /// in practice this never gets close to the bound, since the mailbox is
+    /// dedicated to this one IRQ source (see `Gpu::irq_mailbox`'s doc
+    /// comment) and every wake is a real completion.
+    fn wait_for_response(&mut self) -> usize {
+        const MAX_WAKES: u32 = 1000;
+        let mut wakes = 0u32;
+        loop {
+            if let Some(used) = self.queue.pop_used() {
+                return used.len as usize;
+            }
+            if wakes >= MAX_WAKES {
+                return 0;
+            }
+            self.irq_mailbox.recv();
+            wakes += 1;
+        }
+    }
+
+    fn send_buf(&self, len: usize) -> alloc::vec::Vec<u8> {
+        alloc::vec::Vec::with_capacity(len)
     }
 
     fn get_display_info(&mut self) -> Result<DisplayInfo> {
-        let mut buf = self.queue.send_buf(24);
+        let mut buf = self.send_buf(24);
         write_ctrl_header(&mut buf, cmd::GET_DISPLAY_INFO);
         let resp = self.request(&buf);
         if resp.len() < 24 + 24 || read_u32(&resp, 0) != cmd::OK_DISPLAY_INFO {
@@ -481,7 +261,7 @@ impl Gpu {
     }
 
     fn resource_create_2d(&mut self, resource_id: u32, width: u32, height: u32) -> Result<()> {
-        let mut buf = self.queue.send_buf(40);
+        let mut buf = self.send_buf(40);
         write_ctrl_header(&mut buf, cmd::RESOURCE_CREATE_2D);
         buf.extend_from_slice(&resource_id.to_le_bytes());
         buf.extend_from_slice(&FORMAT_B8G8R8A8_UNORM.to_le_bytes());
@@ -492,7 +272,7 @@ impl Gpu {
     }
 
     fn resource_attach_backing(&mut self, resource_id: u32, iova: u64, length: u32) -> Result<()> {
-        let mut buf = self.queue.send_buf(56);
+        let mut buf = self.send_buf(56);
         write_ctrl_header(&mut buf, cmd::RESOURCE_ATTACH_BACKING);
         buf.extend_from_slice(&resource_id.to_le_bytes());
         buf.extend_from_slice(&1u32.to_le_bytes()); // nr_entries
@@ -504,7 +284,7 @@ impl Gpu {
     }
 
     fn set_scanout(&mut self, scanout_id: u32, resource_id: u32, width: u32, height: u32) -> Result<()> {
-        let mut buf = self.queue.send_buf(40);
+        let mut buf = self.send_buf(40);
         write_ctrl_header(&mut buf, cmd::SET_SCANOUT);
         buf.extend_from_slice(&0u32.to_le_bytes()); // rect.x
         buf.extend_from_slice(&0u32.to_le_bytes()); // rect.y
@@ -517,7 +297,7 @@ impl Gpu {
     }
 
     fn transfer_to_host_2d(&mut self, resource_id: u32, x: u32, y: u32, width: u32, height: u32) -> Result<()> {
-        let mut buf = self.queue.send_buf(56);
+        let mut buf = self.send_buf(56);
         write_ctrl_header(&mut buf, cmd::TRANSFER_TO_HOST_2D);
         buf.extend_from_slice(&x.to_le_bytes());
         buf.extend_from_slice(&y.to_le_bytes());
@@ -531,7 +311,7 @@ impl Gpu {
     }
 
     fn resource_flush(&mut self, resource_id: u32, x: u32, y: u32, width: u32, height: u32) -> Result<()> {
-        let mut buf = self.queue.send_buf(40);
+        let mut buf = self.send_buf(40);
         write_ctrl_header(&mut buf, cmd::RESOURCE_FLUSH);
         buf.extend_from_slice(&x.to_le_bytes());
         buf.extend_from_slice(&y.to_le_bytes());
@@ -580,99 +360,39 @@ fn check_ok_nodata(resp: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Claim the device, walk its virtio-pci capabilities, map the common
-/// config / notify BARs, negotiate features, set up the controlq, fetch the
-/// display's preferred resolution, allocate and attach a framebuffer, and
-/// set the scanout. Mirrors `userspace/drivers/virtio-keyboard`'s
-/// `init_device` structure.
+/// Claim the device, bring up the virtio transport, set up the controlq,
+/// fetch the display's preferred resolution, allocate and attach a
+/// framebuffer, and set the scanout.
 fn init_device(token: Handle) -> Result<Gpu> {
-    let device_handle: DeviceHandle = device::device_claim(token)?;
+    // No virtio-gpu feature bits are needed beyond the mandatory
+    // `VIRTIO_F_VERSION_1` the transport always negotiates.
+    let transport = VirtioTransport::claim_and_init(token, 0)?;
 
-    let (common_cap, notify_cap) = find_virtio_caps(device_handle)?;
-
-    let common_mmio = device::device_map_mmio(device_handle, common_cap.bar as u32)?;
-    let notify_mmio = if notify_cap.bar == common_cap.bar {
-        None
-    } else {
-        Some(device::device_map_mmio(device_handle, notify_cap.bar as u32)?)
-    };
-
-    negotiate_features(&common_mmio, common_cap.offset as usize)?;
-
-    // Subscribe to (and thereby enable, via `enable_msix` —
-    // `DeviceResource::subscribe_irq`) the device's MSI-X vector *before*
-    // programming `QUEUE_MSIX_VECTOR` to point at it and *before*
-    // `DRIVER_OK` is set — same ordering rationale as
-    // `userspace/drivers/virtio-keyboard`'s `init_device`: the device
-    // should never have a window where it could complete a request against
-    // an interrupt source that isn't wired up yet (virtio-v1.1 3.1.1
-    // describes `DRIVER_OK` as the last status bit set, after the device is
-    // fully configured).
+    // Subscribe to (and thereby enable) the device's MSI-X vector *before*
+    // `setup_queue` programs `queue_msix_vector` to point at it and *before*
+    // `DRIVER_OK` is set — see `VirtioTransport::subscribe_irq`'s doc comment.
     let irq_mailbox = Mailbox::create()?;
-    device::device_subscribe_irq(device_handle, irq_mailbox.handle())?;
+    transport.subscribe_irq(&irq_mailbox)?;
 
-    common_mmio.write::<u16>(common_cap.offset as usize + common_cfg::QUEUE_SELECT, CONTROLQ_INDEX);
-    let max_size = common_mmio.read::<u16>(common_cap.offset as usize + common_cfg::QUEUE_SIZE);
-    if max_size == 0 || max_size < QSIZE {
-        return Err(ErrorCode::NotSupported);
-    }
+    let queue = transport.setup_queue(QueueConfig {
+        index: CONTROLQ_INDEX,
+        wanted_size: QSIZE,
+        min_size: QSIZE,
+        scratch_len: SCRATCH_LEN,
+        scratch_len_per_descriptor: 0,
+    })?;
 
-    let layout = QueueLayout::compute();
-    let (virt_addr, iova) = device::dma_alloc(device_handle, layout.total_len)?;
-    let ring = unsafe { MmioRegion::new(virt_addr as *mut u8, layout.total_len) };
-    let send_iova = iova + layout.send_off as u64;
-    let recv_iova = iova + layout.recv_off as u64;
+    // Nothing is published on the controlq at init time (every request
+    // publishes its own chain and kicks), so there is no pre-`DRIVER_OK`
+    // kick to make here — see `VirtioTransport::set_driver_ok`'s doc comment
+    // for when there is.
+    transport.set_driver_ok();
 
-    let desc_iova = iova + layout.desc_off as u64;
-    let avail_iova = iova + layout.avail_off as u64;
-    let used_iova = iova + layout.used_off as u64;
-    let common_off = common_cap.offset as usize;
-    // Tell the device the queue size this driver actually laid out
-    // (`QSIZE`, not the device's own `max_size`) — without this write the
-    // device keeps using its own (larger) default and reads/writes the
-    // avail/used rings as if they were sized for that many entries,
-    // overrunning this driver's much smaller DMA allocation and corrupting
-    // adjacent memory (observed as QEMU's "Guest says index NNN is
-    // available" once the first out-of-bounds avail.idx read returned
-    // garbage). Per virtio-v1.1 4.1.4.3.2, queue_size may only be *shrunk*
-    // from queue_size's reset value (`max_size`), which `QSIZE` always is.
-    common_mmio.write::<u16>(common_off + common_cfg::QUEUE_SIZE, QSIZE);
-    common_mmio.write::<u64>(common_off + common_cfg::QUEUE_DESC, desc_iova);
-    common_mmio.write::<u64>(common_off + common_cfg::QUEUE_DRIVER, avail_iova);
-    common_mmio.write::<u64>(common_off + common_cfg::QUEUE_DEVICE, used_iova);
-    common_mmio.write::<u16>(common_off + common_cfg::QUEUE_MSIX_VECTOR, MSIX_VECTOR_0);
-    let queue_notify_off = common_mmio.read::<u16>(common_off + common_cfg::QUEUE_NOTIFY_OFF);
-    common_mmio.write::<u16>(common_off + common_cfg::QUEUE_ENABLE, 1);
-
-    common_mmio.write::<u8>(
-        common_off + common_cfg::DEVICE_STATUS,
-        VIRTIO_STATUS_ACKNOWLEDGE
-            | VIRTIO_STATUS_DRIVER
-            | VIRTIO_STATUS_FEATURES_OK
-            | VIRTIO_STATUS_DRIVER_OK,
-    );
-
-    let queue = ControlQueue {
-        ring,
-        virt_addr,
-        dma_size: layout.total_len,
-        layout,
-        send_iova,
-        recv_iova,
-        queue_notify_off,
-        next_idx: 0,
-        irq_mailbox,
-    };
-
-    let notify_off = notify_cap.offset as usize
-        + queue.queue_notify_off as usize * notify_cap.notify_off_multiplier as usize;
-
+    let device_handle = transport.device_handle();
     let mut gpu = Gpu {
+        transport,
         queue,
-        notify_off,
-        common_mmio,
-        notify_mmio,
-        device_handle,
+        irq_mailbox,
         width: 0,
         height: 0,
         framebuffer_iova: 0,
@@ -699,6 +419,7 @@ fn init_device(token: Handle) -> Result<Gpu> {
 
     Ok(gpu)
 }
+
 
 // =============================================================================
 // display: scheme serving
@@ -792,7 +513,7 @@ libpanda::main! {
             provider = None;
             device = None;
         }
-        // `EVENT_DEVICE_IRQ` is posted to `ControlQueue::irq_mailbox`, a
+        // `EVENT_DEVICE_IRQ` is posted to `Gpu::irq_mailbox`, a
         // dedicated mailbox `Gpu::request`/`wait_for_response` block on
         // directly — never to this one (the driver's main event-
         // subscription mailbox), so there's nothing to handle for it here.

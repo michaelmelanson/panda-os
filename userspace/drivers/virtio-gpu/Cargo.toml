@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 libpanda = { workspace = true }
 panda-abi = { path = "../../../panda-abi" }
+virtio-pci = { workspace = true }
 
 [[bin]]
 name = "virtio-gpu"
