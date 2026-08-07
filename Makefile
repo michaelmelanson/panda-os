@@ -156,7 +156,22 @@ ext2-image: $(EXT2_IMAGE)
 $(EXT2_IMAGE): compositor terminal hello ls cat virtio-keyboard virtio-gpu
 	@echo "Creating ext2 test image..."
 	@mkdir -p build
-	dd if=/dev/zero of=$(EXT2_IMAGE) bs=1M count=32 2>/dev/null
+	# 32M used to be enough, but debug (unstripped) userspace binaries have
+	# grown considerably since M4 added virtio-keyboard/virtio-blk/virtio-gpu
+	# alongside compositor/terminal/hello/ls/cat — the full debug-profile set
+	# written below now totals ~43MB, comfortably over a 32M image. debugfs's
+	# `write` silently succeeds even when the filesystem is out of free
+	# blocks: it still records the source file's correct *size* in the
+	# inode, but leaves the file with zero allocated blocks (an
+	# indistinguishable-looking sparse file), so every read of it returns
+	# zeros instead of an error — the failure is invisible until something
+	# actually parses the content (e.g. `userspace/init/src/driver_registry.rs`
+	# reading an ELF section from a driver spawned via `file:/mnt/drivers`,
+	# which found a `.panda_devices.pci`-less all-zero "binary" and silently
+	# skipped it, so `init` never spawned virtio-gpu/virtio-keyboard from a
+	# real ext2-mounted boot at all). 128M leaves comfortable headroom for
+	# further growth without depending on exact binary sizes staying put.
+	dd if=/dev/zero of=$(EXT2_IMAGE) bs=1M count=128 2>/dev/null
 	mkfs.ext2 -F $(EXT2_IMAGE) >/dev/null 2>&1
 	@# Populate the image using debugfs (no root required)
 	@echo "Hello from ext2!" > build/hello.txt
