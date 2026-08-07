@@ -126,6 +126,15 @@ libpanda::main! {
             Ok(Some(Request::Size { request_id, .. })) => {
                 let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
             }
+            Ok(Some(Request::DisplayInfo { request_id, .. })) => {
+                let _ = provider.reply_display_info_err(request_id, ErrorCode::NotSupported);
+            }
+            Ok(Some(Request::DisplayMap { request_id, .. })) => {
+                let _ = provider.reply_display_map_err(request_id, ErrorCode::NotSupported);
+            }
+            Ok(Some(Request::DisplayFlush { request_id, .. })) => {
+                let _ = provider.reply_display_flush_err(request_id, ErrorCode::NotSupported);
+            }
             Ok(None) => {
                 process::yield_now();
             }

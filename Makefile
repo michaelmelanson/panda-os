@@ -34,17 +34,32 @@ control_plane_test_EXTRAS := control_plane_child
 env_test_EXTRAS := env_child
 fault_recovery_test_EXTRAS := fault_child
 handle_transfer_test_EXTRAS := handle_transfer_child
-claim_test_EXTRAS := claim_child virtio-blk
+# claim_test acts as its own `init` (no service manager runs to spawn
+# `block:`'s/`display:`'s providers from `initrd:/drivers`) and needs both
+# a real `block:/pci/storage/0` (M4 Phase 2) and a real
+# `display:/pci/display/0` (roadmap M4) to open for its claim-lifecycle
+# cases, so it spawns both userspace drivers directly, the same way
+# block_test/ext2_*_test and display_test/compositor_start_test do (see
+# those below).
+claim_test_EXTRAS := claim_child virtio-blk virtio-gpu
 buffer_transfer_test_EXTRAS := buffer_transfer_child
 buffer_owner_test_EXTRAS := buffer_owner_child
 scheme_provider_test_EXTRAS := scheme_provider_child
 scheme_provider_concurrency_test_EXTRAS := scheme_provider_conc_provider_child scheme_provider_conc_client_child
-window_test_EXTRAS := compositor_test_child
-multi_window_test_EXTRAS := compositor_test_child
-alpha_test_EXTRAS := compositor_test_child
-partial_refresh_test_EXTRAS := compositor_test_child
-window_move_test_EXTRAS := compositor_test_child
-compositor_protocol_test_EXTRAS := compositor_test_child
+# Roadmap M4: `compositor_test_child` (the shared helper every screenshot-
+# verified compositor test spawns) now spawns the userspace virtio-gpu
+# driver itself before starting the compositor (see that binary's doc
+# comment) — it needs `virtio-gpu` present in the same initrd, and since
+# `_EXTRAS` is not transitive (each top-level test's initrd is only the test
+# binary plus its own `_EXTRAS` list — see `userspace-test`'s recipe below),
+# every test that spawns `compositor_test_child` needs `virtio-gpu` listed
+# too, not just `compositor_test_child`.
+window_test_EXTRAS := compositor_test_child virtio-gpu
+multi_window_test_EXTRAS := compositor_test_child virtio-gpu
+alpha_test_EXTRAS := compositor_test_child virtio-gpu
+partial_refresh_test_EXTRAS := compositor_test_child virtio-gpu
+window_move_test_EXTRAS := compositor_test_child virtio-gpu
+compositor_protocol_test_EXTRAS := compositor_test_child virtio-gpu
 # keyboard_test/mailbox_keyboard_test act as their own `init` (no service
 # manager runs to spawn drivers from `initrd:/drivers` — see
 # `userspace/init/src/driver_registry.rs`), so they spawn the
@@ -63,7 +78,12 @@ ext2_test_EXTRAS := virtio-blk
 ext2_create_test_EXTRAS := virtio-blk
 ext2_mkdir_test_EXTRAS := virtio-blk
 ext2_write_test_EXTRAS := virtio-blk
-export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS mailbox_overflow_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS fault_recovery_test_EXTRAS handle_transfer_test_EXTRAS claim_test_EXTRAS buffer_transfer_test_EXTRAS buffer_owner_test_EXTRAS scheme_provider_test_EXTRAS scheme_provider_concurrency_test_EXTRAS window_test_EXTRAS multi_window_test_EXTRAS alpha_test_EXTRAS partial_refresh_test_EXTRAS window_move_test_EXTRAS compositor_protocol_test_EXTRAS keyboard_test_EXTRAS mailbox_keyboard_test_EXTRAS block_test_EXTRAS ext2_test_EXTRAS ext2_create_test_EXTRAS ext2_mkdir_test_EXTRAS ext2_write_test_EXTRAS
+# display_test/compositor_start_test also act as their own `init` (see
+# their doc comments) and spawn the userspace virtio-gpu driver (roadmap M4)
+# directly.
+display_test_EXTRAS := virtio-gpu
+compositor_start_test_EXTRAS := virtio-gpu
+export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS mailbox_overflow_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS fault_recovery_test_EXTRAS handle_transfer_test_EXTRAS claim_test_EXTRAS buffer_transfer_test_EXTRAS buffer_owner_test_EXTRAS scheme_provider_test_EXTRAS scheme_provider_concurrency_test_EXTRAS window_test_EXTRAS multi_window_test_EXTRAS alpha_test_EXTRAS partial_refresh_test_EXTRAS window_move_test_EXTRAS compositor_protocol_test_EXTRAS keyboard_test_EXTRAS mailbox_keyboard_test_EXTRAS block_test_EXTRAS ext2_test_EXTRAS ext2_create_test_EXTRAS ext2_mkdir_test_EXTRAS ext2_write_test_EXTRAS display_test_EXTRAS compositor_start_test_EXTRAS
 export PROFILE_DIR CARGO_PROFILE
 
 # Cargo commands for custom targets (require build-std for no_std targets)
@@ -73,7 +93,7 @@ KERNEL_TARGET := --target ./x86_64-panda-uefi.json
 USERSPACE_TARGET := --target ./x86_64-panda-userspace.json
 
 # Build targets
-build: panda-kernel init compositor terminal hello ls cat virtio-keyboard virtio-blk
+build: panda-kernel init compositor terminal hello ls cat virtio-keyboard virtio-blk virtio-gpu
 	mkdir -p build/run/efi/boot
 	mkdir -p build/run/initrd/drivers
 	cp target/x86_64-panda-uefi/$(PROFILE_DIR)/panda-kernel.efi build/run/efi/boot/bootx64.efi
@@ -119,6 +139,9 @@ virtio-keyboard:
 virtio-blk:
 	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package virtio-blk $(USERSPACE_TARGET)
 
+virtio-gpu:
+	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package virtio-gpu $(USERSPACE_TARGET)
+
 run: build ext2-image
 	$(QEMU_COMMON) \
 		-drive format=raw,file=fat:rw:build/run \
@@ -130,17 +153,32 @@ run: build ext2-image
 # Create ext2 test disk image
 ext2-image: $(EXT2_IMAGE)
 
-$(EXT2_IMAGE): compositor terminal hello ls cat virtio-keyboard
+$(EXT2_IMAGE): compositor terminal hello ls cat virtio-keyboard virtio-gpu
 	@echo "Creating ext2 test image..."
 	@mkdir -p build
-	dd if=/dev/zero of=$(EXT2_IMAGE) bs=1M count=32 2>/dev/null
+	# 32M used to be enough, but debug (unstripped) userspace binaries have
+	# grown considerably since M4 added virtio-keyboard/virtio-blk/virtio-gpu
+	# alongside compositor/terminal/hello/ls/cat — the full debug-profile set
+	# written below now totals ~43MB, comfortably over a 32M image. debugfs's
+	# `write` silently succeeds even when the filesystem is out of free
+	# blocks: it still records the source file's correct *size* in the
+	# inode, but leaves the file with zero allocated blocks (an
+	# indistinguishable-looking sparse file), so every read of it returns
+	# zeros instead of an error — the failure is invisible until something
+	# actually parses the content (e.g. `userspace/init/src/driver_registry.rs`
+	# reading an ELF section from a driver spawned via `file:/mnt/drivers`,
+	# which found a `.panda_devices.pci`-less all-zero "binary" and silently
+	# skipped it, so `init` never spawned virtio-gpu/virtio-keyboard from a
+	# real ext2-mounted boot at all). 128M leaves comfortable headroom for
+	# further growth without depending on exact binary sizes staying put.
+	dd if=/dev/zero of=$(EXT2_IMAGE) bs=1M count=128 2>/dev/null
 	mkfs.ext2 -F $(EXT2_IMAGE) >/dev/null 2>&1
 	@# Populate the image using debugfs (no root required)
 	@echo "Hello from ext2!" > build/hello.txt
 	@echo "Nested file content" > build/nested.txt
 	@dd if=/dev/urandom of=build/large.bin bs=1024 count=8 2>/dev/null
 	@echo "Deep file" > build/deep.txt
-	@debugfs -w $(EXT2_IMAGE) -f /dev/stdin <<< $$'mkdir subdir\nmkdir a\nmkdir a/b\nmkdir a/b/c\nmkdir drivers\nwrite build/hello.txt hello.txt\nwrite build/nested.txt subdir/nested.txt\nwrite build/large.bin large.bin\nwrite build/deep.txt a/b/c/deep.txt\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/compositor compositor\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/terminal terminal\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/hello hello\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/ls ls\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/cat cat\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/virtio-keyboard drivers/virtio-keyboard' 2>/dev/null
+	@debugfs -w $(EXT2_IMAGE) -f /dev/stdin <<< $$'mkdir subdir\nmkdir a\nmkdir a/b\nmkdir a/b/c\nmkdir drivers\nwrite build/hello.txt hello.txt\nwrite build/nested.txt subdir/nested.txt\nwrite build/large.bin large.bin\nwrite build/deep.txt a/b/c/deep.txt\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/compositor compositor\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/terminal terminal\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/hello hello\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/ls ls\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/cat cat\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/virtio-keyboard drivers/virtio-keyboard\nwrite target/x86_64-panda-userspace/$(PROFILE_DIR)/virtio-gpu drivers/virtio-gpu' 2>/dev/null
 	@rm -f build/hello.txt build/nested.txt build/large.bin build/deep.txt
 	@echo "Ext2 image created: $(EXT2_IMAGE)"
 

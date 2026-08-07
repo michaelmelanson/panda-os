@@ -2,13 +2,33 @@
 //! scheme.
 
 use compositor_protocol::Rect;
-use libpanda::{Handle, environment, sys};
+use libpanda::{Handle, environment, process, sys};
 use panda_abi::{ErrorCode, SurfaceInfoOut, SurfaceRect};
 
 use crate::target::Target;
 
 /// The exclusively-claimed display the compositor presents to.
 pub const DISPLAY_PATH: &str = "display:/pci/display/0";
+
+/// `init` (`userspace/init/src/main.rs`) spawns the userspace virtio-gpu
+/// driver and then immediately spawns the compositor right after — but
+/// spawning a process only starts it, it doesn't block until the driver
+/// has actually claimed the GPU and called `OP_SCHEME_REGISTER` for
+/// `display:`. Opening `display:/pci/display/0` before that registration
+/// lands fails immediately (there's no scheme provider to answer yet), and
+/// `Framebuffer::open` used to treat that first failure as final —
+/// `Compositor::new` would catch it, log "running without output", and the
+/// compositor would then run headless forever with no further retry,
+/// silently losing the race under real multi-device boot timing (virtio-gpu
+/// competing with virtio-blk/virtio-keyboard/virtio-mouse for scheduler
+/// time makes the race far less favourable than any single test's
+/// virtio-gpu-only boot). Retrying briefly instead of failing on the first
+/// attempt closes that race, the same way `vfs::mount_ext2` already does
+/// for the identical `block:` race against virtio-blk's startup (see
+/// `MOUNT_RETRY_ATTEMPTS`/`MOUNT_RETRY_SLEEP_MS` in
+/// `panda-kernel/src/vfs/mod.rs`) — same constants, same 2s total budget.
+const DISPLAY_OPEN_RETRY_ATTEMPTS: u32 = 200;
+const DISPLAY_OPEN_RETRY_SLEEP_MS: u64 = 10;
 
 /// A mapped framebuffer.
 pub struct Framebuffer {
@@ -22,11 +42,27 @@ pub struct Framebuffer {
 impl Framebuffer {
     /// Claim the display, query its mode and map its framebuffer.
     ///
-    /// `Busy` here is expected until the in-kernel compositor is deleted
-    /// (Phase 5 of plans/userspace-compositor.md): it holds a permanent
-    /// claim on the same display.
+    /// Retries the initial open for up to `DISPLAY_OPEN_RETRY_ATTEMPTS *
+    /// DISPLAY_OPEN_RETRY_SLEEP_MS` (~2s) — see
+    /// `DISPLAY_OPEN_RETRY_ATTEMPTS`'s doc comment for why: the very first
+    /// attempt can lose a startup race against the virtio-gpu driver
+    /// process still claiming the device and registering `display:`. A
+    /// `Busy` after the driver is definitely up (a real second claimant)
+    /// also retries here rather than failing fast — harmless, since it
+    /// just delays an already-expected failure by up to the same ~2s
+    /// instead of changing the outcome.
     pub fn open() -> Result<Self, ErrorCode> {
-        let handle = environment::open(DISPLAY_PATH, 0, 0)?;
+        let mut attempt = 0;
+        let handle = loop {
+            match environment::open(DISPLAY_PATH, 0, 0) {
+                Ok(handle) => break handle,
+                Err(_) if attempt < DISPLAY_OPEN_RETRY_ATTEMPTS => {
+                    attempt += 1;
+                    process::sleep(DISPLAY_OPEN_RETRY_SLEEP_MS);
+                }
+                Err(err) => return Err(err),
+            }
+        };
 
         let mut info = SurfaceInfoOut {
             width: 0,

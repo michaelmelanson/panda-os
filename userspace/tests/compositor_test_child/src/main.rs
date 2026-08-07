@@ -47,6 +47,7 @@
 //! reintroducing a multi-second floor per test.
 
 use libpanda::environment;
+use libpanda::ipc::Channel;
 
 /// Generous enough for any single test's handful of windows and commits;
 /// bounded so the test process doesn't hang if something never flushes.
@@ -56,7 +57,39 @@ const TICKS: u64 = 200;
 
 libpanda::main! {
     environment::log("compositor_test_child: starting");
+
+    // This process plays the role of `init` for every screenshot-verified
+    // test (see the module doc comment) — like `keyboard_test`, there is no
+    // service manager here to spawn `display:`'s provider from
+    // `initrd:/drivers`, so spawn the userspace virtio-gpu driver (roadmap
+    // M4) directly and wait for its "ready" signal before starting the
+    // compositor, which otherwise races the driver's async device-claim/
+    // feature-negotiation/scanout-setup startup and degrades to "running
+    // without output" (see `compositor::server::Compositor::new`).
+    let driver_channel = if let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-gpu") {
+        let channel = Channel::from_handle_borrowed(driver_handle.into());
+        if let Some(channel) = channel.as_ref() {
+            let mut ready_msg = [0u8; 64];
+            if channel.recv(&mut ready_msg).is_err() {
+                environment::log("compositor_test_child: virtio-gpu driver did not become ready");
+            }
+        }
+        channel
+    } else {
+        environment::log("compositor_test_child: could not spawn virtio-gpu driver");
+        None
+    };
+
     compositor::server::run(Some(TICKS));
+
+    // See `userspace/tests/keyboard_test` for why the driver needs an
+    // explicit shutdown request: it runs forever otherwise, and this
+    // process plays `init` (see the module doc comment), so nothing else
+    // will ask it to exit.
+    if let Some(channel) = driver_channel.as_ref() {
+        let _ = channel.send(b"shutdown");
+    }
+
     environment::log("compositor_test_child: finished");
     0
 }

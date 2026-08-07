@@ -190,8 +190,23 @@ impl Compositor {
                 SchemeRequest::Close { request_id, .. } => {
                     let _ = provider.reply_close_ok(request_id);
                 }
+                // `compositor:` is a Connect-only scheme (see the arm
+                // above); the `Size`/`DisplayInfo`/`DisplayMap`/
+                // `DisplayFlush` request kinds (M4) only ever arrive on a
+                // `block:`/`display:` provider (`userspace/drivers/virtio-blk`/
+                // `virtio-gpu`), not here, so there's nothing meaningful to
+                // answer beyond a generic rejection.
                 SchemeRequest::Size { request_id, .. } => {
                     let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
+                }
+                SchemeRequest::DisplayInfo { request_id, .. } => {
+                    let _ = provider.reply_display_info_err(request_id, ErrorCode::NotSupported);
+                }
+                SchemeRequest::DisplayMap { request_id, .. } => {
+                    let _ = provider.reply_display_map_err(request_id, ErrorCode::NotSupported);
+                }
+                SchemeRequest::DisplayFlush { request_id, .. } => {
+                    let _ = provider.reply_display_flush_err(request_id, ErrorCode::NotSupported);
                 }
             }
         }

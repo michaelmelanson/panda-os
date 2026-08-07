@@ -1,5 +1,4 @@
 pub mod claims;
-pub mod virtio_gpu;
 mod virtio_hal;
 
 use log::debug;
@@ -36,8 +35,12 @@ pub fn init() {
             // it is claimed via the OP_DEVICE_SUBSCRIBE/OP_DEVICE_CLAIM
             // model instead, same as virtio-keyboard.
             (0x1AF4, 0x1001, _) | (0x1AF4, 0x1042, _) => {}
-            // Virtio GPU
-            (0x1AF4, 0x1050, _) => virtio_gpu::init_from_pci_device(pci_device),
+            // Virtio GPU: moved to a userspace driver
+            // (userspace/drivers/virtio-gpu) — see plans/device-driver-model.md's
+            // M4 landed-deviations note. No kernel-resident init for this
+            // device anymore; it is claimed via the
+            // OP_DEVICE_SUBSCRIBE/OP_DEVICE_CLAIM model instead.
+            (0x1AF4, 0x1050, _) => {}
             // Virtio Input - keyboard (subclass 0x00): moved to a userspace
             // driver (userspace/drivers/virtio-keyboard) — see
             // plans/device-driver-model.md Phase 7. No kernel-resident init

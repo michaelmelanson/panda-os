@@ -203,6 +203,54 @@ impl SchemeProvider {
         })
     }
 
+    /// Reply to a `DisplayInfo` request with the display's mode info.
+    pub fn reply_display_info_ok(
+        &self,
+        request_id: u64,
+        width: u32,
+        height: u32,
+        format: u32,
+        stride: u32,
+    ) -> Result<()> {
+        self.send_encoded(|buf| {
+            Response::encode_display_info_ok(request_id, width, height, format, stride, buf)
+        })
+    }
+
+    /// Reply to a `DisplayInfo` request with an error.
+    pub fn reply_display_info_err(&self, request_id: u64, error: ErrorCode) -> Result<()> {
+        self.send_encoded(|buf| {
+            Response::encode_err(scheme_protocol::MSG_DISPLAY_INFO, request_id, error, buf)
+        })
+    }
+
+    /// Reply to a `DisplayMap` request with the framebuffer's guest-physical
+    /// address and byte size — see [`panda_abi::scheme_protocol::MSG_DISPLAY_MAP`]'s
+    /// doc comment for why this is a raw physical range rather than opaque
+    /// bytes.
+    pub fn reply_display_map_ok(&self, request_id: u64, phys_addr: u64, size: u64) -> Result<()> {
+        self.send_encoded(|buf| Response::encode_display_map_ok(request_id, phys_addr, size, buf))
+    }
+
+    /// Reply to a `DisplayMap` request with an error.
+    pub fn reply_display_map_err(&self, request_id: u64, error: ErrorCode) -> Result<()> {
+        self.send_encoded(|buf| {
+            Response::encode_err(scheme_protocol::MSG_DISPLAY_MAP, request_id, error, buf)
+        })
+    }
+
+    /// Acknowledge a `DisplayFlush` request.
+    pub fn reply_display_flush_ok(&self, request_id: u64) -> Result<()> {
+        self.send_encoded(|buf| Response::encode_display_flush_ok(request_id, buf))
+    }
+
+    /// Reply to a `DisplayFlush` request with an error.
+    pub fn reply_display_flush_err(&self, request_id: u64, error: ErrorCode) -> Result<()> {
+        self.send_encoded(|buf| {
+            Response::encode_err(scheme_protocol::MSG_DISPLAY_FLUSH, request_id, error, buf)
+        })
+    }
+
     /// Push an unsolicited notification for `resource_id`, waking any
     /// mailbox a client attached to it (via `OP_ENVIRONMENT_OPEN`'s
     /// `mailbox`/`event_mask` arguments) with `events`. Not a reply to any

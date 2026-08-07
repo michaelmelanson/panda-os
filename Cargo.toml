@@ -15,6 +15,7 @@ members = [
   "userspace/compositor-protocol",
   "userspace/drivers/virtio-keyboard",
   "userspace/drivers/virtio-blk",
+  "userspace/drivers/virtio-gpu",
   "userspace/tests/vfs_test",
   "userspace/tests/preempt_test",
   "userspace/tests/preempt_child",
