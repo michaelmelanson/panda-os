@@ -22,7 +22,7 @@
 //! `plans/device-driver-model.md`'s M4 landed-deviations note for this as
 //! tracked follow-up debt).
 //!
-//! # Only the control queue; no cursor queue, no IRQ
+//! # Only the control queue; no cursor queue
 //!
 //! virtio-gpu exposes two virtqueues: controlq (index 0, 2D/3D resource and
 //! scanout commands) and cursorq (index 1, hardware cursor updates). Only
@@ -32,14 +32,32 @@
 //!
 //! Every controlq request in this driver is synchronous request/response
 //! (one descriptor chain in flight at a time, like
-//! `virtio_drivers::device::gpu::VirtIOGpu::request`), and completion is
-//! detected by polling the used ring directly rather than waiting for an
-//! MSI-X interrupt: reading the DMA'd used-ring memory is valid regardless
-//! of whether an interrupt was delivered, and a synchronous poll loop is
-//! simpler than wiring an IRQ mailbox for a queue that is never used
-//! asynchronously. This sidesteps `DeviceResource::subscribe_irq`'s
-//! single-MSI-X-vector limit entirely rather than needing to reason about
-//! it, since basic 2D scanout needs no interrupt delivery at all.
+//! `virtio_drivers::device::gpu::VirtIOGpu::request`). Completion is
+//! delivered via a dedicated MSI-X vector (entry 0 of
+//! `DeviceResource::subscribe_irq`'s single-vector-per-device pool — no
+//! other queue on this device needs a vector, so the pool's one-slot limit
+//! is a non-issue here): `wait_for_response` blocks on a mailbox
+//! (`Mailbox::recv`) for the interrupt rather than polling the used ring in
+//! a spin loop.
+//!
+//! An earlier version of this driver polled instead — reading the DMA'd
+//! used-ring memory directly is valid regardless of whether an interrupt
+//! fires, and a synchronous poll loop avoided the ceremony of wiring up an
+//! IRQ mailbox. That worked functionally but was the wrong trade for a
+//! *userspace* driver specifically: unlike a kernel driver's in-place
+//! hardware access, every poll iteration here is a `MmioRegion` read that
+//! still costs nothing extra, but yielding periodically to avoid starving
+//! the host (`process::yield_now()`) turned into a real wall-clock cost
+//! under `make test`'s default parallelism (several QEMU instances
+//! contending for the host's CPUs) — enough added latency per flush,
+//! multiplied across every screenshot-verified compositor test's several
+//! flushes, to blow `compositor_test_child`'s fixed tick budget and
+//! TIMEOUT even though nothing was actually stuck (see that binary's
+//! module doc comment). Blocking on the interrupt properly fixes this at
+//! the root: this process consumes zero CPU while a request is in flight,
+//! so it adds no contention for other processes to lose scheduler time to,
+//! and wakes promptly (a real hardware/QEMU-delivered interrupt, not a
+//! polling interval) once the device actually completes the request.
 //!
 //! # Framebuffer memory
 //!
@@ -175,10 +193,9 @@ mod common_cfg {
 }
 
 const CONTROLQ_INDEX: u16 = 0;
-/// No MSI-X vector is ever subscribed (see the module doc comment), so the
-/// queue is left pointing at the "no vector" sentinel (virtio-v1.1
-/// 4.1.4.3.2).
-const MSIX_VECTOR_NONE: u16 = 0xFFFF;
+/// The single MSI-X vector `DeviceResource::subscribe_irq` configures
+/// (table entry 0) — see the module doc comment.
+const MSIX_VECTOR_0: u16 = 0;
 
 fn negotiate_features(common: &MmioRegion, common_off: usize) -> Result<()> {
     common.write::<u8>(common_off + common_cfg::DEVICE_STATUS, 0);
@@ -286,6 +303,14 @@ struct ControlQueue {
     /// one per request, since exactly one descriptor chain (head index 0)
     /// is reused for every request.
     next_idx: u16,
+    /// Dedicated mailbox `EVENT_DEVICE_IRQ` is posted to (via
+    /// `DeviceResource::subscribe_irq`, called once in `init_device`) —
+    /// `wait_for_response` blocks on this rather than polling the used
+    /// ring. Kept separate from the driver's main event-subscription
+    /// mailbox so blocking here can never swallow an
+    /// `EVENT_DEVICE_ADDED`/`EVENT_DEVICE_REMOVED` the main loop needs to
+    /// see.
+    irq_mailbox: Mailbox,
 }
 
 impl ControlQueue {
@@ -325,46 +350,33 @@ impl ControlQueue {
         notify.write::<u16>(notify_off, CONTROLQ_INDEX);
     }
 
-    /// Busy-poll the used ring until `avail_slot`'s request completes (see
-    /// the module doc comment for why this driver never waits on an IRQ
-    /// mailbox for controlq requests), then return the number of bytes the
-    /// device wrote into the recv buffer. Bounded so a wedged device fails
-    /// loudly instead of hanging this process forever.
+    /// Block until `avail_slot`'s request completes, then return the number
+    /// of bytes the device wrote into the recv buffer.
     ///
-    /// QEMU's virtio-gpu backend processes a controlq request essentially
-    /// immediately (no real DMA latency to wait out), so the common case is
-    /// a handful of pure in-memory ring reads — `process::yield_now()` on
-    /// *every* spin (as an earlier version of this loop did) turned each of
-    /// those into a syscall/context-switch round trip regardless, which is
-    /// cheap in isolation but adds up: under host CPU contention (several
-    /// QEMU instances running at once, e.g. `make test`'s default
-    /// parallelism) a scheduler round trip can take much longer than the
-    /// completion actually takes to post, and every screenshot-verified
-    /// compositor test does several flushes per test — enough added
-    /// wall-clock latency to blow `compositor_test_child`'s fixed tick
-    /// budget (see that binary's module doc comment) and TIMEOUT even
-    /// though nothing was actually stuck. Only yield every
-    /// `YIELD_INTERVAL` iterations; spin on a cheap CPU hint the rest of
-    /// the time, so the fast (normal) case never leaves this process's own
-    /// time slice at all.
+    /// Checks the used ring first (a cheap in-memory read) in case the
+    /// completion already posted before this call — e.g. a very fast QEMU
+    /// response beating the driver back here — then blocks on
+    /// `irq_mailbox.recv()` for the MSI-X interrupt otherwise, re-checking
+    /// after every wake. This costs no CPU while waiting (unlike a spin/
+    /// yield poll loop — see the module doc comment for why that mattered
+    /// under `make test`'s default parallelism) and wakes promptly on the
+    /// real interrupt. Bounded to `MAX_WAKES` blocking waits so a
+    /// completely wedged device (e.g. misconfigured MSI-X routing) fails
+    /// loudly by returning stale/zeroed data instead of hanging this
+    /// process forever — in practice this never gets close to the bound,
+    /// since the mailbox is dedicated to this one IRQ source (see
+    /// `ControlQueue::irq_mailbox`'s doc comment) and every wake is a real
+    /// completion.
     fn wait_for_response(&mut self, avail_slot: u16) -> usize {
-        const YIELD_INTERVAL: u32 = 256;
+        const MAX_WAKES: u32 = 1000;
         let target_used = avail_slot.wrapping_add(1);
-        let mut spins: u32 = 0;
-        loop {
-            let used_idx = self.ring.read::<u16>(self.layout.used_off + 2);
-            if used_idx == target_used {
+        let mut wakes = 0u32;
+        while self.ring.read::<u16>(self.layout.used_off + 2) != target_used {
+            if wakes >= MAX_WAKES {
                 break;
             }
-            spins += 1;
-            if spins > 20_000_000 {
-                break;
-            }
-            if spins % YIELD_INTERVAL == 0 {
-                process::yield_now();
-            } else {
-                core::hint::spin_loop();
-            }
+            self.irq_mailbox.recv();
+            wakes += 1;
         }
         self.next_idx = target_used;
 
@@ -587,6 +599,18 @@ fn init_device(token: Handle) -> Result<Gpu> {
 
     negotiate_features(&common_mmio, common_cap.offset as usize)?;
 
+    // Subscribe to (and thereby enable, via `enable_msix` —
+    // `DeviceResource::subscribe_irq`) the device's MSI-X vector *before*
+    // programming `QUEUE_MSIX_VECTOR` to point at it and *before*
+    // `DRIVER_OK` is set — same ordering rationale as
+    // `userspace/drivers/virtio-keyboard`'s `init_device`: the device
+    // should never have a window where it could complete a request against
+    // an interrupt source that isn't wired up yet (virtio-v1.1 3.1.1
+    // describes `DRIVER_OK` as the last status bit set, after the device is
+    // fully configured).
+    let irq_mailbox = Mailbox::create()?;
+    device::device_subscribe_irq(device_handle, irq_mailbox.handle())?;
+
     common_mmio.write::<u16>(common_cap.offset as usize + common_cfg::QUEUE_SELECT, CONTROLQ_INDEX);
     let max_size = common_mmio.read::<u16>(common_cap.offset as usize + common_cfg::QUEUE_SIZE);
     if max_size == 0 || max_size < QSIZE {
@@ -616,7 +640,7 @@ fn init_device(token: Handle) -> Result<Gpu> {
     common_mmio.write::<u64>(common_off + common_cfg::QUEUE_DESC, desc_iova);
     common_mmio.write::<u64>(common_off + common_cfg::QUEUE_DRIVER, avail_iova);
     common_mmio.write::<u64>(common_off + common_cfg::QUEUE_DEVICE, used_iova);
-    common_mmio.write::<u16>(common_off + common_cfg::QUEUE_MSIX_VECTOR, MSIX_VECTOR_NONE);
+    common_mmio.write::<u16>(common_off + common_cfg::QUEUE_MSIX_VECTOR, MSIX_VECTOR_0);
     let queue_notify_off = common_mmio.read::<u16>(common_off + common_cfg::QUEUE_NOTIFY_OFF);
     common_mmio.write::<u16>(common_off + common_cfg::QUEUE_ENABLE, 1);
 
@@ -637,6 +661,7 @@ fn init_device(token: Handle) -> Result<Gpu> {
         recv_iova,
         queue_notify_off,
         next_idx: 0,
+        irq_mailbox,
     };
 
     let notify_off = notify_cap.offset as usize
@@ -767,8 +792,10 @@ libpanda::main! {
             provider = None;
             device = None;
         }
-        // `EVENT_DEVICE_IRQ` is never subscribed (see the module doc
-        // comment), so it's never posted to this mailbox.
+        // `EVENT_DEVICE_IRQ` is posted to `ControlQueue::irq_mailbox`, a
+        // dedicated mailbox `Gpu::request`/`wait_for_response` block on
+        // directly — never to this one (the driver's main event-
+        // subscription mailbox), so there's nothing to handle for it here.
     }
 }
 
@@ -860,6 +887,12 @@ fn serve_provider_requests(provider: &SchemeProvider, mut device: Option<&mut De
             }
             Request::Connect { request_id, .. } => {
                 let _ = provider.reply_connect_err(request_id, ErrorCode::NotSupported);
+            }
+            // `display:` never serves `OP_SIZE` — that request kind (M4's
+            // block driver service) only arrives on a `block:` provider
+            // (`userspace/drivers/virtio-blk`).
+            Request::Size { request_id, .. } => {
+                let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
             }
             Request::DisplayInfo { request_id, .. } => {
                 let Some(dev) = device.as_deref_mut() else {
