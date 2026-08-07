@@ -17,10 +17,31 @@
 #![no_std]
 #![no_main]
 
+use libpanda::ipc::Channel;
 use libpanda::{ErrorCode, environment, file, process};
 
 libpanda::main! {
     environment::log("claim_test: starting");
+
+    // This test plays the role of `init` (it's the initrd's `init`
+    // binary), so unlike the real boot path there is no service manager
+    // running to spawn the virtio-blk driver — do it directly, the same
+    // way `keyboard_test` spawns virtio-keyboard (M4 Phase 2,
+    // plans/device-driver-model.md). Both `block:` opens below and the
+    // ext2 mount in Test 5 need it running.
+    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-blk") else {
+        environment::log("FAIL: could not spawn virtio-blk driver");
+        return 1;
+    };
+    let Some(driver_channel) = Channel::from_handle_borrowed(driver_handle.into()) else {
+        environment::log("FAIL: virtio-blk driver handle is not a channel");
+        return 1;
+    };
+    let mut ready_msg = [0u8; 64];
+    if driver_channel.recv(&mut ready_msg).is_err() {
+        environment::log("FAIL: did not receive ready signal from virtio-blk driver");
+        return 1;
+    }
 
     // Test 1: a raw block open is exclusive — a second open fails Busy
     let Ok(dev) = environment::open("block:/pci/storage/0", 0, 0) else {
@@ -112,6 +133,12 @@ libpanda::main! {
             return 1;
         }
     }
+
+    // The virtio-blk driver runs forever (a persistent driver process in
+    // the real boot path), so this test (playing `init`) must ask it to
+    // exit before returning itself, or QEMU never shuts down — see
+    // `block_test`'s identical shutdown request.
+    let _ = driver_channel.send(b"shutdown");
 
     environment::log("PASS");
     0

@@ -1,5 +1,4 @@
 pub mod claims;
-pub mod virtio_block;
 pub mod virtio_gpu;
 mod virtio_hal;
 
@@ -30,10 +29,13 @@ pub fn init() {
             pci_device.device_id(),
             pci_device.subclass(),
         ) {
-            // Virtio Block (legacy device ID 0x1001, modern transitional 0x1042)
-            (0x1AF4, 0x1001, _) | (0x1AF4, 0x1042, _) => {
-                virtio_block::init_from_pci_device(pci_device)
-            }
+            // Virtio Block (legacy device ID 0x1001, modern transitional
+            // 0x1042): moved to a userspace driver
+            // (userspace/drivers/virtio-blk) — see plans/device-driver-model.md
+            // M4 Phase 2. No kernel-resident init for this device anymore;
+            // it is claimed via the OP_DEVICE_SUBSCRIBE/OP_DEVICE_CLAIM
+            // model instead, same as virtio-keyboard.
+            (0x1AF4, 0x1001, _) | (0x1AF4, 0x1042, _) => {}
             // Virtio GPU
             (0x1AF4, 0x1050, _) => virtio_gpu::init_from_pci_device(pci_device),
             // Virtio Input - keyboard (subclass 0x00): moved to a userspace

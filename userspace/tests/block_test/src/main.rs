@@ -1,15 +1,44 @@
 #![no_std]
 #![no_main]
 
+use libpanda::ipc::Channel;
 use libpanda::{environment, file, process};
 use panda_abi::SEEK_SET;
 
 libpanda::main! {
     environment::log("Block test starting");
 
+    // This test plays the role of `init` (it's the initrd's `init`
+    // binary), so unlike the real boot path there is no service manager
+    // running to spawn the virtio-blk driver — do it directly, the same
+    // way `keyboard_test` spawns virtio-keyboard (M4 Phase 2,
+    // plans/device-driver-model.md).
+    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-blk") else {
+        environment::log("Could not spawn virtio-blk driver");
+        return 1;
+    };
+    let Some(driver_channel) = Channel::from_handle_borrowed(driver_handle.into()) else {
+        environment::log("Driver handle is not a channel");
+        return 1;
+    };
+    let mut ready_msg = [0u8; 64];
+    if driver_channel.recv(&mut ready_msg).is_err() {
+        environment::log("Did not receive ready signal from virtio-blk driver");
+        return 1;
+    }
+
     // Test both raw PCI address and class-based path
     test_block_device("block:/pci/00:04.0", "raw PCI address");
     test_block_device("block:/pci/storage/0", "class-based path");
+
+    // The virtio-blk driver runs forever (a persistent driver process in
+    // the real boot path), so unlike a normal child process it won't exit
+    // on its own. The kernel only shuts QEMU down via isa-debug-exit once
+    // *no* processes remain (`panda-kernel/src/scheduler/mod.rs`'s
+    // `exec_next_runnable`) — this test plays `init`, so it must ask the
+    // driver to exit before returning itself, same as `keyboard_test` does
+    // for virtio-keyboard.
+    let _ = driver_channel.send(b"shutdown");
 
     environment::log("Block test passed");
     0

@@ -48,6 +48,8 @@
 use alloc::boxed::Box;
 use async_trait::async_trait;
 
+use crate::executor::async_mutex::AsyncMutex;
+
 use super::{BlockDevice, BlockError, OpenError, Resource};
 
 /// The default sector size assumed for a scheme-backed block device.
@@ -78,6 +80,28 @@ pub struct SchemeBlockDevice {
     /// synchronous, but querying it is an async round trip
     /// (`Request::Size`), so it can't be fetched per-call.
     size: u64,
+    /// Serializes every `read_at`/`write_at` round trip against this
+    /// device.
+    ///
+    /// Required because the userspace virtio-blk driver
+    /// (`userspace/drivers/virtio-blk`) only ever has *one* virtio request
+    /// in flight at a time (see its module doc comment's
+    /// "single-in-flight-request model") — unlike the deleted kernel
+    /// driver's `VirtioBlockDeviceInner`, which tracked a whole map of
+    /// concurrently in-flight requests keyed by virtio token. Callers of
+    /// `BlockDevice` were never guaranteed to serialize their own calls
+    /// (`vfs::ext2` does not wrap its `device.read_at`/`write_at` calls in
+    /// any mutex — see `panda-kernel/src/vfs/ext2/mod.rs`), so without this,
+    /// two ext2 operations racing to read/write concurrently would each
+    /// send a `Read`/`Write` request before the other's completed, and the
+    /// driver's fixed single scratch buffer would be clobbered mid-flight —
+    /// observed as QEMU logging "virtio-blk missing headers" and both
+    /// requests hanging forever (found via `ext2_create_test`/
+    /// `ext2_mkdir_test`, whose directory-entry-plus-inode update paths
+    /// issue overlapping block I/O). Serializing here, once, in the kernel
+    /// adapter is simpler and more robust than requiring every `BlockDevice`
+    /// caller to know this driver's concurrency limit.
+    io_lock: AsyncMutex<()>,
 }
 
 /// Errors opening a [`SchemeBlockDevice`].
@@ -101,7 +125,7 @@ impl SchemeBlockDevice {
             .as_scheme_proxy()
             .ok_or(SchemeBlockDeviceError::Open(OpenError::NotFound))?;
         let size = proxy.size().await.map_err(SchemeBlockDeviceError::Size)?;
-        Ok(Self { resource, size })
+        Ok(Self { resource, size, io_lock: AsyncMutex::new(()) })
     }
 }
 
@@ -111,6 +135,7 @@ impl BlockDevice for SchemeBlockDevice {
         if buf.is_empty() {
             return Ok(0);
         }
+        let _guard = self.io_lock.lock().await;
         // Safety of unwrap: see the `resource` field's doc comment — this
         // adapter is only ever constructed from a scheme-proxy open.
         let proxy = self.resource.as_scheme_proxy().unwrap();
@@ -147,6 +172,7 @@ impl BlockDevice for SchemeBlockDevice {
         if buf.is_empty() {
             return Ok(0);
         }
+        let _guard = self.io_lock.lock().await;
         let proxy = self.resource.as_scheme_proxy().unwrap();
 
         let mut done = 0;
