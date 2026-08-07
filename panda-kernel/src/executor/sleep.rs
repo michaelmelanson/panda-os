@@ -30,14 +30,52 @@ impl Future for SleepFuture {
         }
 
         if !self.registered {
-            // Get current task ID and register deadline with scheduler
-            if let Some(task_id) = super::current_task_id() {
+            // Register a wakeup deadline with the scheduler so this future
+            // gets re-polled once `wakeup_time` arrives, rather than
+            // relying on some other event to happen to re-poll it.
+            //
+            // Which `SchedulableEntity` to register against depends on who
+            // is polling this future:
+            //
+            // - A kernel task spawned via `executor::spawn` (e.g.
+            //   `ProviderState::spawn_reader`) is polled by
+            //   `Executor::poll_task`, which sets `CURRENT_TASK` for the
+            //   duration of the poll — `current_task_id()` returns
+            //   `Some(_)` here, and the deadline is registered as a
+            //   `KernelTask`.
+            // - A process's pending async syscall (e.g. `mount_ext2`,
+            //   invoked from `OP_ENVIRONMENT_MOUNT`'s handler) is polled by
+            //   `scheduler::poll_pending_syscall` instead, which never
+            //   touches `CURRENT_TASK` — it has its own, separate notion of
+            //   "current" (`Scheduler::current_process`, set right before
+            //   polling). `current_task_id()` returns `None` in this case,
+            //   so this falls back to registering against the current
+            //   *process* instead.
+            //
+            // Getting this wrong silently drops the deadline: nothing else
+            // ever re-polls a process's blocked pending-syscall future
+            // (unlike a kernel task, which the executor's main loop polls
+            // unconditionally every tick), so a `sleep_ms` awaited from
+            // inside a syscall handler — e.g. `vfs::mount_ext2`'s retry
+            // loop racing the block driver's startup — would hang forever
+            // instead of ever waking up. Found via `make run`'s full boot
+            // (gpu+mouse+keyboard+blk) hanging after "virtio-blk:
+            // registered block: scheme": the userspace test suite never
+            // exercises this path because every test explicitly waits for
+            // the driver's ready signal before mounting, so
+            // `SchemeBlockDevice::open`'s first attempt always succeeds
+            // and this retry-sleep is never reached.
+            let entity = match super::current_task_id() {
+                Some(task_id) => Some(crate::scheduler::SchedulableEntity::KernelTask(task_id)),
+                None => {
+                    crate::scheduler::current_process_id_checked()
+                        .map(crate::scheduler::SchedulableEntity::Process)
+                }
+            };
+            if let Some(entity) = entity {
                 let mut scheduler = crate::scheduler::SCHEDULER.write();
                 if let Some(scheduler) = scheduler.as_mut() {
-                    scheduler.register_deadline(
-                        crate::scheduler::SchedulableEntity::KernelTask(task_id),
-                        self.wakeup_time,
-                    );
+                    scheduler.register_deadline(entity, self.wakeup_time);
                 }
             }
             self.registered = true;

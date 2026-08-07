@@ -329,18 +329,97 @@ pub fn init(init_process: Process) {
     *scheduler = Some(Scheduler::new(init_process));
 }
 
+/// Absolute `uptime_ms()` time at which the physical one-shot APIC timer is
+/// currently set to fire next, or `0` if no armed deadline is being tracked
+/// (boot, or the last-known value is stale/already passed).
+///
+/// See [`arm_timer`]'s doc comment for why this exists.
+static ARMED_UNTIL_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// Start the preemption timer. Called before jumping to userspace.
 pub(super) fn start_timer() {
-    apic::set_timer_oneshot(TIME_SLICE_MS);
+    arm_timer(TIME_SLICE_MS);
+}
+
+/// Arm the one-shot APIC timer for `duration_ms` from now, *unless* it is
+/// already armed to fire at least that soon.
+///
+/// # Why this exists
+///
+/// `apic::set_timer_oneshot` reprograms the local APIC's one-shot countdown
+/// from scratch — it does not merely "ensure a timer is armed", it always
+/// restarts the count. `start_timer`/`start_timer_with_deadline` are called
+/// on *every* dispatch to userspace (`dispatch_normal_process`,
+/// `dispatch_completed_syscall`, `preempt_current`), including a process
+/// that is dispatched and immediately, voluntarily yields straight back
+/// (`OP_PROCESS_YIELD` — exactly what `virtio-blk`'s idle poll loop does
+/// via `process::yield_now()` when its mailbox is empty, which is most of
+/// the time). Calling `apic::set_timer_oneshot` unconditionally on every
+/// such dispatch means a process that yields fast enough resets the
+/// countdown before it ever reaches zero — the timer interrupt then never
+/// fires again at all, which stops *everything* that depends on it:
+/// preemption of a runaway process, and — the actual symptom this was found
+/// from — `crate::scheduler::Scheduler::wake_deadline_tasks`, which only
+/// runs from the timer interrupt handler (and, since the companion fix in
+/// `exec_next_runnable`, from every dispatch decision too — but both need
+/// `crate::time::uptime_ms()` to actually advance, and that clock is itself
+/// only ticked from the timer interrupt handler). Found via `make run`'s
+/// full boot hanging forever after "virtio-blk: registered block: scheme":
+/// `vfs::mount_ext2`'s retry loop put the mount syscall to sleep waiting on
+/// a deadline, and virtio-blk's idle loop — entered immediately after
+/// registering its scheme, since there is no I/O yet — starved the timer
+/// interrupt (and thus the clock, and thus the deadline) out indefinitely
+/// by re-arming a fresh one-shot count on every one of its many yields per
+/// millisecond.
+///
+/// Tracking the already-armed deadline and skipping the reprogram when the
+/// requested one wouldn't fire any sooner fixes this at the root: the
+/// countdown a fast-yielding process resets is now a no-op instead of an
+/// actual hardware reprogram, so the earliest-armed deadline is always the
+/// one that actually counts down and fires.
+fn arm_timer(duration_ms: u32) {
+    use core::sync::atomic::Ordering;
+
+    let now = crate::time::uptime_ms();
+    let desired_deadline = now + duration_ms as u64;
+    let armed_until = ARMED_UNTIL_MS.load(Ordering::Acquire);
+
+    // Skip the reprogram if a timer is already armed (hasn't fired yet, per
+    // `now`) and due to fire at least as soon as what's being requested now.
+    if armed_until > now && armed_until <= desired_deadline {
+        return;
+    }
+
+    ARMED_UNTIL_MS.store(desired_deadline, Ordering::Release);
+    apic::set_timer_oneshot(duration_ms);
 }
 
 /// Start the preemption timer with deadline awareness.
 ///
 /// Sets the timer to min(TIME_SLICE_MS, time_until_next_deadline) so we can
 /// preempt userspace in time to meet kernel task deadlines.
+///
+/// # Lock safety
+///
+/// This is called both from ordinary kernel code (e.g. `dispatch_normal_process`,
+/// after a syscall completes) *and* from `timer_interrupt_handler` itself, on
+/// the same CPU, with no separate interrupt stack — a genuine interrupt
+/// handler, not a deferred bottom half. `SCHEDULER` is a plain
+/// [`spinning_top::RwSpinlock`] with no interrupt-safety of its own (contrast
+/// `with_current_process`, which explicitly disables interrupts around its
+/// own `SCHEDULER` access for exactly this reason); acquiring it here with a
+/// *blocking* `.read()` would be a self-deadlock waiting to happen if this
+/// CPU were interrupted while some other, ordinary kernel code path holds
+/// `SCHEDULER.write()` (via `with_scheduler_mut`, which does not disable
+/// interrupts) — so this uses `try_read`, falling back to the plain time
+/// slice when contended, same as the "should not switch" branch above
+/// already does when its own `try_read` fails.
 pub(super) fn start_timer_with_deadline() {
     let timer_duration = {
-        let scheduler = SCHEDULER.read();
+        let Some(scheduler) = SCHEDULER.try_read() else {
+            arm_timer(TIME_SLICE_MS);
+            return;
+        };
         // Invariant: only called after scheduler is initialised during boot.
         let scheduler = scheduler.as_ref().expect("Scheduler not initialized");
 
@@ -356,7 +435,7 @@ pub(super) fn start_timer_with_deadline() {
         }
     };
 
-    apic::set_timer_oneshot(timer_duration);
+    arm_timer(timer_duration);
 }
 
 pub fn add_process(process: Process) {
@@ -638,6 +717,19 @@ pub fn current_process_id() -> ProcessId {
         .as_ref()
         .expect("Scheduler has not been initialized");
     scheduler.current_process_id()
+}
+
+/// As [`current_process_id`], but `None` instead of panicking if the
+/// scheduler isn't initialised yet.
+///
+/// Used by [`crate::executor::sleep::SleepFuture`] to register its wakeup
+/// deadline against the current *process* when it's being polled as part of
+/// a process's pending async syscall (no `executor::TaskId` in scope there —
+/// see that type's doc comment) — a context where the scheduler is always
+/// initialised in practice, but there's no reason to make this helper panic
+/// on the off chance it's ever polled earlier.
+pub fn current_process_id_checked() -> Option<ProcessId> {
+    SCHEDULER.read().as_ref().map(|scheduler| scheduler.current_process_id())
 }
 
 /// Execute a closure with mutable access to the current process.
