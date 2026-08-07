@@ -34,8 +34,8 @@ pub use frame::Frame;
 pub use mapping::{Mapping, MappingBacking};
 pub use mmio::PhysicalMapping;
 pub use paging::{
-    allocate_and_map, create_user_page_table, current_page_table_phys, map_external,
-    switch_page_table, unmap_page, unmap_region, update_permissions, with_page_table,
+    allocate_and_map, create_user_page_table, current_page_table_phys, ensure_page_table,
+    map_external, switch_page_table, unmap_page, unmap_region, update_permissions,
 };
 pub use write_protection::without_write_protection;
 

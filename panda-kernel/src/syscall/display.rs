@@ -101,29 +101,26 @@ pub fn handle_map(handle: u64) -> SyscallFuture {
         // first time a client actually wrote to the "mapped" framebuffer:
         // the mapping had gone into whichever process was current at the
         // time this code ran, not the caller's). Explicitly switch to the
-        // calling process's page table for the duration of the mapping
-        // work, then restore whatever was active before — mirrorring the
-        // save/switch/restore pattern `Process::from_elf_data` already uses
-        // for the same reason (loading a *different* process's ELF image
-        // into its own page table).
+        // calling process's page table before doing the mapping work — see
+        // `memory::ensure_page_table`'s doc comment for why it's left
+        // active afterward rather than restored.
         let result: Result<usize, panda_abi::ErrorCode> = scheduler::with_current_process(|proc| {
             let vaddr = proc
                 .alloc_buffer_vaddr(num_pages)
                 .ok_or(panda_abi::ErrorCode::IoError)?;
 
             let target_page_table = proc.page_table_phys();
-            let mapping = crate::memory::with_page_table(target_page_table, || {
-                map_external(
-                    PhysAddr::new(phys_addr),
-                    vaddr,
-                    size,
-                    MemoryMappingOptions {
-                        user: true,
-                        executable: false,
-                        writable: true,
-                    },
-                )
-            });
+            crate::memory::ensure_page_table(target_page_table);
+            let mapping = map_external(
+                PhysAddr::new(phys_addr),
+                vaddr,
+                size,
+                MemoryMappingOptions {
+                    user: true,
+                    executable: false,
+                    writable: true,
+                },
+            );
             proc.add_mapping(mapping);
 
             Ok(vaddr.as_u64() as usize)

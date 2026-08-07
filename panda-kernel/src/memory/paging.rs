@@ -40,21 +40,20 @@ pub unsafe fn switch_page_table(pml4_phys: PhysAddr) {
     }
 }
 
-/// Run `f` with `pml4_phys` loaded as the active page table, then leave it
-/// active — a safe wrapper around [`switch_page_table`] for callers (e.g.
-/// `syscall::display::handle_map`) that need to do CR3-sensitive work
-/// (page-table walks via the recursive self-map) for a *specific* process
-/// from a context where the currently loaded CR3 isn't guaranteed to be
-/// that process's — most notably, kernel code resuming after an `.await`
-/// that crossed a process boundary, since CR3 is otherwise only switched
-/// when the scheduler dispatches back to userspace. This surfaced as a
-/// real bug in `handle_map`: it awaits a round trip to a userspace driver
-/// process before doing this mapping work, and without an explicit switch
-/// here, `map_external`'s recursive-self-map-relative page-table writes
-/// silently landed in whichever process the scheduler happened to have
-/// loaded when the await resolved — not necessarily the caller — which
-/// only surfaced later as a `NOT PRESENT` page fault back in the actual
-/// caller, the first time it tried to use the "mapped" memory.
+/// Switch to `pml4_phys` if it isn't already active, then leave it active —
+/// for callers (e.g. `syscall::display::handle_map`) that need to do
+/// CR3-sensitive work (page-table walks via the recursive self-map) for a
+/// *specific* process from a context where the currently loaded CR3 isn't
+/// guaranteed to be that process's — most notably, kernel code resuming
+/// after an `.await` that crossed a process boundary, since CR3 is
+/// otherwise only switched when the scheduler dispatches back to userspace.
+/// This surfaced as a real bug in `handle_map`: it awaits a round trip to a
+/// userspace driver process before doing this mapping work, and without an
+/// explicit switch here, `map_external`'s recursive-self-map-relative
+/// page-table writes silently landed in whichever process the scheduler
+/// happened to have loaded when the await resolved — not necessarily the
+/// caller — which only surfaced later as a `NOT PRESENT` page fault back in
+/// the actual caller, the first time it tried to use the "mapped" memory.
 ///
 /// Deliberately does *not* restore whatever CR3 was active on entry, unlike
 /// `Process::from_elf_data`'s superficially similar manual save/switch/
@@ -75,11 +74,15 @@ pub unsafe fn switch_page_table(pml4_phys: PhysAddr) {
 /// function's caller already confirmed is a real, live process's own
 /// table) between here and that dispatch is always safe, and strictly
 /// safer than guessing at a "previous" value that might not be.
-pub fn with_page_table<T>(pml4_phys: PhysAddr, f: impl FnOnce() -> T) -> T {
+///
+/// Not a `with_*(f: impl FnOnce() -> T)` wrapper on purpose: since there's
+/// nothing to restore afterward, a closure would only obscure the control
+/// flow at call sites for no RAII benefit — callers just call this, then do
+/// their CR3-sensitive work directly.
+pub fn ensure_page_table(pml4_phys: PhysAddr) {
     if current_page_table_phys() != pml4_phys {
         unsafe { switch_page_table(pml4_phys) };
     }
-    f()
 }
 
 /// Create a new PML4 page table with kernel mappings copied from the current one.
