@@ -20,7 +20,27 @@ libpanda::main! {
     let mut drivers = DriverRegistry::new();
     drivers.scan("initrd:/drivers");
 
-    // Mount ext2 filesystem from the first block device
+    // Spawn every driver discovered in the initrd *before* mounting —
+    // critically including `virtio-blk` (M4 Phase 2,
+    // plans/device-driver-model.md): the block driver that `mount("ext2")`
+    // below needs must itself come from the initrd, since nothing else is
+    // readable yet. See `DriverRegistry::binary_paths`'s doc comment for why
+    // spawning is unconditional rather than filtered by a specific
+    // enumerated device's identity.
+    //
+    // This spawn is asynchronous — `virtio-blk` still needs to run, claim
+    // its device, and call `OP_SCHEME_REGISTER` before `block:` resolves to
+    // anything — so `mount_ext2` (`panda-kernel/src/vfs/mod.rs`) retries
+    // internally for up to ~2s rather than this needing an explicit "wait
+    // for driver ready" step here.
+    for path in drivers.binary_paths() {
+        if environment::spawn(path).is_err() {
+            environment::log("init: failed to spawn initrd driver");
+        }
+    }
+
+    // Mount ext2 filesystem from the block device the driver(s) spawned
+    // above provide.
     if environment::mount("ext2", "/mnt").is_err() {
         environment::log("init: failed to mount ext2");
         return 1;
@@ -28,17 +48,22 @@ libpanda::main! {
     environment::log("init: mounted ext2 at /mnt");
 
     // Phase 5b: scan the now-mounted root filesystem for additional driver
-    // binaries. `scan` adds to the registry without clearing what Phase 5a
-    // already found.
+    // binaries (e.g. virtio-keyboard) and spawn any not already spawned
+    // above. `scan` adds to the registry without clearing what Phase 5a
+    // already found, and `binary_paths()` only lists distinct paths, but it
+    // has no memory of what Phase 5a already spawned — track that
+    // ourselves so a driver present in both places (shouldn't normally
+    // happen) isn't spawned twice.
+    let already_spawned: alloc::vec::Vec<alloc::string::String> = drivers
+        .binary_paths()
+        .into_iter()
+        .map(alloc::string::String::from)
+        .collect();
     drivers.scan("file:/mnt/drivers");
-
-    // Spawn every discovered driver — see `DriverRegistry::binary_paths`'s
-    // doc comment for why this is unconditional rather than filtered by a
-    // specific enumerated device's identity. Each driver subscribes to and
-    // claims only the device(s) its own `.panda_devices.<bus>` table
-    // matches, so spawning a driver whose device isn't present is harmless:
-    // it just sits waiting on `EVENT_DEVICE_ADDED` forever.
     for path in drivers.binary_paths() {
+        if already_spawned.iter().any(|s| s == path) {
+            continue;
+        }
         if environment::spawn(path).is_err() {
             environment::log("init: failed to spawn driver");
         }

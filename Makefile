@@ -34,7 +34,7 @@ control_plane_test_EXTRAS := control_plane_child
 env_test_EXTRAS := env_child
 fault_recovery_test_EXTRAS := fault_child
 handle_transfer_test_EXTRAS := handle_transfer_child
-claim_test_EXTRAS := claim_child
+claim_test_EXTRAS := claim_child virtio-blk
 buffer_transfer_test_EXTRAS := buffer_transfer_child
 buffer_owner_test_EXTRAS := buffer_owner_child
 scheme_provider_test_EXTRAS := scheme_provider_child
@@ -53,7 +53,17 @@ compositor_protocol_test_EXTRAS := compositor_test_child
 # `environment::spawn("file:/initrd/virtio-keyboard")` call to resolve.
 keyboard_test_EXTRAS := virtio-keyboard
 mailbox_keyboard_test_EXTRAS := virtio-keyboard
-export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS mailbox_overflow_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS fault_recovery_test_EXTRAS handle_transfer_test_EXTRAS claim_test_EXTRAS buffer_transfer_test_EXTRAS buffer_owner_test_EXTRAS scheme_provider_test_EXTRAS scheme_provider_concurrency_test_EXTRAS window_test_EXTRAS multi_window_test_EXTRAS alpha_test_EXTRAS partial_refresh_test_EXTRAS window_move_test_EXTRAS compositor_protocol_test_EXTRAS keyboard_test_EXTRAS mailbox_keyboard_test_EXTRAS
+# block_test/ext2_*_test act as their own `init` too (see above), so they
+# spawn the virtio-blk driver directly by path
+# (`environment::spawn("file:/initrd/virtio-blk")`) before opening `block:`
+# or calling `environment::mount("ext2", ...)` — M4 Phase 2,
+# plans/device-driver-model.md.
+block_test_EXTRAS := virtio-blk
+ext2_test_EXTRAS := virtio-blk
+ext2_create_test_EXTRAS := virtio-blk
+ext2_mkdir_test_EXTRAS := virtio-blk
+ext2_write_test_EXTRAS := virtio-blk
+export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS mailbox_overflow_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS fault_recovery_test_EXTRAS handle_transfer_test_EXTRAS claim_test_EXTRAS buffer_transfer_test_EXTRAS buffer_owner_test_EXTRAS scheme_provider_test_EXTRAS scheme_provider_concurrency_test_EXTRAS window_test_EXTRAS multi_window_test_EXTRAS alpha_test_EXTRAS partial_refresh_test_EXTRAS window_move_test_EXTRAS compositor_protocol_test_EXTRAS keyboard_test_EXTRAS mailbox_keyboard_test_EXTRAS block_test_EXTRAS ext2_test_EXTRAS ext2_create_test_EXTRAS ext2_mkdir_test_EXTRAS ext2_write_test_EXTRAS
 export PROFILE_DIR CARGO_PROFILE
 
 # Cargo commands for custom targets (require build-std for no_std targets)
@@ -63,13 +73,20 @@ KERNEL_TARGET := --target ./x86_64-panda-uefi.json
 USERSPACE_TARGET := --target ./x86_64-panda-userspace.json
 
 # Build targets
-build: panda-kernel init compositor terminal hello ls cat virtio-keyboard
+build: panda-kernel init compositor terminal hello ls cat virtio-keyboard virtio-blk
 	mkdir -p build/run/efi/boot
-	mkdir -p build/run/initrd
+	mkdir -p build/run/initrd/drivers
 	cp target/x86_64-panda-uefi/$(PROFILE_DIR)/panda-kernel.efi build/run/efi/boot/bootx64.efi
 	cp target/x86_64-panda-userspace/$(PROFILE_DIR)/init build/run/initrd/init
+	# virtio-blk lives in the initrd (not the ext2 image, unlike
+	# virtio-keyboard): the block driver that mounts ext2 must itself be
+	# readable before any filesystem is mounted (M4 Phase 2,
+	# plans/device-driver-model.md). `init`'s driver registry scans
+	# "initrd:/drivers" (see userspace/init/src/driver_registry.rs) and
+	# spawns everything found there before calling `environment::mount`.
+	cp target/x86_64-panda-userspace/$(PROFILE_DIR)/virtio-blk build/run/initrd/drivers/virtio-blk
 	echo "Hello from the initrd!" > build/run/initrd/hello.txt
-	tar --format=ustar -cf build/run/efi/initrd.tar -C build/run/initrd init hello.txt
+	tar --format=ustar -cf build/run/efi/initrd.tar -C build/run/initrd init hello.txt drivers/virtio-blk
 	echo 'fs0:\efi\boot\bootx64.efi' > build/run/efi/boot/startup.nsh
 
 release:
@@ -98,6 +115,9 @@ cat:
 
 virtio-keyboard:
 	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package virtio-keyboard $(USERSPACE_TARGET)
+
+virtio-blk:
+	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package virtio-blk $(USERSPACE_TARGET)
 
 run: build ext2-image
 	$(QEMU_COMMON) \

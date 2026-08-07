@@ -1050,6 +1050,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtio-blk"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "virtio-drivers"
 version = "0.12.0"
 dependencies = [

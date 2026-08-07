@@ -17,8 +17,7 @@ use spinning_top::{RwSpinlock, Spinlock};
 use x86_64::instructions::port::Port;
 
 use crate::device_path;
-use crate::devices::claims::{ClaimGuard, ClaimOwner};
-use crate::devices::virtio_block;
+use crate::devices::claims::ClaimOwner;
 use crate::vfs;
 
 use super::Resource;
@@ -377,72 +376,20 @@ impl SchemeHandler for DisplayScheme {
 }
 
 // =============================================================================
-// Block Scheme - block device access
+// Block Scheme - moved to userspace (M4 Phase 2, plans/device-driver-model.md)
 // =============================================================================
-
-/// Scheme handler for block devices (virtio-blk, future AHCI, NVMe).
-///
-/// Paths support both raw addresses and class-based resolution:
-/// - `/pci/00:04.0` - raw PCI address
-/// - `/pci/storage/0` - first storage device
-pub struct BlockScheme;
-
-#[async_trait]
-impl SchemeHandler for BlockScheme {
-    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError> {
-        // Resolve path like "/pci/storage/0" or "/pci/00:04.0"
-        let address = device_path::resolve(path).ok_or(OpenError::NotFound)?;
-
-        // Claim the device before handing out raw access to it. If a
-        // filesystem is mounted on this device (see `vfs::mount_ext2`,
-        // which holds a `Mount`-tagged claim for as long as the mount is
-        // active), this fails with `Busy` instead of minting a second,
-        // unsynchronized writer underneath the mounted filesystem.
-        let claim = crate::devices::claims::claim(address.clone(), ClaimOwner::RawOpen)
-            .map_err(|_| OpenError::Busy)?;
-
-        // Try virtio-blk registry (future: try AHCI, NVMe registries too)
-        let device = virtio_block::get_device(&address).ok_or(OpenError::NotFound)?;
-        let device: Arc<dyn super::BlockDevice> = Arc::new(device);
-
-        // Wrap in a VFS file for async access
-        let file: Box<dyn vfs::File> = Box::new(vfs::BlockDeviceFile::new(device));
-        Ok(Box::new(BlockDeviceResource {
-            file: Spinlock::new(file),
-            _claim: claim,
-        }))
-    }
-
-    async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
-        device_path::list(path)
-    }
-}
-
-/// Resource wrapper for a block device.
-///
-/// Block devices are exposed through the VFS file interface for async I/O.
-/// Holds the device's exclusive claim for the lifetime of this resource;
-/// dropping it (on `close()` or process exit) releases the claim.
-struct BlockDeviceResource {
-    file: Spinlock<Box<dyn vfs::File>>,
-    _claim: ClaimGuard,
-}
-
-impl Resource for BlockDeviceResource {
-    fn handle_type(&self) -> panda_abi::HandleType {
-        panda_abi::HandleType::File
-    }
-
-    fn as_vfs_file(&self) -> Option<&dyn super::VfsFile> {
-        Some(self)
-    }
-}
-
-impl super::VfsFile for BlockDeviceResource {
-    fn file(&self) -> &Spinlock<Box<dyn vfs::File>> {
-        &self.file
-    }
-}
+//
+// `block:` is no longer a kernel-native scheme handler. The userspace
+// `virtio-blk` driver (userspace/drivers/virtio-blk) registers it via
+// `OP_SCHEME_REGISTER`/`register_user_scheme`, exactly like `keyboard:` —
+// `resource::open("block:/...")` resolves through `UserSchemeProvider`
+// (registered below by whichever driver claims the block device) with no
+// special-casing needed here. Exclusivity (the M1 claim rules `block:` must
+// honour — see `claim_test`) is enforced by that driver's own `Open`
+// handling instead of `devices::claims`; see
+// `resource::block_client::SchemeBlockDevice`'s module doc comment for the
+// full rationale, and `vfs::mount_ext2` for the kernel-internal client that
+// needed that adapter.
 
 // =============================================================================
 // Scheme Scheme - meta-scheme registry enumeration
@@ -1099,6 +1046,8 @@ pub fn init() {
     register_scheme("file", Arc::new(FileScheme));
     register_scheme("console", Arc::new(ConsoleScheme));
     register_scheme("display", Arc::new(DisplayScheme));
-    register_scheme("block", Arc::new(BlockScheme));
+    // "block" is intentionally not registered here — see the "Block Scheme"
+    // section above: it's registered by the userspace virtio-blk driver via
+    // `OP_SCHEME_REGISTER`, same as "keyboard".
     register_scheme("scheme", Arc::new(SchemeScheme));
 }

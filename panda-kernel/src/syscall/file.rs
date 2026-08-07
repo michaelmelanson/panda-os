@@ -65,7 +65,17 @@ pub fn handle_read(
     // Scheme-provider proxy resources round-trip to a userspace process
     // instead of going through the VFS or the sync event-source path.
     if let Some(resource) = get_scheme_proxy(handle_id) {
-        return handle_read_scheme_proxy(buf_len, dst, resource, flags & panda_abi::FILE_NONBLOCK != 0);
+        let offset = scheduler::with_current_process(|proc| {
+            proc.handles().get(handle_id).map(|h| h.offset()).unwrap_or(0)
+        });
+        return handle_read_scheme_proxy(
+            handle_id,
+            offset,
+            buf_len,
+            dst,
+            resource,
+            flags & panda_abi::FILE_NONBLOCK != 0,
+        );
     }
 
     // First, check if this is a VFS file (which needs async handling)
@@ -81,7 +91,18 @@ pub fn handle_read(
 /// `Read` request to the provider process and writes back whatever it
 /// returns. `buf_len` is capped to `MAX_TRANSFER_SIZE` so the response is
 /// guaranteed to fit in one channel message.
+///
+/// `offset` is the handle's current file position (see `handle.offset()`),
+/// forwarded as `Request::Read`'s `offset` field so random-access providers
+/// (M4's `block:`) see the position `OP_FILE_SEEK` last set — stream-like
+/// providers (e.g. `keyboard:`) are free to ignore it. On success, the
+/// handle's offset is advanced by the number of bytes actually read, same
+/// as `handle_read_vfs` — this is what gives `block_test`'s
+/// seek/write/seek/read sequence real random-access semantics over a
+/// request/response protocol.
 fn handle_read_scheme_proxy(
+    handle_id: u64,
+    offset: u64,
     buf_len: usize,
     dst: UserSlice,
     resource: Arc<dyn crate::resource::Resource>,
@@ -92,8 +113,16 @@ fn handle_read_scheme_proxy(
         // Safety of unwrap: `resource` was resolved by `get_scheme_proxy`,
         // which only returns handles where `as_scheme_proxy()` is `Some`.
         let proxy = resource.as_scheme_proxy().unwrap();
-        match proxy.read(buf_len, nonblocking).await {
-            Ok(data) => SyscallResult::write_back(data.len() as isize, data, dst),
+        match proxy.read_at(offset, buf_len, nonblocking).await {
+            Ok(data) => {
+                let n = data.len() as u64;
+                scheduler::with_current_process(|proc| {
+                    if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
+                        handle.set_offset(offset + n);
+                    }
+                });
+                SyscallResult::write_back(data.len() as isize, data, dst)
+            }
             Err(code) => SyscallResult::err(code),
         }
     })
@@ -262,7 +291,10 @@ pub fn handle_write(
 ) -> SyscallFuture {
     // Scheme-provider proxy resources round-trip to a userspace process.
     if let Some(resource) = get_scheme_proxy(handle_id) {
-        return handle_write_scheme_proxy(ua, buf_ptr, buf_len, resource);
+        let offset = scheduler::with_current_process(|proc| {
+            proc.handles().get(handle_id).map(|h| h.offset()).unwrap_or(0)
+        });
+        return handle_write_scheme_proxy(ua, handle_id, offset, buf_ptr, buf_len, resource);
     }
 
     // Check if this is a VFS file (which needs async handling)
@@ -281,6 +313,8 @@ pub fn handle_write(
 /// callers elsewhere in this file).
 fn handle_write_scheme_proxy(
     ua: &UserAccess,
+    handle_id: u64,
+    offset: u64,
     buf_ptr: usize,
     buf_len: usize,
     resource: Arc<dyn crate::resource::Resource>,
@@ -297,8 +331,15 @@ fn handle_write_scheme_proxy(
 
     Box::pin(async move {
         let proxy = resource.as_scheme_proxy().unwrap();
-        match proxy.write(&data).await {
-            Ok(n) => SyscallResult::ok(n as isize),
+        match proxy.write_at(offset, &data).await {
+            Ok(n) => {
+                scheduler::with_current_process(|proc| {
+                    if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
+                        handle.set_offset(offset + n as u64);
+                    }
+                });
+                SyscallResult::ok(n as isize)
+            }
             Err(code) => SyscallResult::err(code),
         }
     })
@@ -406,6 +447,15 @@ pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> Syscal
     let offset = ((offset_hi as u64) << 32) | (offset_lo as u64);
     let whence = (offset_hi >> 32) as u32;
 
+    // Scheme-provider proxy resources (M4: `block:`) support seeking too —
+    // SEEK_SET/SEEK_CUR are pure handle-table arithmetic (no VFS file
+    // needed at all), and SEEK_END queries the provider's size via
+    // `Request::Size` (see `SchemeProxyResource::size`) instead of a VFS
+    // `stat()`.
+    if let Some(resource) = get_scheme_proxy(handle_id) {
+        return handle_seek_scheme_proxy(handle_id, offset, whence, resource);
+    }
+
     // Check if this is a VFS file
     let Some(vfs_file) = get_vfs_file(handle_id) else {
         return Box::pin(core::future::ready(SyscallResult::err(
@@ -474,6 +524,76 @@ pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> Syscal
                     SyscallResult::ok(new_offset as isize)
                 }
                 Err(_) => SyscallResult::err(panda_abi::ErrorCode::IoError),
+            }
+        })
+    } else {
+        Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::InvalidArgument,
+        )))
+    }
+}
+
+/// Seek path for scheme-provider proxy resources (M4: `block:`) — see
+/// `handle_seek`'s doc comment for how this differs from the VFS path.
+fn handle_seek_scheme_proxy(
+    handle_id: u64,
+    offset: u64,
+    whence: u32,
+    resource: Arc<dyn crate::resource::Resource>,
+) -> SyscallFuture {
+    let current = scheduler::with_current_process(|proc| {
+        proc.handles().get(handle_id).map(|h| h.offset()).unwrap_or(0)
+    });
+
+    if whence == SEEK_SET {
+        let new_offset = offset as i64;
+        if new_offset < 0 {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidOffset,
+            )));
+        }
+        scheduler::with_current_process(|proc| {
+            if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
+                handle.set_offset(new_offset as u64);
+            }
+        });
+        return Box::pin(core::future::ready(SyscallResult::ok(new_offset as isize)));
+    }
+
+    if whence == SEEK_CUR {
+        let new_offset = current as i64 + offset as i64;
+        if new_offset < 0 {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidOffset,
+            )));
+        }
+        scheduler::with_current_process(|proc| {
+            if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
+                handle.set_offset(new_offset as u64);
+            }
+        });
+        return Box::pin(core::future::ready(SyscallResult::ok(new_offset as isize)));
+    }
+
+    if whence == SEEK_END {
+        Box::pin(async move {
+            // Safety of unwrap: `resource` was resolved by `get_scheme_proxy`,
+            // which only returns handles where `as_scheme_proxy()` is `Some`.
+            let proxy = resource.as_scheme_proxy().unwrap();
+            match proxy.size().await {
+                Ok(size) => {
+                    let new_offset = size as i64 + offset as i64;
+                    if new_offset < 0 {
+                        return SyscallResult::err(panda_abi::ErrorCode::InvalidOffset);
+                    }
+                    scheduler::with_current_process(|proc| {
+                        if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
+                            handle.set_offset(new_offset as u64);
+                        }
+                    });
+                    SyscallResult::ok(new_offset as isize)
+                }
+                Err(code) => SyscallResult::err(code),
             }
         })
     } else {

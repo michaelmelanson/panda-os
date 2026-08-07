@@ -12,6 +12,7 @@
 use libpanda::environment;
 use libpanda::file;
 use libpanda::handle::Handle;
+use libpanda::ipc::Channel;
 
 /// Seek to absolute position (SEEK_SET = 0).
 fn seek_to(handle: Handle, pos: i64) {
@@ -34,6 +35,25 @@ fn read_all(handle: Handle, buf: &mut [u8]) -> usize {
 
 libpanda::main! {
     environment::log("ext2_write_test: Starting");
+
+    // This test plays the role of `init` (it's the initrd's `init`
+    // binary), so unlike the real boot path there is no service manager
+    // running to spawn the virtio-blk driver the mount below needs — do it
+    // directly, the same way `keyboard_test` spawns virtio-keyboard (M4
+    // Phase 2, plans/device-driver-model.md).
+    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-blk") else {
+        environment::log("FAIL: could not spawn virtio-blk driver");
+        return 1;
+    };
+    let Some(driver_channel) = Channel::from_handle_borrowed(driver_handle.into()) else {
+        environment::log("FAIL: virtio-blk driver handle is not a channel");
+        return 1;
+    };
+    let mut ready_msg = [0u8; 64];
+    if driver_channel.recv(&mut ready_msg).is_err() {
+        environment::log("FAIL: did not receive ready signal from virtio-blk driver");
+        return 1;
+    }
 
     // Mount ext2 filesystem
     environment::log("ext2_write_test: Mounting ext2 filesystem");
@@ -198,6 +218,12 @@ libpanda::main! {
     }
     file::close(handle);
     environment::log("ext2_write_test: Test 4 passed");
+
+    // The virtio-blk driver runs forever (a persistent driver process in
+    // the real boot path), so this test (playing `init`) must ask it to
+    // exit before returning itself, or QEMU never shuts down — see
+    // `block_test`'s identical shutdown request.
+    let _ = driver_channel.send(b"shutdown");
 
     environment::log("ext2_write_test: All tests passed!");
     0

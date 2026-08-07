@@ -1,0 +1,12 @@
+[package]
+name = "virtio-blk"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+libpanda = { workspace = true }
+panda-abi = { path = "../../../panda-abi" }
+
+[[bin]]
+name = "virtio-blk"
+path = "src/main.rs"

@@ -338,108 +338,53 @@ pub async fn sync(path: &str) -> Result<(), FsError> {
 }
 
 // =============================================================================
-// Block Device File Wrapper
-// =============================================================================
-
-use crate::resource::BlockDevice;
-
-/// A file wrapper around a block device.
-///
-/// This allows block devices to be accessed through the VFS file interface.
-pub struct BlockDeviceFile {
-    device: Arc<dyn BlockDevice>,
-    pos: u64,
-}
-
-impl BlockDeviceFile {
-    /// Create a new block device file.
-    pub fn new(device: Arc<dyn BlockDevice>) -> Self {
-        Self { device, pos: 0 }
-    }
-}
-
-#[async_trait]
-impl File for BlockDeviceFile {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {
-        let n = self.device.read_at(self.pos, buf).await?;
-        self.pos += n as u64;
-        Ok(n)
-    }
-
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, FsError> {
-        let n = self.device.write_at(self.pos, buf).await?;
-        self.pos += n as u64;
-        Ok(n)
-    }
-
-    async fn seek(&mut self, pos: SeekFrom) -> Result<u64, FsError> {
-        let size = self.device.size();
-        let new_pos = match pos {
-            SeekFrom::Start(n) => n as i64,
-            SeekFrom::Current(n) => self.pos as i64 + n,
-            SeekFrom::End(n) => size as i64 + n,
-        };
-        if new_pos < 0 {
-            return Err(FsError::InvalidOffset);
-        }
-        self.pos = new_pos as u64;
-        Ok(self.pos)
-    }
-
-    async fn stat(&self) -> Result<FileStat, FsError> {
-        Ok(FileStat {
-            size: self.device.size(),
-            is_dir: false,
-            mode: 0o660,
-            inode: 0,
-            nlinks: 1,
-            mtime: 0,
-            ctime: 0,
-            atime: 0,
-        })
-    }
-}
-
-// =============================================================================
 // Ext2 mount
 // =============================================================================
 
-/// Mount ext2 filesystem from the first block device at the given mountpoint.
+/// How long to retry `SchemeBlockDevice::open` before giving up (M4 Phase 2:
+/// `block:` is now provided by a userspace driver, spawned from the initrd
+/// by `init` *just before* it calls this — see `userspace/init/src/main.rs`
+/// — but that spawn is asynchronous: the driver process needs to actually
+/// run, claim the device, and call `OP_SCHEME_REGISTER` before `block:`
+/// resolves to anything. Retrying briefly instead of failing on the first
+/// attempt closes that race without needing a dedicated "wait for scheme
+/// registration" primitive.
+const MOUNT_RETRY_ATTEMPTS: u32 = 200;
+const MOUNT_RETRY_SLEEP_MS: u64 = 10;
+
+/// Mount ext2 filesystem from the block device at `block:/pci/storage/0`
+/// (the first storage-class device — see `device_path`) at the given
+/// mountpoint.
 ///
 /// This is called from the mount syscall handler.
 pub async fn mount_ext2(mountpoint: &str) -> Result<(), &'static str> {
     use log::info;
 
-    // Get the list of block devices
-    let devices = crate::devices::virtio_block::list_devices();
+    info!("Attempting to mount ext2 from block:/pci/storage/0");
 
-    if devices.is_empty() {
-        return Err("No block devices found");
-    }
-
-    // Use the first block device
-    let address = &devices[0];
-    info!("Attempting to mount ext2 from block device {:?}", address);
-
-    // Claim the device before mounting, so a concurrent raw `block:` open of
-    // the same device is rejected instead of racing the filesystem for
-    // reads and writes underneath it (see `resource::scheme::BlockScheme`).
-    // The guard is stored on the `Mount` entry, so it lives as long as the
-    // mount does.
-    let claim = crate::devices::claims::claim(
-        address.clone(),
-        crate::devices::claims::ClaimOwner::Mount,
-    )
-    .map_err(|_| "Device already claimed (in use elsewhere)")?;
-
-    // Get the block device
-    let Some(device) = crate::devices::virtio_block::get_device(address) else {
-        return Err("Failed to get block device");
+    let mut attempt = 0;
+    let device = loop {
+        match crate::resource::SchemeBlockDevice::open("block:/pci/storage/0").await {
+            Ok(device) => break device,
+            Err(_) if attempt < MOUNT_RETRY_ATTEMPTS => {
+                attempt += 1;
+                crate::executor::sleep::sleep_ms(MOUNT_RETRY_SLEEP_MS).await;
+            }
+            Err(_) => return Err("No block device found (block: never became available)"),
+        }
     };
+
     let device: Arc<dyn crate::resource::BlockDevice> = Arc::new(device);
 
-    // Mount ext2 - Ext2Fs::mount returns Arc<Ext2Fs> which implements Filesystem
+    // No `devices::claims` guard needed here (contrast the deleted kernel
+    // virtio-blk driver's version of this function): exclusivity is now
+    // enforced by the userspace virtio-blk driver's own `Open` handling —
+    // opening this device above *is* the exclusive claim, held for as long
+    // as `device`'s `SchemeBlockDevice` (and thus its underlying
+    // `SchemeProxyResource`) stays alive, i.e. for as long as the mount
+    // table entry holds this `Ext2Fs`'s `Arc`. See
+    // `resource::block_client::SchemeBlockDevice`'s module doc comment.
     let fs = Ext2Fs::mount(device).await?;
-    mount_with_claim(mountpoint, fs, Some(claim));
+    mount_with_claim(mountpoint, fs, None);
     Ok(())
 }
