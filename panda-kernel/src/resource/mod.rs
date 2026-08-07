@@ -12,7 +12,6 @@ mod channel;
 mod char_output;
 pub mod device;
 mod directory;
-mod display;
 mod event_source;
 pub(crate) mod initrd;
 mod mailbox;
@@ -27,10 +26,6 @@ pub use channel::{ChannelEndpoint, ChannelError};
 pub use char_output::{CharOutError, CharacterOutput};
 pub use device::{DeviceResource, DeviceResourceError, SubscriptionResource};
 pub use directory::{DirEntry, Directory};
-pub use display::{
-    DisplayDevice, DisplayError, PixelFormat, Rect, SurfaceError, SurfaceInfo,
-    device_address as display_device_address, init_framebuffer, notify_display_changed,
-};
 pub use event_source::{Event, EventSource, KeyEvent};
 pub use initrd::InitrdScheme;
 pub use mailbox::{Mailbox, MailboxRef};
@@ -90,14 +85,6 @@ pub trait Resource: Send + Sync {
         None
     }
 
-    /// Get this resource as an exclusively-owned display device (the
-    /// `display:` scheme). Follows the same one-accessor-per-concrete-
-    /// capability idiom as `as_scheme_proxy`: the display interface is not a
-    /// surface (it does no drawing) and has no other trait that fits.
-    fn as_display(&self) -> Option<&DisplayDevice> {
-        None
-    }
-
     /// Get a waker for blocking on this resource, if applicable.
     fn waker(&self) -> Option<Arc<IoWaker>> {
         None
@@ -154,7 +141,7 @@ pub trait Resource: Send + Sync {
 
     /// Get this resource as an owned device handle (`OP_DEVICE_CLAIM`'s
     /// result). Follows the same one-accessor-per-concrete-capability idiom
-    /// as `as_display`/`as_scheme_proxy`.
+    /// as `as_scheme_proxy`.
     fn as_device(&self) -> Option<&DeviceResource> {
         None
     }

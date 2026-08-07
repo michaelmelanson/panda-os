@@ -60,16 +60,21 @@ libpanda::main! {
 
     // Test 2: the well-known built-in schemes must all be present.
     //
-    // "keyboard" and "block" are deliberately *not* in this list: Phase 7
-    // (keyboard) and M4 Phase 2 (block) of plans/device-driver-model.md
-    // moved them out of `resource/scheme.rs::init`'s kernel-resident
-    // registrations into userspace drivers (`userspace/drivers/virtio-keyboard`,
-    // `userspace/drivers/virtio-blk`) that register their scheme dynamically
-    // once they claim their device — no different in kind from
-    // `scheme_provider_test`'s "echo" scheme. Neither is registered at boot
-    // at all, so neither belongs in a test that "pins the exact set of
-    // schemes registered at boot" (see this file's module doc comment).
-    for expected in ["file", "console", "display", "scheme"] {
+    // "keyboard", "block", and "display" are deliberately *not* in this
+    // list: Phase 7 (keyboard), M4 Phase 2 (block), and roadmap M4
+    // (display) of plans/device-driver-model.md all moved them out of
+    // `resource/scheme.rs::init`'s kernel-resident registrations into
+    // userspace drivers (`userspace/drivers/virtio-keyboard`,
+    // `userspace/drivers/virtio-blk`, `userspace/drivers/virtio-gpu`) that
+    // register their scheme dynamically once they claim their device — no
+    // different in kind from `scheme_provider_test`'s "echo" scheme. None
+    // of the three is registered at boot at all, so none belongs in a test
+    // that "pins the exact set of schemes registered at boot" (see this
+    // file's module doc comment). This test doesn't spawn any of those
+    // drivers itself (unlike `claim_test`/`display_test`/`block_test`,
+    // which need an actual open against the real scheme to succeed), so
+    // none of the three ever appears here.
+    for expected in ["file", "console", "scheme"] {
         if !names.iter().any(|n| n.as_str() == expected) {
             environment::log(&format!(
                 "FAIL: scheme '{}' missing from scheme:/ listing",

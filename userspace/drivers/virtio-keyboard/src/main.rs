@@ -978,6 +978,18 @@ fn serve_provider_requests(
                 // (M4's block driver service) uses this request.
                 let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
             }
+            // `keyboard:` never serves `OP_DISPLAY_*` — those request kinds
+            // (roadmap M4) only arrive on a `display:` provider
+            // (`userspace/drivers/virtio-gpu`).
+            Request::DisplayInfo { request_id, .. } => {
+                let _ = provider.reply_display_info_err(request_id, ErrorCode::NotSupported);
+            }
+            Request::DisplayMap { request_id, .. } => {
+                let _ = provider.reply_display_map_err(request_id, ErrorCode::NotSupported);
+            }
+            Request::DisplayFlush { request_id, .. } => {
+                let _ = provider.reply_display_flush_err(request_id, ErrorCode::NotSupported);
+            }
         }
     }
 }

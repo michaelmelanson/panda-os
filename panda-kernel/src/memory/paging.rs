@@ -40,6 +40,32 @@ pub unsafe fn switch_page_table(pml4_phys: PhysAddr) {
     }
 }
 
+/// Run `f` with `pml4_phys` loaded as the active page table, then restore
+/// whatever page table was active beforehand — a safe wrapper around
+/// [`switch_page_table`] for callers (e.g. `syscall::display::handle_map`)
+/// that need to do CR3-sensitive work (page-table walks via the recursive
+/// self-map) for a *specific* process from a context where the currently
+/// loaded CR3 isn't guaranteed to be that process's — most notably, kernel
+/// code resuming after an `.await` that crossed a process boundary, since
+/// CR3 is otherwise only switched when the scheduler dispatches back to
+/// userspace. Mirrors the manual save/switch/restore
+/// `Process::from_elf_data` already does for the same reason (loading a
+/// *different* process's ELF image into its own page table).
+///
+/// No-op switch (and no restore) if `pml4_phys` is already active.
+pub fn with_page_table<T>(pml4_phys: PhysAddr, f: impl FnOnce() -> T) -> T {
+    let saved = current_page_table_phys();
+    let switched = saved != pml4_phys;
+    if switched {
+        unsafe { switch_page_table(pml4_phys) };
+    }
+    let result = f();
+    if switched {
+        unsafe { switch_page_table(saved) };
+    }
+    result
+}
+
 /// Create a new PML4 page table with kernel mappings copied from the current one.
 /// Returns the physical address of the new page table.
 ///

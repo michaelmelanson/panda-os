@@ -25,21 +25,36 @@ libpanda::main! {
 
     // This test plays the role of `init` (it's the initrd's `init`
     // binary), so unlike the real boot path there is no service manager
-    // running to spawn the virtio-blk driver — do it directly, the same
-    // way `keyboard_test` spawns virtio-keyboard (M4 Phase 2,
-    // plans/device-driver-model.md). Both `block:` opens below and the
-    // ext2 mount in Test 5 need it running.
-    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-blk") else {
+    // running to spawn either driver — do it directly, the same way
+    // `keyboard_test`/`display_test` spawn their drivers (M4 Phase 2 and
+    // roadmap M4, plans/device-driver-model.md). Both `block:` opens below
+    // plus the ext2 mount in Test 5 need virtio-blk running, and Test 4
+    // needs virtio-gpu running.
+    let Ok(blk_driver_handle) = environment::spawn("file:/initrd/virtio-blk") else {
         environment::log("FAIL: could not spawn virtio-blk driver");
         return 1;
     };
-    let Some(driver_channel) = Channel::from_handle_borrowed(driver_handle.into()) else {
+    let Some(blk_driver_channel) = Channel::from_handle_borrowed(blk_driver_handle.into()) else {
         environment::log("FAIL: virtio-blk driver handle is not a channel");
         return 1;
     };
     let mut ready_msg = [0u8; 64];
-    if driver_channel.recv(&mut ready_msg).is_err() {
+    if blk_driver_channel.recv(&mut ready_msg).is_err() {
         environment::log("FAIL: did not receive ready signal from virtio-blk driver");
+        return 1;
+    }
+
+    let Ok(gpu_driver_handle) = environment::spawn("file:/initrd/virtio-gpu") else {
+        environment::log("FAIL: could not spawn virtio-gpu driver");
+        return 1;
+    };
+    let Some(gpu_driver_channel) = Channel::from_handle_borrowed(gpu_driver_handle.into()) else {
+        environment::log("FAIL: virtio-gpu driver handle is not a channel");
+        return 1;
+    };
+    let mut ready_msg = [0u8; 64];
+    if gpu_driver_channel.recv(&mut ready_msg).is_err() {
+        environment::log("FAIL: did not receive ready signal from virtio-gpu driver");
         return 1;
     }
 
@@ -134,11 +149,12 @@ libpanda::main! {
         }
     }
 
-    // The virtio-blk driver runs forever (a persistent driver process in
-    // the real boot path), so this test (playing `init`) must ask it to
-    // exit before returning itself, or QEMU never shuts down — see
-    // `block_test`'s identical shutdown request.
-    let _ = driver_channel.send(b"shutdown");
+    // Both drivers run forever (persistent driver processes in the real
+    // boot path), so this test (playing `init`) must ask each to exit
+    // before returning itself, or QEMU never shuts down — see
+    // `block_test`'s/`display_test`'s identical shutdown requests.
+    let _ = blk_driver_channel.send(b"shutdown");
+    let _ = gpu_driver_channel.send(b"shutdown");
 
     environment::log("PASS");
     0

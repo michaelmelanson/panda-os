@@ -92,3 +92,64 @@ unsafe impl Hal for VirtioHal {
         // do nothing
     }
 }
+
+// =============================================================================
+// Shared `virtio_drivers` PCI transport glue.
+//
+// These impls used to live in the now-deleted `devices/virtio_gpu/mod.rs`
+// (ported to a userspace driver in roadmap M4 — see
+// `plans/device-driver-model.md`'s M4 landed-deviations note) but are
+// needed by every remaining kernel-resident virtio-pci driver (currently
+// just `virtio_block`), so they moved here rather than being deleted with
+// it.
+// =============================================================================
+
+use crate::pci::device::{PciDevice, PciDeviceAddress};
+use virtio_drivers::transport::pci::bus::{ConfigurationAccess, DeviceFunction};
+
+impl PartialEq<DeviceFunction> for PciDeviceAddress {
+    fn eq(&self, other: &DeviceFunction) -> bool {
+        self.bus == other.bus && self.slot == other.device && self.function == other.function
+    }
+}
+
+impl ConfigurationAccess for PciDevice {
+    fn read_word(
+        &self,
+        device_function: virtio_drivers::transport::pci::bus::DeviceFunction,
+        register_offset: u8,
+    ) -> u32 {
+        log::trace!("Virtio PCI read {device_function} at offset {register_offset:#0X}");
+        assert_eq!(self.address(), device_function);
+        self.read(register_offset)
+    }
+
+    fn write_word(
+        &mut self,
+        device_function: virtio_drivers::transport::pci::bus::DeviceFunction,
+        register_offset: u8,
+        data: u32,
+    ) {
+        log::trace!(
+            "Virtio PCI write {device_function} at offset {register_offset:#0X} with data {data:#0X}"
+        );
+        assert_eq!(self.address(), device_function);
+        unsafe { self.write(register_offset, data) }
+    }
+
+    unsafe fn unsafe_clone(&self) -> Self {
+        todo!()
+    }
+}
+
+impl From<PciDeviceAddress> for DeviceFunction {
+    fn from(addr: PciDeviceAddress) -> Self {
+        assert_eq!(addr.segment, 0);
+
+        DeviceFunction {
+            bus: addr.bus,
+            device: addr.slot,
+            function: addr.function,
+        }
+    }
+}

@@ -1071,6 +1071,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtio-gpu"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "virtio-keyboard"
 version = "0.1.0"
 dependencies = [

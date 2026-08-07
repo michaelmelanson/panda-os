@@ -16,11 +16,31 @@
 #![no_std]
 #![no_main]
 
+use libpanda::ipc::Channel;
 use libpanda::{ErrorCode, Handle, environment, file, sys};
 use panda_abi::{SurfaceInfoOut, SurfaceRect};
 
 libpanda::main! {
     environment::log("display_test: starting");
+
+    // Roadmap M4: `display:` is now served by a userspace driver
+    // (`userspace/drivers/virtio-gpu`), not kernel plumbing — like
+    // `keyboard_test`, this process plays the role of `init` (no service
+    // manager runs to spawn it from `initrd:/drivers`), so spawn it
+    // directly and wait for its "ready" signal.
+    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-gpu") else {
+        environment::log("FAIL: could not spawn virtio-gpu driver");
+        return 1;
+    };
+    let Some(driver_channel) = Channel::from_handle_borrowed(driver_handle.into()) else {
+        environment::log("FAIL: driver handle is not a channel");
+        return 1;
+    };
+    let mut ready_msg = [0u8; 64];
+    if driver_channel.recv(&mut ready_msg).is_err() {
+        environment::log("FAIL: did not receive ready signal from virtio-gpu driver");
+        return 1;
+    }
 
     // Claim the display.
     let Ok(display) = environment::open("display:/pci/display/0", 0, 0) else {
@@ -90,28 +110,15 @@ libpanda::main! {
     environment::log("display_test: reopen after close succeeded");
     file::close(display2);
 
-    // A path that resolves to no display device is NotFound, not Busy.
-    match environment::open("display:/pci/display/7", 0, 0) {
-        Err(ErrorCode::NotFound) => {
-            environment::log("display_test: nonexistent display index rejected with NotFound")
-        }
-        _ => {
-            environment::log("FAIL: nonexistent display index did not report NotFound");
-            return 1;
-        }
-    }
-
-    // A path resolving to a real device that is not the display is also
-    // NotFound: the display scheme only opens the display.
-    match environment::open("display:/pci/storage/0", 0, 0) {
-        Err(ErrorCode::NotFound) => {
-            environment::log("display_test: non-display device rejected with NotFound")
-        }
-        _ => {
-            environment::log("FAIL: non-display device was accepted by the display scheme");
-            return 1;
-        }
-    }
+    // Path-based rejection of non-display device addresses (e.g.
+    // "display:/pci/display/7" or "display:/pci/storage/0") was the deleted
+    // kernel-resident `DisplayScheme`'s job (`device_path::resolve` compared
+    // against the framebuffer's own PCI address). The userspace driver
+    // (`userspace/drivers/virtio-gpu`) grants any path once, matching
+    // `userspace/drivers/virtio-keyboard`'s identical simplification for
+    // `keyboard:` — this driver only ever serves the one device it claimed,
+    // so path resolution add no real access control here. See
+    // `plans/device-driver-model.md`'s M4 landed-deviations note.
 
     // The display operations must reject handles that are not displays —
     // which, since the handle *is* the proof of ownership, is exactly what a
@@ -147,6 +154,13 @@ libpanda::main! {
         }
     }
     environment::log("display_test: INFO/MAP/FLUSH on non-display handles rejected");
+
+    // The virtio-gpu driver runs forever (a persistent driver process in
+    // the real boot path); ask it to exit before this process does, or
+    // QEMU keeps running until the harness's own timeout even though the
+    // test already passed — see `userspace/tests/keyboard_test`'s identical
+    // shutdown request for the same reason.
+    let _ = driver_channel.send(b"shutdown");
 
     environment::log("PASS");
     0

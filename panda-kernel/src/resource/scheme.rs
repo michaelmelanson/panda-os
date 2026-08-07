@@ -339,41 +339,21 @@ impl CharacterOutput for SerialConsoleResource {
 }
 
 // =============================================================================
-// Display Scheme - exclusive display ownership
+// Display Scheme - moved to a userspace driver in roadmap M4
 // =============================================================================
-
-/// Scheme handler for display devices (`display:/pci/display/0`).
-///
-/// Opening a display claims it exclusively (see
-/// `crate::resource::display`): a second open fails with `Busy` until the
-/// owning handle is closed or the owning process exits.
-pub struct DisplayScheme;
-
-#[async_trait]
-impl SchemeHandler for DisplayScheme {
-    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError> {
-        // Resolve like any other class-based device path, e.g.
-        // "/pci/display/0" or the raw "/pci/00:02.0".
-        let address = device_path::resolve(path).ok_or(OpenError::NotFound)?;
-
-        // Only the device the framebuffer was initialized from can be opened
-        // as a display; any other PCI device resolved by this path is not a
-        // display this kernel can drive.
-        if super::display_device_address().as_ref() != Some(&address) {
-            return Err(OpenError::NotFound);
-        }
-
-        let claim = crate::devices::claims::claim(address, ClaimOwner::Display)
-            .map_err(|_| OpenError::Busy)?;
-
-        let display = super::DisplayDevice::new(claim).ok_or(OpenError::NotFound)?;
-        Ok(Box::new(display))
-    }
-
-    async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
-        device_path::list(path)
-    }
-}
+//
+// The kernel-resident `DisplayScheme`/`DisplayDevice` (`display:
+// /pci/display/0`, exclusive claim via `crate::devices::claims`) has been
+// deleted: the display driver is now a userspace process
+// (`userspace/drivers/virtio-gpu`) that registers `display:` itself via
+// `OP_SCHEME_REGISTER`, exactly like `userspace/drivers/virtio-keyboard`
+// registers `keyboard:`. `OP_DISPLAY_INFO`/`MAP`/`FLUSH` (the client-facing
+// contract, unchanged) are served for a `SchemeProxyResource`-backed
+// `display:` open by forwarding to the provider — see
+// `SchemeProxyResource::display_info`/`display_map`/`display_flush` above
+// and `panda-kernel/src/syscall/display.rs`. Exclusivity (a second open
+// failing `Busy`) is now the provider's responsibility, not a kernel claim —
+// see the virtio-gpu driver's `Open` handler.
 
 // =============================================================================
 // Block Scheme - moved to userspace (M4 Phase 2, plans/device-driver-model.md)
@@ -974,6 +954,104 @@ impl SchemeProxyResource {
             _ => Err(panda_abi::ErrorCode::Protocol),
         }
     }
+
+    /// Forward `OP_DISPLAY_INFO` to the provider — see
+    /// `panda-kernel/src/syscall/display.rs`'s scheme-proxy fallback branch,
+    /// used when the opened resource is a userspace display driver
+    /// (roadmap M4) rather than the old kernel-resident `DisplayDevice`.
+    /// Returns `(width, height, format, stride)`.
+    pub async fn display_info(&self) -> Result<(u32, u32, u32, u32), panda_abi::ErrorCode> {
+        use panda_abi::scheme_protocol::{Request, Response};
+
+        let request_id = self.provider.next_request_id();
+        let mut req_buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let Some(n) = (Request::DisplayInfo {
+            request_id,
+            resource_id: self.resource_id,
+        })
+        .encode(&mut req_buf) else {
+            return Err(panda_abi::ErrorCode::InvalidArgument);
+        };
+        req_buf.truncate(n);
+
+        let resp = self
+            .provider
+            .round_trip(request_id, &req_buf)
+            .await
+            .map_err(provider_error_to_error_code)?;
+
+        match Response::decode(&resp) {
+            Some(Response::DisplayInfoOk { width, height, format, stride, .. }) => {
+                Ok((width, height, format, stride))
+            }
+            Some(Response::DisplayInfoErr { error, .. }) => Err(error),
+            _ => Err(panda_abi::ErrorCode::Protocol),
+        }
+    }
+
+    /// Forward `OP_DISPLAY_MAP` to the provider. Returns the framebuffer's
+    /// guest-physical address and byte size; the syscall handler maps that
+    /// range into the calling process (see `MSG_DISPLAY_MAP`'s doc comment
+    /// for why the provider discloses a raw physical range here).
+    pub async fn display_map(&self) -> Result<(u64, u64), panda_abi::ErrorCode> {
+        use panda_abi::scheme_protocol::{Request, Response};
+
+        let request_id = self.provider.next_request_id();
+        let mut req_buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let Some(n) = (Request::DisplayMap {
+            request_id,
+            resource_id: self.resource_id,
+        })
+        .encode(&mut req_buf) else {
+            return Err(panda_abi::ErrorCode::InvalidArgument);
+        };
+        req_buf.truncate(n);
+
+        let resp = self
+            .provider
+            .round_trip(request_id, &req_buf)
+            .await
+            .map_err(provider_error_to_error_code)?;
+
+        match Response::decode(&resp) {
+            Some(Response::DisplayMapOk { phys_addr, size, .. }) => Ok((phys_addr, size)),
+            Some(Response::DisplayMapErr { error, .. }) => Err(error),
+            _ => Err(panda_abi::ErrorCode::Protocol),
+        }
+    }
+
+    /// Forward `OP_DISPLAY_FLUSH` to the provider. `rect` is `None` for a
+    /// full-surface flush.
+    pub async fn display_flush(
+        &self,
+        rect: Option<(u32, u32, u32, u32)>,
+    ) -> Result<(), panda_abi::ErrorCode> {
+        use panda_abi::scheme_protocol::{Request, Response};
+
+        let request_id = self.provider.next_request_id();
+        let mut req_buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let Some(n) = (Request::DisplayFlush {
+            request_id,
+            resource_id: self.resource_id,
+            rect,
+        })
+        .encode(&mut req_buf) else {
+            return Err(panda_abi::ErrorCode::InvalidArgument);
+        };
+        req_buf.truncate(n);
+
+        let resp = self
+            .provider
+            .round_trip(request_id, &req_buf)
+            .await
+            .map_err(provider_error_to_error_code)?;
+
+        match Response::decode(&resp) {
+            Some(Response::DisplayFlushOk { .. }) => Ok(()),
+            Some(Response::DisplayFlushErr { error, .. }) => Err(error),
+            _ => Err(panda_abi::ErrorCode::Protocol),
+        }
+    }
 }
 
 impl Resource for SchemeProxyResource {
@@ -1045,9 +1123,8 @@ pub fn register_initrd_scheme(fs: Arc<vfs::TarFs>) {
 pub fn init() {
     register_scheme("file", Arc::new(FileScheme));
     register_scheme("console", Arc::new(ConsoleScheme));
-    register_scheme("display", Arc::new(DisplayScheme));
-    // "block" is intentionally not registered here — see the "Block Scheme"
-    // section above: it's registered by the userspace virtio-blk driver via
-    // `OP_SCHEME_REGISTER`, same as "keyboard".
+    // "block" and "display" are intentionally not registered here — both
+    // are registered by their respective userspace drivers
+    // (virtio-blk/virtio-gpu) via `OP_SCHEME_REGISTER`, same as "keyboard".
     register_scheme("scheme", Arc::new(SchemeScheme));
 }

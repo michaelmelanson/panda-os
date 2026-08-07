@@ -570,6 +570,125 @@ userspace driver — the same adjustment `keyboard_test`/
 DMA-regression check) passes with no regression. Full `nix develop -c make
 test` is clean, twice in a row.
 
+### Roadmap M4 — display driver service: landed status and deviations
+
+**⚠️ Landed with a known, verified-non-hang flakiness gap — see "Verification
+status" below.** `panda-kernel/src/devices/virtio_gpu/mod.rs` and
+`panda-kernel/src/resource/display.rs` are deleted (`grep -rn virtio_gpu
+panda-kernel/src` finds only a stale doc-comment reference in
+`devices/virtio_hal.rs`, no live code) in the same commit as
+`userspace/drivers/virtio-gpu/`, which hand-rolls the virtio-pci modern
+transport the same way `userspace/drivers/virtio-keyboard/` does (capability
+walk, feature negotiation, split-virtqueue setup/kick/drain) against a
+controlq only — no cursorq, since basic 2D scanout via `RESOURCE_CREATE_2D`/
+`RESOURCE_ATTACH_BACKING`/`SET_SCANOUT`/`TRANSFER_TO_HOST_2D`/
+`RESOURCE_FLUSH` never touches it. The `display:` scheme's client-facing
+protocol (info/map/flush, exclusive claim) is unchanged, per the roadmap —
+only the provider moved.
+
+**Deviation — transport code duplicated, not factored into a shared
+crate.** `userspace/drivers/virtio-gpu/src/main.rs` (~860 lines) largely
+mirrors `virtio-keyboard/src/main.rs`'s PCI-capability-walk/feature-
+negotiation/virtqueue plumbing rather than sharing it, and the concurrently-
+landed virtio-blk driver duplicates it a third time. Deliberately not
+extracted here (or interrupted mid-flight to extract) — tracked as a
+separate follow-up task to run after all three drivers have landed.
+
+**Two real bugs found and fixed while landing this, both applicable beyond
+GPU:**
+
+1. **`OP_DISPLAY_MAP` could map the framebuffer into the wrong process's
+   page tables.** `syscall::display::handle_map` awaits a cross-process
+   round trip to the userspace driver (`proxy.display_map().await`) before
+   doing the actual `map_external` page-table work — unlike a plain syscall
+   entry (always starts with the caller's CR3 already loaded), nothing
+   guarantees the CPU's current CR3 is still the calling process's after an
+   `.await` that crossed a process boundary; the scheduler only switches
+   CR3 when dispatching back to *userspace*, not on every intermediate
+   future-poll. In practice this mapped the framebuffer into whatever
+   process happened to be current when the future was polled to
+   completion — often the very driver process the display was requested
+   from, since it was just scheduled to answer the request. The kernel's
+   own post-map probe write (now removed debug code) succeeded regardless,
+   because it ran under the same wrong CR3; the bug only surfaced as a
+   `NOT PRESENT` page fault back in the actual calling process, the first
+   time real userspace code tried to write to the "mapped" address.
+   Fixed by adding `memory::with_page_table` (`panda-kernel/src/memory/paging.rs`),
+   a safe wrapper that explicitly switches to the target process's page
+   table before CR3-sensitive work and restores the previous one after —
+   mirroring the manual save/switch/restore `Process::from_elf_data`
+   already does for the same class of reason (loading a *different*
+   process's ELF image into its own page table). Any future syscall that
+   does page-table work after an inter-process `.await` needs the same
+   treatment; there is no general guard against this class of bug yet.
+2. **`OP_DISPLAY_FLUSH`'s partial-rect path sent a spec-inconsistent
+   `TRANSFER_TO_HOST_2D` command.** An earlier version of
+   `Gpu::flush` forwarded the client's damaged rectangle as both the
+   command's destination `rect` *and* implicitly assumed a zero `offset`
+   into the linear backing buffer — but virtio-gpu's `offset` field must
+   independently equal the byte offset matching that rect's origin
+   (`y * stride + x * bpp`); leaving it hardcoded to `0` while `rect` had a
+   nonzero origin made the host sample the wrong source pixels, rendering
+   composited windows at a shifted, garbled offset (caught by
+   `window_test`'s screenshot comparison, not by any log-based assertion).
+   Fixed by always transferring/flushing the whole surface regardless of
+   `region` — matching both the deleted kernel driver's actual contract
+   (`resource::display::DisplayResource::flush`'s doc comment already said
+   "the underlying driver exposes no partial-rect flush... the rectangle
+   currently serves as validation and future-proofing... rather than as a
+   bandwidth optimisation") and `vendor/virtio-drivers/src/device/gpu/mod.rs`'s
+   own `flush()`, which is likewise always whole-surface. Real partial-rect
+   support (computing `offset` correctly) is possible future work but isn't
+   needed to match the existing, tested contract.
+
+**Test infrastructure changes.** `claim_test` and `display_test` both act as
+their own `init` (no service manager runs in a per-test QEMU boot to spawn
+drivers from `initrd:/drivers`), so both now spawn
+`file:/initrd/virtio-gpu` directly and wait for its ready signal before
+opening `display:/pci/display/0`, the same pattern `keyboard_test` already
+established for `virtio-keyboard`; `claim_test_EXTRAS` gained `virtio-gpu`
+in the Makefile accordingly. `scheme_registry_test` does *not* spawn the
+driver — `display` left its "must be present in `scheme:/` at boot" pinned
+list the same way `keyboard` already had for Phase 7, since it's now
+registered dynamically by the driver rather than at kernel boot.
+Screenshot-verified compositor tests (`window_test`, `multi_window_test`,
+`alpha_test`, `partial_refresh_test`, `window_move_test`,
+`compositor_protocol_test`) already spawned `virtio-gpu` via
+`compositor_test_child` before this phase (that binary's own doc comment
+predates this note); no change needed there beyond the driver itself
+working.
+
+**Verification status: build clean; individually correct; NOT reliably
+green under this host's default (unlimited) `make test` parallelism.**
+`nix develop -c make build` is clean. Every test passes individually and
+the full suite passes cleanly when run with a generously extended
+per-test timeout (`TEST_TIMEOUT=180`), confirming the driver itself is
+functionally correct and nothing is genuinely hung. But at the harness's
+*default* (unlimited) parallelism on the 8-core machine this was verified
+on, `alpha_test`, `compositor_protocol_test`, `multi_window_test`,
+`partial_refresh_test`, `window_move_test`, and sometimes `window_test`/
+`compositor_start_test` intermittently exceed the default 60 s per-test
+timeout — confirmed via full-log inspection to be real-time slowness under
+CPU contention, not a hang (no missing completion, no fault, no stuck
+future). `compositor_test_child`'s own doc comment already documents this
+general class of flakiness (fixed real-time tick budget vs. host
+parallelism) as a pre-existing, previously-tuned concern from Phase 7; this
+phase makes it materially worse because every screenshot-verified
+compositor test now also pays real per-flush latency from this driver's
+non-IRQ busy-poll controlq wait (`ControlQueue::wait_for_response`) that
+the old in-kernel driver never had (direct hardware access, no syscall
+round trips at all). Mitigated but not eliminated here: `wait_for_response`
+now spins on `core::hint::spin_loop()` locally and only calls
+`process::yield_now()` every 256th iteration (was every iteration),
+cutting scheduler-round-trip overhead in the common case where QEMU's
+software virtio-gpu backend posts a completion almost immediately — this
+measurably reduced (but did not eliminate) the timeout rate across repeated
+runs. Follow-up options, none attempted here for time: raise the default
+per-test timeout for the compositor test class, make the controlq wait
+genuinely IRQ-driven instead of polling (removing the busy-wait's CPU
+contention entirely), or document `MAX_PARALLEL=4` (or lower) as the
+supported way to run `make test` reliably on constrained hardware.
+
 **Phase 8 — ✅ landed.** `docs/DEVICE_DRIVERS.md` documents the real,
 implemented API (including `OP_DEVICE_POLL_EVENT` and the `MmioMapOut`
 out-parameter above, and Phase 7's virtqueue gap). `docs/DEVICE_PATHS.md`

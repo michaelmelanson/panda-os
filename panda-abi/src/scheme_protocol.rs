@@ -66,6 +66,28 @@ pub const MSG_NOTIFY: u8 = 7;
 /// resources (e.g. `keyboard:`'s eventq) — those providers should reply
 /// `SizeErr(NotSupported)`.
 pub const MSG_SIZE: u8 = 8;
+/// Request/response kind: fetch a display resource's mode info (width,
+/// height, pixel format, stride). Added in roadmap M4 so `OP_DISPLAY_INFO`
+/// can be served by a userspace display driver (via `SchemeProxyResource`)
+/// instead of only a kernel-resident display resource — see
+/// `panda-kernel/src/syscall/display.rs`'s scheme-proxy forwarding branch
+/// and `plans/device-driver-model.md`'s M4 landed-deviations note.
+pub const MSG_DISPLAY_INFO: u8 = 9;
+/// Request/response kind: map a display resource's framebuffer into the
+/// calling process. Unlike every other request kind, `DisplayMapOk`'s
+/// payload carries a raw guest-physical address + size rather than opaque
+/// bytes — the kernel maps that physical range directly into the caller,
+/// the same way the old kernel-resident display driver did, instead of
+/// proxying page contents through read/write. This means the provider is
+/// trusted to disclose a real, exclusively-owned physical range: only the
+/// blessed display driver should ever hold the `display:` scheme
+/// registration in practice; see the M4 landed-deviations note for the
+/// follow-up scheme-registration ACL gap this leaves (any process can
+/// currently call `OP_SCHEME_REGISTER` for any name).
+pub const MSG_DISPLAY_MAP: u8 = 10;
+/// Request/response kind: flush a damaged rectangle (or, if none given, the
+/// whole surface) to the display.
+pub const MSG_DISPLAY_FLUSH: u8 = 11;
 
 /// Response status byte: the operation succeeded.
 pub const STATUS_OK: u8 = 0;
@@ -151,6 +173,16 @@ pub enum Request<'a> {
     Connect { request_id: u64, path: &'a str },
     /// Query a resource's byte size — see [`MSG_SIZE`].
     Size { request_id: u64, resource_id: u64 },
+    /// See [`MSG_DISPLAY_INFO`].
+    DisplayInfo { request_id: u64, resource_id: u64 },
+    /// See [`MSG_DISPLAY_MAP`].
+    DisplayMap { request_id: u64, resource_id: u64 },
+    /// See [`MSG_DISPLAY_FLUSH`]. `rect` is `None` for a full-surface flush.
+    DisplayFlush {
+        request_id: u64,
+        resource_id: u64,
+        rect: Option<(u32, u32, u32, u32)>,
+    },
 }
 
 impl<'a> Request<'a> {
@@ -163,7 +195,10 @@ impl<'a> Request<'a> {
             | Request::Write { request_id, .. }
             | Request::Close { request_id, .. }
             | Request::Connect { request_id, .. }
-            | Request::Size { request_id, .. } => request_id,
+            | Request::Size { request_id, .. }
+            | Request::DisplayInfo { request_id, .. }
+            | Request::DisplayMap { request_id, .. }
+            | Request::DisplayFlush { request_id, .. } => request_id,
         }
     }
 
@@ -255,6 +290,49 @@ impl<'a> Request<'a> {
                 buf[9..17].copy_from_slice(&resource_id.to_le_bytes());
                 Some(total)
             }
+            Request::DisplayInfo { request_id, resource_id } => {
+                let total = HEADER_LEN + 8;
+                if total > buf.len() {
+                    return None;
+                }
+                buf[0] = MSG_DISPLAY_INFO;
+                buf[1..9].copy_from_slice(&request_id.to_le_bytes());
+                buf[9..17].copy_from_slice(&resource_id.to_le_bytes());
+                Some(total)
+            }
+            Request::DisplayMap { request_id, resource_id } => {
+                let total = HEADER_LEN + 8;
+                if total > buf.len() {
+                    return None;
+                }
+                buf[0] = MSG_DISPLAY_MAP;
+                buf[1..9].copy_from_slice(&request_id.to_le_bytes());
+                buf[9..17].copy_from_slice(&resource_id.to_le_bytes());
+                Some(total)
+            }
+            Request::DisplayFlush { request_id, resource_id, rect } => {
+                let total = HEADER_LEN + 8 + 1 + 16;
+                if total > buf.len() {
+                    return None;
+                }
+                buf[0] = MSG_DISPLAY_FLUSH;
+                buf[1..9].copy_from_slice(&request_id.to_le_bytes());
+                buf[9..17].copy_from_slice(&resource_id.to_le_bytes());
+                match rect {
+                    Some((x, y, width, height)) => {
+                        buf[17] = 1;
+                        buf[18..22].copy_from_slice(&x.to_le_bytes());
+                        buf[22..26].copy_from_slice(&y.to_le_bytes());
+                        buf[26..30].copy_from_slice(&width.to_le_bytes());
+                        buf[30..34].copy_from_slice(&height.to_le_bytes());
+                    }
+                    None => {
+                        buf[17] = 0;
+                        buf[18..34].fill(0);
+                    }
+                }
+                Some(total)
+            }
         }
     }
 
@@ -334,6 +412,37 @@ impl<'a> Request<'a> {
                     resource_id,
                 })
             }
+            MSG_DISPLAY_INFO => {
+                if buf.len() < 17 {
+                    return None;
+                }
+                let resource_id = u64::from_le_bytes(buf[9..17].try_into().ok()?);
+                Some(Request::DisplayInfo { request_id, resource_id })
+            }
+            MSG_DISPLAY_MAP => {
+                if buf.len() < 17 {
+                    return None;
+                }
+                let resource_id = u64::from_le_bytes(buf[9..17].try_into().ok()?);
+                Some(Request::DisplayMap { request_id, resource_id })
+            }
+            MSG_DISPLAY_FLUSH => {
+                if buf.len() < 34 {
+                    return None;
+                }
+                let resource_id = u64::from_le_bytes(buf[9..17].try_into().ok()?);
+                let rect = if buf[17] != 0 {
+                    Some((
+                        u32::from_le_bytes(buf[18..22].try_into().ok()?),
+                        u32::from_le_bytes(buf[22..26].try_into().ok()?),
+                        u32::from_le_bytes(buf[26..30].try_into().ok()?),
+                        u32::from_le_bytes(buf[30..34].try_into().ok()?),
+                    ))
+                } else {
+                    None
+                };
+                Some(Request::DisplayFlush { request_id, resource_id, rect })
+            }
             _ => None,
         }
     }
@@ -373,6 +482,18 @@ pub enum Response<'a> {
     SizeErr { request_id: u64, error: ErrorCode },
     /// Unsolicited push — see [`MSG_NOTIFY`]. `request_id` is always `0`.
     Notify { resource_id: u64, events: u32 },
+    /// Answers [`Request::DisplayInfo`]. `format` mirrors
+    /// `panda_abi::SurfaceInfoOut::format` (currently always ARGB8888 = 0);
+    /// `stride` is bytes per row.
+    DisplayInfoOk { request_id: u64, width: u32, height: u32, format: u32, stride: u32 },
+    DisplayInfoErr { request_id: u64, error: ErrorCode },
+    /// Answers [`Request::DisplayMap`] — see [`MSG_DISPLAY_MAP`]'s doc
+    /// comment for why this carries a raw physical address instead of an
+    /// opaque handle/bytes.
+    DisplayMapOk { request_id: u64, phys_addr: u64, size: u64 },
+    DisplayMapErr { request_id: u64, error: ErrorCode },
+    DisplayFlushOk { request_id: u64 },
+    DisplayFlushErr { request_id: u64, error: ErrorCode },
 }
 
 impl<'a> Response<'a> {
@@ -391,7 +512,13 @@ impl<'a> Response<'a> {
             | Response::ConnectOk { request_id }
             | Response::ConnectErr { request_id, .. }
             | Response::SizeOk { request_id, .. }
-            | Response::SizeErr { request_id, .. } => request_id,
+            | Response::SizeErr { request_id, .. }
+            | Response::DisplayInfoOk { request_id, .. }
+            | Response::DisplayInfoErr { request_id, .. }
+            | Response::DisplayMapOk { request_id, .. }
+            | Response::DisplayMapErr { request_id, .. }
+            | Response::DisplayFlushOk { request_id }
+            | Response::DisplayFlushErr { request_id, .. } => request_id,
             Response::Notify { .. } => 0,
         }
     }
@@ -516,6 +643,54 @@ impl<'a> Response<'a> {
         Some(total)
     }
 
+    /// Encode `DisplayInfoOk`.
+    pub fn encode_display_info_ok(
+        request_id: u64,
+        width: u32,
+        height: u32,
+        format: u32,
+        stride: u32,
+        buf: &mut [u8],
+    ) -> Option<usize> {
+        let total = RESP_HEADER_LEN + 16;
+        if total > buf.len() {
+            return None;
+        }
+        Self::header(MSG_DISPLAY_INFO, request_id, STATUS_OK, buf)?;
+        buf[10..14].copy_from_slice(&width.to_le_bytes());
+        buf[14..18].copy_from_slice(&height.to_le_bytes());
+        buf[18..22].copy_from_slice(&format.to_le_bytes());
+        buf[22..26].copy_from_slice(&stride.to_le_bytes());
+        Some(total)
+    }
+
+    /// Encode `DisplayMapOk`.
+    pub fn encode_display_map_ok(
+        request_id: u64,
+        phys_addr: u64,
+        size: u64,
+        buf: &mut [u8],
+    ) -> Option<usize> {
+        let total = RESP_HEADER_LEN + 16;
+        if total > buf.len() {
+            return None;
+        }
+        Self::header(MSG_DISPLAY_MAP, request_id, STATUS_OK, buf)?;
+        buf[10..18].copy_from_slice(&phys_addr.to_le_bytes());
+        buf[18..26].copy_from_slice(&size.to_le_bytes());
+        Some(total)
+    }
+
+    /// Encode `DisplayFlushOk`.
+    pub fn encode_display_flush_ok(request_id: u64, buf: &mut [u8]) -> Option<usize> {
+        let total = RESP_HEADER_LEN;
+        if total > buf.len() {
+            return None;
+        }
+        Self::header(MSG_DISPLAY_FLUSH, request_id, STATUS_OK, buf)?;
+        Some(total)
+    }
+
     /// Encode `Notify` — see [`MSG_NOTIFY`]. Always uses `request_id == 0`.
     pub fn encode_notify(resource_id: u64, events: u32, buf: &mut [u8]) -> Option<usize> {
         let total = RESP_HEADER_LEN + 8 + 4;
@@ -552,6 +727,9 @@ impl<'a> Response<'a> {
                 MSG_CLOSE => Response::CloseErr { request_id, error },
                 MSG_CONNECT => Response::ConnectErr { request_id, error },
                 MSG_SIZE => Response::SizeErr { request_id, error },
+                MSG_DISPLAY_INFO => Response::DisplayInfoErr { request_id, error },
+                MSG_DISPLAY_MAP => Response::DisplayMapErr { request_id, error },
+                MSG_DISPLAY_FLUSH => Response::DisplayFlushErr { request_id, error },
                 _ => return None,
             });
         }
@@ -588,6 +766,19 @@ impl<'a> Response<'a> {
                 let size = u64::from_le_bytes(buf.get(10..18)?.try_into().ok()?);
                 Some(Response::SizeOk { request_id, size })
             }
+            MSG_DISPLAY_INFO => {
+                let width = u32::from_le_bytes(buf.get(10..14)?.try_into().ok()?);
+                let height = u32::from_le_bytes(buf.get(14..18)?.try_into().ok()?);
+                let format = u32::from_le_bytes(buf.get(18..22)?.try_into().ok()?);
+                let stride = u32::from_le_bytes(buf.get(22..26)?.try_into().ok()?);
+                Some(Response::DisplayInfoOk { request_id, width, height, format, stride })
+            }
+            MSG_DISPLAY_MAP => {
+                let phys_addr = u64::from_le_bytes(buf.get(10..18)?.try_into().ok()?);
+                let size = u64::from_le_bytes(buf.get(18..26)?.try_into().ok()?);
+                Some(Response::DisplayMapOk { request_id, phys_addr, size })
+            }
+            MSG_DISPLAY_FLUSH => Some(Response::DisplayFlushOk { request_id }),
             _ => None,
         }
     }
