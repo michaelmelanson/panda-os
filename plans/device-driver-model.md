@@ -572,8 +572,8 @@ test` is clean, twice in a row.
 
 ### Roadmap M4 — display driver service: landed status and deviations
 
-**⚠️ Landed with a known, verified-non-hang flakiness gap — see "Verification
-status" below.** `panda-kernel/src/devices/virtio_gpu/mod.rs` and
+**✅ Landed — full `nix develop -c make test` green twice in a row at
+default parallelism, no `TEST_TIMEOUT` override.** `panda-kernel/src/devices/virtio_gpu/mod.rs` and
 `panda-kernel/src/resource/display.rs` are deleted (`grep -rn virtio_gpu
 panda-kernel/src` finds only a stale doc-comment reference in
 `devices/virtio_hal.rs`, no live code) in the same commit as
@@ -594,8 +594,8 @@ landed virtio-blk driver duplicates it a third time. Deliberately not
 extracted here (or interrupted mid-flight to extract) — tracked as a
 separate follow-up task to run after all three drivers have landed.
 
-**Two real bugs found and fixed while landing this, both applicable beyond
-GPU:**
+**Three real bugs found and fixed while landing this — none GPU-specific
+in the general lesson, though the first two were found via this driver:**
 
 1. **`OP_DISPLAY_MAP` could map the framebuffer into the wrong process's
    page tables.** `syscall::display::handle_map` awaits a cross-process
@@ -615,12 +615,17 @@ GPU:**
    time real userspace code tried to write to the "mapped" address.
    Fixed by adding `memory::with_page_table` (`panda-kernel/src/memory/paging.rs`),
    a safe wrapper that explicitly switches to the target process's page
-   table before CR3-sensitive work and restores the previous one after —
-   mirroring the manual save/switch/restore `Process::from_elf_data`
-   already does for the same class of reason (loading a *different*
-   process's ELF image into its own page table). Any future syscall that
-   does page-table work after an inter-process `.await` needs the same
-   treatment; there is no general guard against this class of bug yet.
+   table before CR3-sensitive work — and, unlike a first attempt at this
+   fix, deliberately does *not* try to restore whatever CR3 was active on
+   entry afterward: that "previous" CR3 is, by construction, not known to
+   still be any live process's table (that's the whole problem this
+   function exists to work around), so restoring it risked reinstating a
+   freed/reused page table instead. There's no need to restore anything —
+   `scheduler::dispatch_completed_syscall` unconditionally switches CR3 to
+   the correct value for whichever process it dispatches next, every time a
+   syscall completes. Any future syscall that does page-table work after an
+   inter-process `.await` needs the same treatment; there is no general
+   guard against this class of bug yet.
 2. **`OP_DISPLAY_FLUSH`'s partial-rect path sent a spec-inconsistent
    `TRANSFER_TO_HOST_2D` command.** An earlier version of
    `Gpu::flush` forwarded the client's damaged rectangle as both the
@@ -640,6 +645,28 @@ GPU:**
    own `flush()`, which is likewise always whole-surface. Real partial-rect
    support (computing `offset` correctly) is possible future work but isn't
    needed to match the existing, tested contract.
+3. **Not this driver's bug, but found while chasing what first looked like
+   one: a general scheduler timer-starvation bug**, already fixed
+   separately on `main` (`scheduler: fix timer starvation hang under
+   fast-yielding processes`, task #42) by the time this branch rebased onto
+   it. `ControlQueue::wait_for_response`'s original busy-poll (spin +
+   periodic `process::yield_now()`) made every screenshot-verified
+   compositor test intermittently exceed `make test`'s default per-test
+   timeout under full host parallelism — but the *actual* root cause
+   diagnosed while debugging that (isolated down to a two-line repro:
+   spawn any driver with an idle `process::yield_now()` poll loop, e.g.
+   `virtio-blk` or `virtio-keyboard`, then call `process::sleep` in the
+   parent — it never returns) was that the APIC one-shot preemption timer
+   gets reprogrammed from scratch on every process dispatch, so a
+   fast-yielding idle driver process resets the countdown before it ever
+   fires, permanently stalling `uptime_ms()`/`wake_deadline_tasks` and thus
+   every deadline-based wake in the system — not specific to GPU, not
+   specific to compositor tests, and reproducible with drivers that
+   predate this phase entirely. Once that landed on `main`, this driver's
+   controlq wait was switched to genuinely IRQ-driven anyway (see below) on
+   its own merits — real per-flush CPU savings under contention — but the
+   compositor-test timeouts stopped being reproducible at all as soon as
+   the timer fix was rebased in, even before the IRQ-wait change.
 
 **Test infrastructure changes.** `claim_test` and `display_test` both act as
 their own `init` (no service manager runs in a per-test QEMU boot to spawn
@@ -658,36 +685,18 @@ Screenshot-verified compositor tests (`window_test`, `multi_window_test`,
 predates this note); no change needed there beyond the driver itself
 working.
 
-**Verification status: build clean; individually correct; NOT reliably
-green under this host's default (unlimited) `make test` parallelism.**
-`nix develop -c make build` is clean. Every test passes individually and
-the full suite passes cleanly when run with a generously extended
-per-test timeout (`TEST_TIMEOUT=180`), confirming the driver itself is
-functionally correct and nothing is genuinely hung. But at the harness's
-*default* (unlimited) parallelism on the 8-core machine this was verified
-on, `alpha_test`, `compositor_protocol_test`, `multi_window_test`,
-`partial_refresh_test`, `window_move_test`, and sometimes `window_test`/
-`compositor_start_test` intermittently exceed the default 60 s per-test
-timeout — confirmed via full-log inspection to be real-time slowness under
-CPU contention, not a hang (no missing completion, no fault, no stuck
-future). `compositor_test_child`'s own doc comment already documents this
-general class of flakiness (fixed real-time tick budget vs. host
-parallelism) as a pre-existing, previously-tuned concern from Phase 7; this
-phase makes it materially worse because every screenshot-verified
-compositor test now also pays real per-flush latency from this driver's
-non-IRQ busy-poll controlq wait (`ControlQueue::wait_for_response`) that
-the old in-kernel driver never had (direct hardware access, no syscall
-round trips at all). Mitigated but not eliminated here: `wait_for_response`
-now spins on `core::hint::spin_loop()` locally and only calls
-`process::yield_now()` every 256th iteration (was every iteration),
-cutting scheduler-round-trip overhead in the common case where QEMU's
-software virtio-gpu backend posts a completion almost immediately — this
-measurably reduced (but did not eliminate) the timeout rate across repeated
-runs. Follow-up options, none attempted here for time: raise the default
-per-test timeout for the compositor test class, make the controlq wait
-genuinely IRQ-driven instead of polling (removing the busy-wait's CPU
-contention entirely), or document `MAX_PARALLEL=4` (or lower) as the
-supported way to run `make test` reliably on constrained hardware.
+**Verification status: green.** `nix develop -c make build` is clean. Full
+`nix develop -c make test` passes — all 51 tests — twice in a row at this
+host's default (unlimited) parallelism, with no `TEST_TIMEOUT` override.
+`ControlQueue::wait_for_response` (the controlq's request/response wait in
+`userspace/drivers/virtio-gpu/src/main.rs`) blocks on the queue's MSI-X
+interrupt via a dedicated mailbox (`DeviceResource::subscribe_irq`, MSI-X
+table entry 0 — the single-vector-per-device pool is a non-issue here,
+since no other queue on this device needs a vector) rather than polling the
+used ring in a spin/yield loop, so this process burns no CPU while a
+request is in flight — real savings under `make test`'s parallel host
+contention, independent of the timer-starvation bug (item 3 above) that
+turned out to be the dominant cause of the timeouts originally seen here.
 
 **Phase 8 — ✅ landed.** `docs/DEVICE_DRIVERS.md` documents the real,
 implemented API (including `OP_DEVICE_POLL_EVENT` and the `MmioMapOut`
