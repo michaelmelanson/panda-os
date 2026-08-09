@@ -327,6 +327,19 @@ impl<T: Target> WindowManager<T> {
     /// Run one compositor tick: composite every dirty region, present it,
     /// and report the commits the tick consumed.
     pub fn tick(&mut self) -> Vec<Event<'static>> {
+        let resized = self
+            .target
+            .as_mut()
+            .map(|target| (target.poll_resize(), target.width(), target.height()));
+        if let Some((true, width, height)) = resized {
+            self.mark_dirty(Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            });
+        }
+
         self.composite();
         self.frame += 1;
 

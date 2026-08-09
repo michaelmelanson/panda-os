@@ -116,6 +116,12 @@ impl Events {
         self.0 & EVENT_PROCESS_EXITED != 0
     }
 
+    /// Check if the display's mode/resolution changed.
+    #[inline(always)]
+    pub fn is_display_changed(&self) -> bool {
+        self.0 & EVENT_DISPLAY_CHANGED != 0
+    }
+
     /// Iterate over all set events.
     ///
     /// This yields each event that is set in the flags.
@@ -168,6 +174,7 @@ const EVENT_TYPES: &[(u32, Event)] = &[
     ),
     (EVENT_PROCESS_EXITED, Event::Process(ProcessEvent::Exited)),
     (EVENT_KEYBOARD_KEY, Event::Input(InputEvent::Keyboard)),
+    (EVENT_DISPLAY_CHANGED, Event::Display(DisplayEvent::Changed)),
 ];
 
 /// Iterator over events in an [`Events`] set.
@@ -227,6 +234,14 @@ pub enum ProcessEvent {
     Exited,
 }
 
+/// Display events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayEvent {
+    /// The display's mode/resolution changed; the owner must re-query
+    /// `OP_DISPLAY_INFO` and re-issue `OP_DISPLAY_MAP`.
+    Changed,
+}
+
 /// A single event type for simple dispatch.
 ///
 /// For handling multiple simultaneous events, use [`Events`] directly.
@@ -238,6 +253,8 @@ pub enum Event {
     Channel(ChannelEvent),
     /// Process events (exited).
     Process(ProcessEvent),
+    /// Display events (mode changed).
+    Display(DisplayEvent),
     /// Unknown or unhandled event flags.
     Unknown(u32),
 }

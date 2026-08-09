@@ -2,6 +2,7 @@
 //! scheme.
 
 use compositor_protocol::Rect;
+use libpanda::mailbox::Mailbox;
 use libpanda::{Handle, environment, sys};
 use panda_abi::{ErrorCode, SurfaceInfoOut, SurfaceRect};
 
@@ -27,6 +28,9 @@ pub const DISPLAY_PATH: &str = "display:/pci/display/0";
 /// A mapped framebuffer.
 pub struct Framebuffer {
     handle: Handle,
+    /// Subscribed to `EVENT_DISPLAY_CHANGED` on `handle` — see
+    /// [`Framebuffer::poll_resize`].
+    mailbox: Mailbox,
     pixels: *mut u8,
     width: u32,
     height: u32,
@@ -35,8 +39,17 @@ pub struct Framebuffer {
 
 impl Framebuffer {
     /// Claim the display, query its mode and map its framebuffer.
+    ///
+    /// Subscribes a fresh mailbox to `EVENT_DISPLAY_CHANGED` on the same
+    /// handle, so [`Framebuffer::poll_resize`] can pick up later mode
+    /// changes — see `docs/IPC.md`'s "Display events".
     pub fn open() -> Result<Self, ErrorCode> {
-        let handle = environment::open_retrying(DISPLAY_PATH, 0, 0)?;
+        let mailbox = Mailbox::create()?;
+        let handle = environment::open_retrying(
+            DISPLAY_PATH,
+            mailbox.handle().as_raw(),
+            panda_abi::EVENT_DISPLAY_CHANGED,
+        )?;
 
         let mut info = SurfaceInfoOut {
             width: 0,
@@ -57,6 +70,7 @@ impl Framebuffer {
 
         Ok(Self {
             handle,
+            mailbox,
             pixels: mapped as *mut u8,
             width: info.width,
             height: info.height,
@@ -144,5 +158,45 @@ impl Target for Framebuffer {
             height: rect.height,
         };
         sys::display::flush(self.handle, Some(&rect));
+    }
+
+    /// Drain the display's mailbox and re-map the framebuffer on
+    /// `EVENT_DISPLAY_CHANGED`.
+    ///
+    /// `OP_DISPLAY_MAP` has no counterpart unmap operation — the mapping is
+    /// MMIO-style and torn down only on process exit (see
+    /// `docs/SYSCALLS.md`'s `OP_DISPLAY_MAP` entry) — so a remap leaves the
+    /// old mapping's virtual address range behind rather than freeing it.
+    /// That's a small, bounded leak per mode change (mode changes are rare,
+    /// typically at most once per boot), not an unbounded one.
+    fn poll_resize(&mut self) -> bool {
+        let mut resized = false;
+        while let Some((handle, events)) = self.mailbox.try_recv() {
+            if handle.as_raw() != self.handle.as_raw() || !events.is_display_changed() {
+                continue;
+            }
+
+            let mut info = SurfaceInfoOut {
+                width: 0,
+                height: 0,
+                format: 0,
+                stride: 0,
+            };
+            if sys::display::info(self.handle, &mut info) < 0 {
+                continue;
+            }
+
+            let mapped = sys::display::map(self.handle);
+            if mapped < 0 {
+                continue;
+            }
+
+            self.pixels = mapped as *mut u8;
+            self.width = info.width;
+            self.height = info.height;
+            self.stride = info.stride;
+            resized = true;
+        }
+        resized
     }
 }

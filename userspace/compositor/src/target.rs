@@ -26,6 +26,16 @@ pub trait Target {
 
     /// Present a damaged region.
     fn flush(&mut self, rect: &Rect);
+
+    /// Check for and apply a pending mode change (e.g. the display's
+    /// resolution changed). Returns `true` if the target's geometry changed,
+    /// so the caller can re-dirty the whole screen.
+    ///
+    /// The default implementation never resizes, which is correct for
+    /// targets with no underlying device to change modes.
+    fn poll_resize(&mut self) -> bool {
+        false
+    }
 }
 
 /// A `Target` over a plain byte buffer, used by the unit tests and by
