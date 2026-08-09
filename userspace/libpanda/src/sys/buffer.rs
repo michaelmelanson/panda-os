@@ -25,9 +25,19 @@ pub fn alloc(size: usize, info: Option<&mut BufferAllocInfo>) -> isize {
 /// Unlike `alloc`, this does not create a new buffer. Returns the mapped
 /// virtual address on success, or a negative error code (`InvalidHandle` if
 /// `handle` is not a buffer handle).
+///
+/// If `info` is provided, writes the mapped address and the buffer's real
+/// size to it — the size the kernel actually backed the mapping with, not
+/// anything the sender of `handle` claims. Callers that need to validate a
+/// declared size against the real allocation (e.g. the compositor) must use
+/// this rather than trusting the other end of the connection.
 #[inline(always)]
-pub fn map(handle: Handle) -> isize {
-    send(handle, OP_BUFFER_MAP, 0, 0, 0, 0)
+pub fn map(handle: Handle, info: Option<&mut BufferAllocInfo>) -> isize {
+    let info_ptr = match info {
+        Some(i) => i as *mut BufferAllocInfo as usize,
+        None => 0,
+    };
+    send(handle, OP_BUFFER_MAP, info_ptr, 0, 0, 0)
 }
 
 /// Resize a buffer.

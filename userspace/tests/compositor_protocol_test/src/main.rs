@@ -20,30 +20,15 @@
 //! - A `Commit` with nothing ever attached is a silent no-op (`manager.rs`:
 //!   `if w.pending.is_none() && w.latched.is_none() { return }`) — no
 //!   `FrameDone`, no error.
-//! - `Attachment::new` *looks* like it rejects a buffer too small for its
-//!   declared geometry (`needed = width*height*4; if len < needed { return
-//!   None }`), which is Risk 2 of plans/userspace-compositor.md ("verify
-//!   size ≥ w×h×4 ... before latching"). But `server.rs::map_attachment`
-//!   passes `len = width*height*4` — the same declared-size computation,
-//!   not the buffer's actual size — so that check always compares a number
-//!   to itself and can never fail on the declared-size axis. `OP_BUFFER_MAP`
-//!   (the kernel operation backing this) only returns an address, never a
-//!   size, so there is currently no way for userspace to learn a mapped
-//!   buffer's real size at all; closing this gap needs a kernel change
-//!   (extending `OP_BUFFER_MAP` or adding a size query), which is out of
-//!   scope for this phase's "don't touch panda-kernel" constraint. Until
-//!   then, an under-allocated client buffer attached with an inflated
-//!   declared size is a real out-of-bounds read/write hazard in the
-//!   compositor, not just an accepted-but-harmless request. Because the
-//!   actual outcome depends on how much real memory happens to back the
-//!   mapping past the requested size (page rounding, allocator state), this
-//!   test doesn't assert a specific result for that one commit — only that
-//!   sending it doesn't crash or wedge the connection.
+//! - `Attachment::new` rejects a buffer too small for its declared geometry
+//!   (`needed = width*height*4; if len < needed { return None }`), validated
+//!   against the buffer's real size as reported by `OP_BUFFER_MAP`'s
+//!   `info_ptr` output — not against the declared geometry itself, which a
+//!   client controls and so can't be trusted to bound its own check.
 //!
-//! None of the three crash or wedge the connection, which is what this test
-//! actually asserts — there is no protocol-level rejection to test for one
-//! way or the other, so each case is proven safe-to-send by showing the
-//! compositor keeps answering requests normally afterwards.
+//! None of the three crash or wedge the connection, and the undersized
+//! attach is additionally proven rejected (no `FrameDone` for that commit),
+//! which is what this test asserts.
 
 use compositor_protocol::{Event, FORMAT_BGRA8888, MAX_FRAME_SIZE, Rect, Request};
 use libpanda::buffer::Buffer;
@@ -164,15 +149,10 @@ libpanda::main! {
     environment::log("PASS: Sent an out-of-bounds damage rect");
 
     // ---- Case 3: an attach whose buffer is too small for its declared
-    // geometry. As the module doc explains, this is NOT reliably rejected
-    // — `map_attachment` validates the declared size against itself, not
-    // against the buffer's real size, because `OP_BUFFER_MAP` has no way to
-    // report it. Whether the compositor happens to latch it and produce a
-    // `FrameDone` isn't something this test can pin down (it depends on
-    // the real page-backed size behind the mapping, which nothing here
-    // controls), so — deliberately — this doesn't assert either outcome
-    // for THIS commit. It only proves the request didn't crash or wedge
-    // the connection, via the guaranteed-valid commit right after it.
+    // geometry (64 bytes vs. the 40000 bytes 100x100 BGRA8888 needs) must be
+    // rejected — no FrameDone for this commit, even though the buffer is
+    // rounded up to a full page (4096 bytes) by the allocator, because 4096
+    // is still well short of 40000.
     let Some(small_buffer) = Buffer::alloc(64) else {
         environment::log("FAIL: could not allocate small buffer");
         return 1;
@@ -194,7 +174,11 @@ libpanda::main! {
         environment::log("FAIL: could not send Commit after undersized attach");
         return 1;
     }
-    environment::log("PASS: Sent an undersized buffer attach and commit");
+    if poll_for_frame_done(&channel, window) {
+        environment::log("FAIL: FrameDone arrived for an undersized buffer attach");
+        return 1;
+    }
+    environment::log("PASS: Undersized buffer attach and commit was rejected");
 
     // ---- The connection is still healthy: a normal attach + commit still
     // produces FrameDone after all three cases above.

@@ -24,7 +24,22 @@ use panda_abi::BufferAllocInfo;
 /// independent mappings rather than reusing one — see the kernel-side
 /// `SharedBuffer::map_into_process` doc comment for why.
 pub fn map(handle: Handle) -> Result<usize> {
-    error::from_syscall(sys::buffer::map(handle))
+    error::from_syscall(sys::buffer::map(handle, None))
+}
+
+/// Like [`map`], but also returns the buffer's real size as known by the
+/// kernel.
+///
+/// Use this instead of [`map`] whenever the mapped size will be validated
+/// against a size declared by whoever handed over `handle` (e.g. the
+/// compositor validating a client's declared buffer geometry) — the
+/// declared size can't be trusted, but this one comes straight from the
+/// kernel's own record of the allocation.
+pub fn map_with_size(handle: Handle) -> Result<(usize, usize)> {
+    let mut info = BufferAllocInfo { addr: 0, size: 0 };
+    let result = sys::buffer::map(handle, Some(&mut info));
+    error::from_syscall(result)?;
+    Ok((info.addr, info.size))
 }
 
 /// A shared buffer for zero-copy I/O operations.

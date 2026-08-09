@@ -113,7 +113,7 @@ The compositor uses this to hand out its `compositor:` scheme connection.
 | Operation | Code | Arguments | Returns |
 |-----------|------|-----------|---------|
 | `OP_BUFFER_ALLOC` | 0x4_0000 | (size, info_ptr) | buffer_handle |
-| `OP_BUFFER_MAP` | 0x4_0001 | () | vaddr or error |
+| `OP_BUFFER_MAP` | 0x4_0001 | (info_ptr) | vaddr or error |
 | `OP_BUFFER_RESIZE` | 0x4_0002 | (new_size, info_ptr) | 0 or error |
 | `OP_BUFFER_FREE` | 0x4_0003 | () | 0 or error |
 
@@ -125,7 +125,12 @@ memory. This is how a process makes a buffer handle it received via
 [channel handle transfer](#handle-transfer) actually usable: the handle
 alone is only meaningful in the process that allocated it (`OP_BUFFER_ALLOC`
 maps into the allocator at alloc time and records that one address) until
-the receiving process calls `OP_BUFFER_MAP` on it.
+the receiving process calls `OP_BUFFER_MAP` on it. If `info_ptr` is
+non-zero, the kernel writes a `BufferAllocInfo` (address, size) to it — the
+buffer's real size, as recorded by the kernel at allocation time. Callers
+that need to validate a size declared by whoever handed over the handle
+(rather than trusting that declaration) must read the size this way; there
+is no other way for userspace to learn a mapped buffer's real size.
 
 Mapping is not deduplicated — calling `OP_BUFFER_MAP` again for a buffer
 already mapped in the calling process (including the allocating process

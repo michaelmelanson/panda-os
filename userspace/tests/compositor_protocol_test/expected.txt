@@ -13,7 +13,7 @@ PASS: Commit with no attached buffer produced no FrameDone
 # @barrier
 PASS: Sent an out-of-bounds damage rect
 # @barrier
-PASS: Sent an undersized buffer attach and commit
+PASS: Undersized buffer attach and commit was rejected
 # @barrier
 PASS: Compositor still answers requests normally after all three cases
 # @barrier
