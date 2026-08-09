@@ -232,6 +232,11 @@ libpanda::main! {
     // the real boot path), so this test (playing `init`) must ask it to
     // exit before returning itself, or QEMU never shuts down — see
     // `block_test`'s identical shutdown request.
+    // The filesystem service is likewise persistent and must be asked to
+    // exit too (roadmap M5).
+    if let Some(fs_channel) = libpanda::ipc::Channel::from_handle_borrowed(fs_handle) {
+        let _ = fs_channel.send(b"shutdown");
+    }
     let _ = driver_channel.send(b"shutdown");
 
     environment::log("ext2_mkdir_test: All tests passed!");

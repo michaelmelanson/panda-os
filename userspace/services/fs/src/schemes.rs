@@ -148,6 +148,17 @@ impl BlockDevice for SchemeBlockDevice {
     }
 }
 
+impl Drop for SchemeBlockDevice {
+    /// Closing the handle is what releases the provider's exclusive claim
+    /// on the device (see the module doc comment's "Exclusivity" section),
+    /// so it must happen when the mount goes away — including when
+    /// `Ext2Fs::mount` rejects the filesystem and drops this device without
+    /// ever mounting it.
+    fn drop(&mut self) {
+        file::close(self.handle);
+    }
+}
+
 /// A read-only [`Filesystem`] over the kernel's `initrd:` scheme, so the
 /// in-memory boot archive stays reachable at `file:/initrd/...`.
 pub struct InitrdFs;

@@ -41,7 +41,10 @@ handle_transfer_test_EXTRAS := handle_transfer_child
 # cases, so it spawns both userspace drivers directly, the same way
 # block_test/ext2_*_test and display_test/compositor_start_test do (see
 # those below).
-claim_test_EXTRAS := claim_child virtio-blk virtio-gpu
+# It also spawns the filesystem service (`fs`) for its "a mounted block
+# device refuses raw opens" case, since the mount is what that service does
+# now (roadmap M5).
+claim_test_EXTRAS := claim_child virtio-blk virtio-gpu fs
 buffer_transfer_test_EXTRAS := buffer_transfer_child
 buffer_owner_test_EXTRAS := buffer_owner_child
 scheme_provider_test_EXTRAS := scheme_provider_child

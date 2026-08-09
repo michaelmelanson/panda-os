@@ -1,5 +1,5 @@
 ext2_mkdir_test: Starting
-ext2_mkdir_test: Mounting ext2 filesystem
+ext2_mkdir_test: Starting filesystem service
 ext2_mkdir_test: ext2 mounted at /mnt
 ext2_mkdir_test: Test 1 - Create directory
 ext2_mkdir_test: Test 1 passed

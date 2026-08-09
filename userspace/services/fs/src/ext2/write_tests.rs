@@ -1,65 +1,12 @@
 //! Tests for ext2 write primitives and bitmap operations.
 //!
-//! These tests verify:
+//! Ported from the deleted `panda-kernel/tests/ext2_write.rs`, which ran in
+//! QEMU only because ext2 used to live in the kernel. They verify:
 //! - Inode, Superblock, and BlockGroupDescriptor serialisation round-trips
 //! - Bitmap bit manipulation correctness
 //! - Free count consistency after simulated alloc/free cycles
 
-#![no_std]
-#![no_main]
-
-extern crate alloc;
-
-use panda_kernel::vfs::ext2::{
-    BlockGroupDescriptor, EXT2_SUPER_MAGIC, Inode, S_IFDIR, S_IFREG, S_IFLNK, Superblock,
-};
-
-panda_kernel::test_harness!(
-    // Inode serialisation round-trip tests
-    inode_to_bytes_round_trip,
-    inode_to_bytes_preserves_mode,
-    inode_to_bytes_preserves_size,
-    inode_to_bytes_preserves_block_pointers,
-    inode_to_bytes_preserves_timestamps,
-    inode_to_bytes_preserves_links_and_flags,
-    inode_to_bytes_zeroed,
-    // Superblock serialisation round-trip tests
-    superblock_to_bytes_round_trip,
-    superblock_to_bytes_preserves_magic,
-    superblock_to_bytes_preserves_free_counts,
-    superblock_to_bytes_preserves_geometry,
-    superblock_to_bytes_preserves_features,
-    // BlockGroupDescriptor serialisation round-trip tests
-    bgd_to_bytes_round_trip,
-    bgd_to_bytes_preserves_bitmap_locations,
-    bgd_to_bytes_preserves_free_counts,
-    bgd_to_bytes_preserves_used_dirs,
-    // Bitmap helper tests (exercised via raw byte manipulation)
-    bitmap_find_first_clear_empty,
-    bitmap_find_first_clear_partial,
-    bitmap_find_first_clear_full_byte,
-    bitmap_find_first_clear_all_set,
-    bitmap_find_first_clear_respects_max,
-    bitmap_find_first_clear_mid_byte,
-    bitmap_set_clear_round_trip,
-    bitmap_set_preserves_neighbours,
-    bitmap_clear_preserves_neighbours,
-    bitmap_operations_across_bytes,
-    bitmap_first_clear_after_many_set,
-    // Struct size assertions
-    inode_struct_size_is_128,
-    superblock_struct_size_is_1024,
-    bgd_struct_size_is_32,
-    // Serialisation consistency
-    inode_file_type_preserved,
-    inode_dir_type_preserved,
-    inode_symlink_type_preserved,
-    // Free count tracking simulation
-    free_count_decrement_consistency,
-    free_count_increment_consistency,
-    free_count_alloc_free_cycle,
-);
-
+use super::*;
 // =============================================================================
 // Helper constructors
 // =============================================================================
@@ -142,6 +89,7 @@ fn clear_bit(bitmap: &mut [u8], index: usize) {
 // Inode serialisation round-trip tests
 // =============================================================================
 
+#[test]
 fn inode_to_bytes_round_trip() {
     let mut inode = make_inode();
     inode.mode = S_IFREG | 0o644;
@@ -177,6 +125,7 @@ fn inode_to_bytes_round_trip() {
     assert_eq!(restored.size(), inode.size());
 }
 
+#[test]
 fn inode_to_bytes_preserves_mode() {
     let mut inode = make_inode();
     inode.mode = S_IFDIR | 0o755;
@@ -186,6 +135,7 @@ fn inode_to_bytes_preserves_mode() {
     assert!(restored.is_dir());
 }
 
+#[test]
 fn inode_to_bytes_preserves_size() {
     let mut inode = make_inode();
     inode.size = 0xDEADBEEF;
@@ -195,6 +145,7 @@ fn inode_to_bytes_preserves_size() {
     assert_eq!(restored.size(), 0x0042_DEAD_BEEF);
 }
 
+#[test]
 fn inode_to_bytes_preserves_block_pointers() {
     let mut inode = make_inode();
     for i in 0..15 {
@@ -212,6 +163,7 @@ fn inode_to_bytes_preserves_block_pointers() {
     }
 }
 
+#[test]
 fn inode_to_bytes_preserves_timestamps() {
     let mut inode = make_inode();
     inode.atime = 1000;
@@ -226,6 +178,7 @@ fn inode_to_bytes_preserves_timestamps() {
     assert_eq!(restored.dtime, 4000);
 }
 
+#[test]
 fn inode_to_bytes_preserves_links_and_flags() {
     let mut inode = make_inode();
     inode.links_count = 42;
@@ -240,17 +193,22 @@ fn inode_to_bytes_preserves_links_and_flags() {
     assert_eq!(restored.file_acl, 67890);
 }
 
+#[test]
 fn inode_to_bytes_zeroed() {
     let inode = make_inode();
     let bytes = inode.to_bytes();
     // All zeros should produce all-zero bytes
-    assert!(bytes.iter().all(|&b| b == 0), "Zeroed inode should produce all-zero bytes");
+    assert!(
+        bytes.iter().all(|&b| b == 0),
+        "Zeroed inode should produce all-zero bytes"
+    );
 }
 
 // =============================================================================
 // Superblock serialisation round-trip tests
 // =============================================================================
 
+#[test]
 fn superblock_to_bytes_round_trip() {
     let sb = make_valid_superblock();
     let bytes = sb.to_bytes();
@@ -269,6 +227,7 @@ fn superblock_to_bytes_round_trip() {
     assert!(restored.validate().is_ok());
 }
 
+#[test]
 fn superblock_to_bytes_preserves_magic() {
     let sb = make_valid_superblock();
     let bytes = sb.to_bytes();
@@ -276,6 +235,7 @@ fn superblock_to_bytes_preserves_magic() {
     assert_eq!(restored.magic, 0xEF53);
 }
 
+#[test]
 fn superblock_to_bytes_preserves_free_counts() {
     let mut sb = make_valid_superblock();
     sb.free_blocks_count = 1234;
@@ -286,6 +246,7 @@ fn superblock_to_bytes_preserves_free_counts() {
     assert_eq!(restored.free_inodes_count, 567);
 }
 
+#[test]
 fn superblock_to_bytes_preserves_geometry() {
     let mut sb = make_valid_superblock();
     sb.log_block_size = 2; // 4KB blocks
@@ -300,6 +261,7 @@ fn superblock_to_bytes_preserves_geometry() {
     assert_eq!(restored.first_data_block, 0);
 }
 
+#[test]
 fn superblock_to_bytes_preserves_features() {
     let mut sb = make_valid_superblock();
     sb.feature_compat = 0x0038;
@@ -316,6 +278,7 @@ fn superblock_to_bytes_preserves_features() {
 // BlockGroupDescriptor serialisation round-trip tests
 // =============================================================================
 
+#[test]
 fn bgd_to_bytes_round_trip() {
     let mut bgd = make_bgd();
     bgd.block_bitmap = 3;
@@ -336,6 +299,7 @@ fn bgd_to_bytes_round_trip() {
     assert_eq!(restored.used_dirs_count, 10);
 }
 
+#[test]
 fn bgd_to_bytes_preserves_bitmap_locations() {
     let mut bgd = make_bgd();
     bgd.block_bitmap = 100;
@@ -348,6 +312,7 @@ fn bgd_to_bytes_preserves_bitmap_locations() {
     assert_eq!(restored.inode_table, 102);
 }
 
+#[test]
 fn bgd_to_bytes_preserves_free_counts() {
     let mut bgd = make_bgd();
     bgd.free_blocks_count = 0xFFFF;
@@ -358,6 +323,7 @@ fn bgd_to_bytes_preserves_free_counts() {
     assert_eq!(restored.free_inodes_count, 0xFFFF);
 }
 
+#[test]
 fn bgd_to_bytes_preserves_used_dirs() {
     let mut bgd = make_bgd();
     bgd.used_dirs_count = 42;
@@ -370,11 +336,13 @@ fn bgd_to_bytes_preserves_used_dirs() {
 // Bitmap helper tests
 // =============================================================================
 
+#[test]
 fn bitmap_find_first_clear_empty() {
     let bitmap = [0x00u8; 128];
     assert_eq!(find_first_clear_bit(&bitmap, 1024), Some(0));
 }
 
+#[test]
 fn bitmap_find_first_clear_partial() {
     // First 3 bits set: 0b00000111
     let mut bitmap = [0x00u8; 128];
@@ -382,23 +350,27 @@ fn bitmap_find_first_clear_partial() {
     assert_eq!(find_first_clear_bit(&bitmap, 1024), Some(3));
 }
 
+#[test]
 fn bitmap_find_first_clear_full_byte() {
     let mut bitmap = [0x00u8; 128];
     bitmap[0] = 0xFF;
     assert_eq!(find_first_clear_bit(&bitmap, 1024), Some(8));
 }
 
+#[test]
 fn bitmap_find_first_clear_all_set() {
     let bitmap = [0xFFu8; 128];
     assert_eq!(find_first_clear_bit(&bitmap, 1024), None);
 }
 
+#[test]
 fn bitmap_find_first_clear_respects_max() {
     // All clear, but max_bits limits search
     let bitmap = [0x00u8; 128];
     assert_eq!(find_first_clear_bit(&bitmap, 0), None);
 }
 
+#[test]
 fn bitmap_find_first_clear_mid_byte() {
     // Bits 0,1,2,4 set, bit 3 clear: 0b00010111
     let mut bitmap = [0x00u8; 128];
@@ -406,6 +378,7 @@ fn bitmap_find_first_clear_mid_byte() {
     assert_eq!(find_first_clear_bit(&bitmap, 1024), Some(3));
 }
 
+#[test]
 fn bitmap_set_clear_round_trip() {
     let mut bitmap = [0x00u8; 128];
 
@@ -417,6 +390,7 @@ fn bitmap_set_clear_round_trip() {
     assert!(!get_bit(&bitmap, 42));
 }
 
+#[test]
 fn bitmap_set_preserves_neighbours() {
     let mut bitmap = [0x00u8; 128];
     set_bit(&mut bitmap, 5);
@@ -432,6 +406,7 @@ fn bitmap_set_preserves_neighbours() {
     }
 }
 
+#[test]
 fn bitmap_clear_preserves_neighbours() {
     let mut bitmap = [0xFFu8; 128];
     clear_bit(&mut bitmap, 13);
@@ -447,6 +422,7 @@ fn bitmap_clear_preserves_neighbours() {
     assert_eq!(bitmap[2], 0xFF);
 }
 
+#[test]
 fn bitmap_operations_across_bytes() {
     let mut bitmap = [0x00u8; 128];
 
@@ -472,6 +448,7 @@ fn bitmap_operations_across_bytes() {
     }
 }
 
+#[test]
 fn bitmap_first_clear_after_many_set() {
     let mut bitmap = [0x00u8; 128];
     // Set the first 100 bits
@@ -486,14 +463,17 @@ fn bitmap_first_clear_after_many_set() {
 // Struct size assertions
 // =============================================================================
 
+#[test]
 fn inode_struct_size_is_128() {
     assert_eq!(core::mem::size_of::<Inode>(), 128);
 }
 
+#[test]
 fn superblock_struct_size_is_1024() {
     assert_eq!(core::mem::size_of::<Superblock>(), 1024);
 }
 
+#[test]
 fn bgd_struct_size_is_32() {
     assert_eq!(core::mem::size_of::<BlockGroupDescriptor>(), 32);
 }
@@ -502,6 +482,7 @@ fn bgd_struct_size_is_32() {
 // Serialisation consistency with type helpers
 // =============================================================================
 
+#[test]
 fn inode_file_type_preserved() {
     let mut inode = make_inode();
     inode.mode = S_IFREG | 0o644;
@@ -512,6 +493,7 @@ fn inode_file_type_preserved() {
     assert!(!restored.is_symlink());
 }
 
+#[test]
 fn inode_dir_type_preserved() {
     let mut inode = make_inode();
     inode.mode = S_IFDIR | 0o755;
@@ -522,6 +504,7 @@ fn inode_dir_type_preserved() {
     assert!(!restored.is_symlink());
 }
 
+#[test]
 fn inode_symlink_type_preserved() {
     let mut inode = make_inode();
     inode.mode = S_IFLNK | 0o777;
@@ -537,6 +520,7 @@ fn inode_symlink_type_preserved() {
 // =============================================================================
 
 /// Simulate the decrement that alloc_block performs on free counts.
+#[test]
 fn free_count_decrement_consistency() {
     let mut sb = make_valid_superblock();
     let mut bgd = make_bgd();
@@ -560,6 +544,7 @@ fn free_count_decrement_consistency() {
 }
 
 /// Simulate the increment that free_block performs on free counts.
+#[test]
 fn free_count_increment_consistency() {
     let mut sb = make_valid_superblock();
     let mut bgd = make_bgd();
@@ -583,6 +568,7 @@ fn free_count_increment_consistency() {
 
 /// Simulate a full alloc/free cycle: allocate N blocks, free them all,
 /// verify counts return to original values.
+#[test]
 fn free_count_alloc_free_cycle() {
     let mut sb = make_valid_superblock();
     let mut bgd = make_bgd();
@@ -611,8 +597,14 @@ fn free_count_alloc_free_cycle() {
 
     assert_eq!(sb.free_blocks_count, original_free_blocks - alloc_blocks);
     assert_eq!(sb.free_inodes_count, original_free_inodes - alloc_inodes);
-    assert_eq!(bgd.free_blocks_count, original_bgd_free_blocks - alloc_blocks as u16);
-    assert_eq!(bgd.free_inodes_count, original_bgd_free_inodes - alloc_inodes as u16);
+    assert_eq!(
+        bgd.free_blocks_count,
+        original_bgd_free_blocks - alloc_blocks as u16
+    );
+    assert_eq!(
+        bgd.free_inodes_count,
+        original_bgd_free_inodes - alloc_inodes as u16
+    );
 
     // Simulate freeing them all
     for _ in 0..alloc_blocks {

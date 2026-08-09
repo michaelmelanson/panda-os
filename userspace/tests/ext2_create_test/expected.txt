@@ -1,6 +1,6 @@
 # Expected log output for ext2_create_test
 ext2_create_test: Starting
-ext2_create_test: Mounting ext2 filesystem
+ext2_create_test: Starting filesystem service
 ext2_create_test: ext2 mounted at /mnt
 ext2_create_test: Test 1 - Create new file
 ext2_create_test: Test 1 passed

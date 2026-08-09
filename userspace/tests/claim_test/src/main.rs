@@ -130,9 +130,19 @@ libpanda::main! {
     environment::log("claim_test: display reopen after close succeeded");
     file::close(display2);
 
-    // Test 5: a mounted block device refuses raw opens
-    if environment::mount("ext2", "/mnt").is_err() {
-        environment::log("FAIL: could not mount ext2");
+    // Test 5: a mounted block device refuses raw opens.
+    //
+    // Since roadmap M5 the mount is performed by the filesystem service,
+    // which holds its `block:` handle open for the mount's lifetime — that
+    // open *is* the exclusive claim, so this still checks exactly what it
+    // used to. `wait_ready` returns only once the service has attempted the
+    // mount, so the raw open below cannot race it.
+    let Ok(fs_handle) = environment::spawn("initrd:/fs") else {
+        environment::log("FAIL: could not spawn filesystem service");
+        return 1;
+    };
+    if libpanda::process::wait_ready(fs_handle).is_err() {
+        environment::log("FAIL: filesystem service did not become ready");
         return 1;
     }
     match environment::open("block:/pci/storage/0", 0, 0) {
@@ -153,6 +163,11 @@ libpanda::main! {
     // boot path), so this test (playing `init`) must ask each to exit
     // before returning itself, or QEMU never shuts down — see
     // `block_test`'s/`display_test`'s identical shutdown requests.
+    // The filesystem service spawned for test 5 is likewise persistent
+    // (roadmap M5).
+    if let Some(fs_channel) = libpanda::ipc::Channel::from_handle_borrowed(fs_handle) {
+        let _ = fs_channel.send(b"shutdown");
+    }
     let _ = blk_driver_channel.send(b"shutdown");
     let _ = gpu_driver_channel.send(b"shutdown");
 

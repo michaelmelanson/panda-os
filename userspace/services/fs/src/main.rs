@@ -21,18 +21,17 @@
 //! fatal — the service still comes up serving `/initrd`, and says so on the
 //! log — because several tests run with no block device attached at all.
 //!
-//! # Blocking serve loop
+//! # Serve loop and shutdown
 //!
-//! Unlike the drivers in `userspace/drivers/*`, this service blocks in
-//! `SchemeProvider::recv` rather than polling with `try_recv` +
-//! `yield_now`. Those drivers poll because they have a second event source
-//! (their device mailbox) to watch in the same loop; this service has only
-//! the provider channel. Spinning would burn CPU on the boot-critical path
-//! that every other process's binary is loaded through, which is
-//! particularly costly under TCG. The visible consequence is that this
-//! service does not implement the drivers' cooperative `SHUTDOWN_REQUEST`
-//! convention: it would need a spin loop to notice one, and nothing in the
-//! tree sends that message today.
+//! The loop polls (`try_recv` + `yield_now`) rather than blocking in
+//! `SchemeProvider::recv`, the same shape every driver in
+//! `userspace/drivers/*` uses and for the same reason: it has two things to
+//! watch, and this codebase has no multi-channel blocking receive outside
+//! `Mailbox` (which only aggregates mailbox-attachable resources, not plain
+//! channels). The second thing is the parent channel, carrying the
+//! cooperative [`SHUTDOWN_REQUEST`] every long-lived process here honours —
+//! a test standing in for `init` must be able to ask this service to exit,
+//! or the process outlives the test and QEMU never shuts down.
 
 #![no_std]
 #![no_main]
@@ -55,6 +54,11 @@ use fs::ext2::Ext2Fs;
 use fs::fs::{File, FsError, SeekFrom};
 use fs::mount::MountTable;
 use fs::schemes::{BLOCK_DEVICE_URI, InitrdFs, SchemeBlockDevice};
+
+/// Message a parent process sends on the spawn channel to ask this service
+/// to exit — the same convention every driver in `userspace/drivers/*`
+/// honours.
+const SHUTDOWN_REQUEST: &[u8] = b"shutdown";
 
 /// Where the initrd is mounted, preserving `file:/initrd/...`.
 const INITRD_MOUNTPOINT: &str = "/initrd";
@@ -161,17 +165,38 @@ libpanda::main! {
     // Readiness handshake: everything this service provides is in place.
     // `init` (and the tests that stand in for it) waits for this before
     // spawning anything that opens `file:`.
-    if let Some(parent) = libpanda::ipc::Channel::parent() {
+    let parent = libpanda::ipc::Channel::parent();
+    if let Some(parent) = parent.as_ref() {
         let _ = parent.send(b"ready");
     }
 
     let mut buf = [0u8; panda_abi::MAX_MESSAGE_SIZE];
     loop {
-        let Ok(request) = provider.recv(&mut buf) else {
-            environment::log("fs: provider channel closed, exiting");
-            return 0;
-        };
-        serve(&provider, &mut service, request);
+        // Drain everything currently queued before looking at anything
+        // else, so a burst of requests costs one `yield_now` rather than
+        // one per request.
+        loop {
+            match provider.try_recv(&mut buf) {
+                Ok(Some(request)) => serve(&provider, &mut service, request),
+                Ok(None) => break,
+                Err(_) => {
+                    environment::log("fs: provider channel closed, exiting");
+                    return 0;
+                }
+            }
+        }
+
+        if let Some(parent) = parent.as_ref() {
+            let mut shutdown_buf = [0u8; 16];
+            if let Ok(Some(n)) = parent.try_recv(&mut shutdown_buf)
+                && &shutdown_buf[..n] == SHUTDOWN_REQUEST
+            {
+                environment::log("fs: shutdown requested, exiting");
+                return 0;
+            }
+        }
+
+        libpanda::process::yield_now();
     }
 }
 

@@ -95,9 +95,6 @@ harness = false
 name = "smap"
 harness = false
 
-[[test]]
-name = "ext2_write"
-harness = false
 
 [[test]]
 name = "mailbox"

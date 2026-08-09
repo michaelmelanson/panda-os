@@ -73,6 +73,12 @@ libpanda::main! {
     file::close(handle);
     environment::log("path_traversal_test: Test 5 passed");
 
+    // Ask the filesystem service to exit, or QEMU never shuts down — see
+    // `ext2_test`'s identical shutdown request.
+    if let Some(fs_channel) = libpanda::ipc::Channel::from_handle_borrowed(fs_handle) {
+        let _ = fs_channel.send(b"shutdown");
+    }
+
     environment::log("path_traversal_test: All tests passed!");
     0
 }

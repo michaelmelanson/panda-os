@@ -11,6 +11,8 @@ mod dir;
 mod file;
 mod guards;
 mod structs;
+#[cfg(test)]
+mod write_tests;
 
 pub use guards::{BlockGuard, InodeGuard};
 

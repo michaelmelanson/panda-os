@@ -305,11 +305,16 @@ pub fn handle_write(
     handle_write_sync(ua, handle_id, buf_ptr, buf_len)
 }
 
-/// Write path for scheme-provider proxy resources (M2.2): round-trips a
-/// `Write` request to the provider process. `buf_len` is capped to
-/// `MAX_TRANSFER_SIZE` so the request is guaranteed to fit in one channel
-/// message (a short write, like a capped VFS write — see `MAX_FILE_IO_SIZE`
-/// callers elsewhere in this file).
+/// Write path for scheme-provider proxy resources (M2.2): round-trips
+/// `Write` requests to the provider process.
+///
+/// One protocol frame carries at most `MAX_TRANSFER_SIZE` (4000) bytes, so
+/// anything larger is split across several round trips rather than
+/// truncated to the first. A single `OP_FILE_WRITE` therefore still writes
+/// the whole caller-supplied buffer (up to `MAX_FILE_IO_SIZE`, the same cap
+/// the deleted VFS path used), which is what callers expect: roadmap M5
+/// moved `file:` onto this path, and `ext2_write_test`'s single 4096-byte
+/// write caught the truncation immediately.
 fn handle_write_scheme_proxy(
     ua: &UserAccess,
     handle_id: u64,
@@ -318,7 +323,7 @@ fn handle_write_scheme_proxy(
     buf_len: usize,
     resource: Arc<dyn crate::resource::Resource>,
 ) -> SyscallFuture {
-    let buf_len = buf_len.min(panda_abi::scheme_protocol::MAX_TRANSFER_SIZE);
+    let buf_len = buf_len.min(panda_abi::MAX_FILE_IO_SIZE);
     let data = match ua.read(UserSlice::new(buf_ptr, buf_len)) {
         Ok(d) => d,
         Err(_) => {
@@ -330,17 +335,27 @@ fn handle_write_scheme_proxy(
 
     Box::pin(async move {
         let proxy = resource.as_scheme_proxy().unwrap();
-        match proxy.write_at(offset, &data).await {
-            Ok(n) => {
-                scheduler::with_current_process(|proc| {
-                    if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
-                        handle.set_offset(offset + n as u64);
-                    }
-                });
-                SyscallResult::ok(n as isize)
+        let mut done = 0;
+        while done < data.len() {
+            let end = (done + panda_abi::scheme_protocol::MAX_TRANSFER_SIZE).min(data.len());
+            let n = match proxy.write_at(offset + done as u64, &data[done..end]).await {
+                Ok(n) => n,
+                // Report a partial write rather than losing it: the bytes
+                // before the failure really did reach the provider.
+                Err(code) if done == 0 => return SyscallResult::err(code),
+                Err(_) => break,
+            };
+            if n == 0 {
+                break;
             }
-            Err(code) => SyscallResult::err(code),
+            done += n;
         }
+        scheduler::with_current_process(|proc| {
+            if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
+                handle.set_offset(offset + done as u64);
+            }
+        });
+        SyscallResult::ok(done as isize)
     })
 }
 

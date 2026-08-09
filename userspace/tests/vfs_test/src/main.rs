@@ -38,6 +38,14 @@ libpanda::main! {
     // Test: Close the file
     file::close(handle);
 
+    // The filesystem service runs forever (a persistent service in the real
+    // boot path), so this test (playing `init`) must ask it to exit before
+    // returning itself, or QEMU never shuts down — see `ext2_test`'s
+    // identical shutdown request.
+    if let Some(fs_channel) = libpanda::ipc::Channel::from_handle_borrowed(fs_handle) {
+        let _ = fs_channel.send(b"shutdown");
+    }
+
     environment::log("VFS test passed");
     0
 }
