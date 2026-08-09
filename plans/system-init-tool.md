@@ -15,6 +15,7 @@ As part of this effort, establish a **service protocol framework** — a common 
 - **Filesystem is read-only (ext2 has no write support).** Service configs are baked into the ext2 image at build time. Runtime service additions come via IPC commands.
 - **Max message size is 4096 bytes.** Channel messages (startup, commands, responses) are bounded by this.
 - **Userspace is `no_std` + `alloc`.** Any dependencies must work without `std`.
+- **Dependency ordering must be backed by a real wakeup, not polling.** `init` today waits for a spawned driver's readiness via `libpanda::process::wait_ready`, a bounded poll loop (see `userspace/libpanda/src/process/mod.rs`; there's a matching kernel-side fallback, `resource::scheme::open_retrying`, for the one caller — `vfs::mount_ext2` — that can't reach `wait_ready`'s channel wait). The service manager's `after`-ordered executor already knows structurally which service must wait for which; that should be backed by a genuine "block until woken" primitive, not a bounded retry loop with tunable attempt counts. Retire `wait_ready` and both `open_retrying`s in favour of this once the executor lands (task #45).
 
 ## Design
 
