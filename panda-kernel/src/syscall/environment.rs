@@ -126,13 +126,13 @@ pub fn handle_connect(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> Syscal
     })
 }
 
-// `OP_ENVIRONMENT_MOUNT` was deleted in roadmap M5. The kernel has no mount
-// table to mount into any more: `userspace/services/fs` owns it, and mounts
+// There is no `OP_ENVIRONMENT_MOUNT` syscall: the kernel has no mount
+// table to mount into — `userspace/services/fs` owns it, and mounts
 // ext2 on `block:/pci/storage/0` itself at startup — before it registers
 // `file:` and signals readiness to its parent, so by the time anything can
 // resolve a `file:` URI at all, the mount either succeeded or definitively
-// failed. That readiness handshake (`libpanda::process::wait_ready`, task
-// #43) is what callers wait on now, in place of a mount syscall returning.
+// failed. That readiness handshake (`libpanda::process::wait_ready`) is
+// what callers wait on, in place of a mount syscall returning.
 
 /// Handle environment spawn operation.
 ///

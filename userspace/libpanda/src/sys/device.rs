@@ -1,7 +1,7 @@
 //! Low-level device driver model syscalls.
 //!
 //! All seven `OP_DEVICE_*`/`OP_DMA_*` operations round-trip to real kernel
-//! handlers as of Phase 6 (see `panda-kernel/src/syscall/device.rs`).
+//! handlers (see `panda-kernel/src/syscall/device.rs`).
 
 use super::{Handle, send};
 use panda_abi::device::{

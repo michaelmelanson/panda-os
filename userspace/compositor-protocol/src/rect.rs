@@ -1,8 +1,7 @@
 //! Rectangle geometry shared by the protocol and the compositor.
 //!
-//! Ported from the in-kernel `resource::Rect` (deleted in Phase 5 of
-//! plans/userspace-compositor.md) so that damage tracking is expressed in
-//! userspace types on both sides of the wire.
+//! Damage tracking is expressed in userspace types on both sides of the
+//! wire.
 
 /// An axis-aligned rectangle in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

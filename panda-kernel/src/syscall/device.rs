@@ -2,8 +2,8 @@
 //! `OP_DEVICE_POLL_EVENT`, `OP_DEVICE_CLAIM`, `OP_DEVICE_MAP_MMIO`,
 //! `OP_DMA_ALLOC`, `OP_DMA_FREE`, and `OP_DEVICE_SUBSCRIBE_IRQ`.
 //!
-//! All seven `OP_DEVICE_*`/`OP_DMA_*` operations have real kernel handlers
-//! as of Phase 6. `OP_DEVICE_CLAIM` returns an owned `Device`-typed handle
+//! All seven `OP_DEVICE_*`/`OP_DMA_*` operations have real kernel handlers.
+//! `OP_DEVICE_CLAIM` returns an owned `Device`-typed handle
 //! (`resource::DeviceResource`) that is the root capability the other four
 //! hardware-access syscalls require — see that type's doc comment for what
 //! it tracks and how its cleanup (MMIO unmap, DMA free, IRQ unsubscribe,
@@ -17,9 +17,7 @@
 //! `OP_DEVICE_POLL_EVENT` is the payload-delivery path: it drains one
 //! `DeviceEvent` at a time off the subscription's queue
 //! (`resource::SubscriptionResource`), the same `MailboxEventResult`-style
-//! convention `OP_MAILBOX_POLL` uses. This is not in the design doc's
-//! syscall table (which predates this gap being noticed in Phase 7); see
-//! `plans/device-driver-model.md`'s Phase 6/7 landed-deviations note.
+//! convention `OP_MAILBOX_POLL` uses.
 
 #![deny(unsafe_code)]
 
@@ -94,11 +92,10 @@ pub fn handle_device_subscribe(
             // runs inside `with_current_process`'s `SCHEDULER.write()` (via
             // `with_scheduler_mut`) — calling it here would self-deadlock
             // the non-reentrant `RwSpinlock` (write held, then read spins
-            // forever waiting for a writer — itself — to release). Found by
-            // actually running this syscall end-to-end for the first time
-            // (Phase 7's virtio-keyboard driver); the kernel unit tests in
-            // `panda-kernel/tests/device.rs` call `DeviceRegistry::subscribe`
-            // directly and never exercised this code path.
+            // forever waiting for a writer — itself — to release). The
+            // kernel unit tests in `panda-kernel/tests/device.rs` call
+            // `DeviceRegistry::subscribe` directly and don't exercise this
+            // code path.
             let pid = proc.id();
 
             let queue = Arc::new(Spinlock::new(VecDeque::new()));

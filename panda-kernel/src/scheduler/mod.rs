@@ -365,8 +365,8 @@ pub(super) fn start_timer() {
 /// `crate::time::uptime_ms()` to actually advance, and that clock is itself
 /// only ticked from the timer interrupt handler). Found via `make run`'s
 /// full boot hanging forever after "virtio-blk: registered block: scheme":
-/// the (since deleted, roadmap M5) in-kernel ext2 mount's retry loop put
-/// the mount syscall to sleep waiting on
+/// the (since-deleted) in-kernel ext2 mount's retry loop put the mount
+/// syscall to sleep waiting on
 /// a deadline, and virtio-blk's idle loop — entered immediately after
 /// registering its scheme, since there is no I/O yet — starved the timer
 /// interrupt (and thus the clock, and thus the deadline) out indefinitely

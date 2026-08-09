@@ -40,7 +40,7 @@ pub fn dma_unmap(_iova: u64, _size: usize) {
 }
 
 // =============================================================================
-// Per-device domains (Phase 6: userspace device claim/MMIO/DMA syscalls)
+// Per-device domains (used by the userspace device claim/MMIO/DMA syscalls)
 // =============================================================================
 //
 // `Iommu::create_domain`/`destroy_domain`/`assign_device` (see

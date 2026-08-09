@@ -9,32 +9,30 @@ use driver_registry::DriverRegistry;
 use libpanda::environment;
 
 libpanda::main! {
-    // Phase 5a (plans/device-driver-model.md): scan the initrd for driver
-    // binaries before any filesystem is mounted. `initrd:` is a kernel
-    // scheme backed directly by the in-memory ustar archive (see
-    // panda-kernel/src/resource/initrd.rs), so this works even though
-    // nothing has been mounted yet — resolving the chicken-and-egg problem
-    // where the block driver that would mount the root filesystem must
-    // itself be read from somewhere first.
+    // Scan the initrd for driver binaries before any filesystem is
+    // mounted. `initrd:` is a kernel scheme backed directly by the
+    // in-memory ustar archive (see panda-kernel/src/resource/initrd.rs), so
+    // this works even though nothing has been mounted yet — resolving the
+    // chicken-and-egg problem where the block driver that would mount the
+    // root filesystem must itself be read from somewhere first.
     //
     let mut drivers = DriverRegistry::new();
     drivers.scan("initrd:/drivers");
 
     // Spawn every driver discovered in the initrd *before* starting the
-    // filesystem service — critically including `virtio-blk` (M4 Phase 2,
-    // plans/device-driver-model.md): the block driver that the filesystem
-    // service mounts ext2 through must itself come from the initrd, since
-    // nothing else is readable yet. See `DriverRegistry::binary_paths`'s doc comment for why
-    // spawning is unconditional rather than filtered by a specific
-    // enumerated device's identity.
+    // filesystem service — critically including `virtio-blk`: the block
+    // driver that the filesystem service mounts ext2 through must itself
+    // come from the initrd, since nothing else is readable yet. See
+    // `DriverRegistry::binary_paths`'s doc comment for why spawning is
+    // unconditional rather than filtered by a specific enumerated device's
+    // identity.
     //
     // Spawning only starts the driver process — it still needs to run,
     // claim its device, and call `OP_SCHEME_REGISTER` before `block:`
     // resolves to anything. Waiting here for each driver's readiness
-    // handshake (task #43: "Redesign scheme-open readiness to eliminate the
-    // driver-registration race class") closes that race outright, so
-    // `mount` below doesn't have to gamble on a blind retry loop —
-    // see `libpanda::process::wait_ready`'s doc comment.
+    // handshake closes that race outright, so the filesystem service below
+    // doesn't have to gamble on a blind retry loop — see
+    // `libpanda::process::wait_ready`'s doc comment.
     for path in drivers.binary_paths() {
         match environment::spawn(path) {
             Ok(handle) => {
@@ -46,12 +44,11 @@ libpanda::main! {
         }
     }
 
-    // Start the filesystem service (roadmap M5). It registers `file:` and
-    // mounts ext2 on `block:/pci/storage/0` itself — there is no mount
-    // syscall any more, because the kernel has no mount table to mount
-    // into. It has to come out of `initrd:` for the same reason
-    // `virtio-blk` does: nothing under `file:` is readable until it is
-    // running.
+    // Start the filesystem service. It registers `file:` and mounts ext2
+    // on `block:/pci/storage/0` itself — there is no mount syscall any
+    // more, because the kernel has no mount table to mount into. It has to
+    // come out of `initrd:` for the same reason `virtio-blk` does: nothing
+    // under `file:` is readable until it is running.
     //
     // Waiting for its readiness handshake here is what makes every
     // `file:` URI below safe to use: the service sends `b"ready"` only
@@ -72,13 +69,13 @@ libpanda::main! {
     }
     environment::log("init: filesystem service ready");
 
-    // Phase 5b: scan the now-mounted root filesystem for additional driver
-    // binaries (e.g. virtio-keyboard) and spawn any not already spawned
-    // above. `scan` adds to the registry without clearing what Phase 5a
+    // Scan the now-mounted root filesystem for additional driver binaries
+    // (e.g. virtio-keyboard) and spawn any not already spawned above.
+    // `scan` adds to the registry without clearing what the initrd scan
     // already found, and `binary_paths()` only lists distinct paths, but it
-    // has no memory of what Phase 5a already spawned — track that
-    // ourselves so a driver present in both places (shouldn't normally
-    // happen) isn't spawned twice.
+    // has no memory of what was already spawned — track that ourselves so
+    // a driver present in both places (shouldn't normally happen) isn't
+    // spawned twice.
     let already_spawned: alloc::vec::Vec<alloc::string::String> = drivers
         .binary_paths()
         .into_iter()
@@ -93,7 +90,7 @@ libpanda::main! {
         // as the initrd drivers above — critically including `virtio-gpu`,
         // whose `display:` scheme the compositor spawned right after this
         // loop depends on (see `libpanda::process::wait_ready`'s doc
-        // comment; task #43).
+        // comment).
         match environment::spawn(path) {
             Ok(handle) => {
                 if libpanda::process::wait_ready(handle).is_err() {
@@ -105,11 +102,9 @@ libpanda::main! {
     }
 
     // Spawn the compositor. It claims the display and serves windows over
-    // the protocol; until the in-kernel compositor is deleted (Phase 5 of
-    // plans/userspace-compositor.md) the display is already claimed, so it
-    // comes up without output. On startup it registers the `compositor:`
-    // scheme (OP_SCHEME_REGISTER, landed as roadmap M2) so other processes
-    // can reach it without being one of its children.
+    // the protocol. On startup it registers the `compositor:` scheme
+    // (OP_SCHEME_REGISTER) so other processes can reach it without being
+    // one of its children.
     let Ok(_compositor_handle) = environment::spawn("file:/mnt/compositor") else {
         environment::log("init: failed to spawn compositor");
         return 1;

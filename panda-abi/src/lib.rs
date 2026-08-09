@@ -264,7 +264,7 @@ pub enum Operation {
     EnvironmentTime = 0x3_0003,
     /// Open directory: (path_ptr, path_len) -> dir_handle or error
     EnvironmentOpendir = 0x3_0004,
-    // 0x3_0005 was `EnvironmentMount`, deleted in roadmap M5 along with the
+    // 0x3_0005 was `EnvironmentMount`, deleted along with the
     // kernel's mount table: `userspace/services/fs` mounts ext2 itself
     // before registering `file:` and signalling readiness, so there is
     // nothing for a caller to ask the kernel to mount. The number is left

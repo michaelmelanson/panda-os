@@ -1,13 +1,8 @@
-//! Userspace virtio-gpu driver (roadmap M4, "display driver service").
+//! Userspace virtio-gpu display driver service.
 //!
-//! Replaces the deleted kernel-resident driver
-//! (`panda-kernel/src/devices/virtio_gpu/` — deleted in the same commit as
-//! this file, an atomic cutover per `plans/ROADMAP.md`'s M4 section). Claims
-//! the virtio-gpu PCI device, sets up a 2D scanout, and registers the
-//! `display:` scheme with the same `OP_DISPLAY_INFO`/`MAP`/`FLUSH` contract
-//! clients already use (`userspace/tests/display_test`,
-//! `userspace/compositor`) — that contract is permanent; only the provider
-//! moved to userspace.
+//! Claims the virtio-gpu PCI device, sets up a 2D scanout, and registers
+//! the `display:` scheme with the `OP_DISPLAY_INFO`/`MAP`/`FLUSH` contract
+//! clients use (`userspace/tests/display_test`, `userspace/compositor`).
 //!
 //! # Virtio transport: the shared `virtio-pci` crate
 //!
@@ -327,12 +322,11 @@ impl Gpu {
     /// host, then flush it to the screen.
     ///
     /// Always transfers/flushes the *whole* surface, ignoring `region`
-    /// beyond the validation `resource::display::DisplayResource::flush`
-    /// (the caller, pre-M4) already did against it — same as the deleted
-    /// kernel-resident driver's contract (see that struct's `flush` doc
-    /// comment, carried forward here: "the underlying driver exposes no
-    /// partial-rect flush... the rectangle currently serves as validation
-    /// and future-proofing... rather than as a bandwidth optimisation").
+    /// beyond the validation the caller (`SchemeProxyResource::display_flush`
+    /// in `panda-kernel/src/resource/scheme.rs`) already did against it: the
+    /// underlying virtio-gpu device exposes no partial-rect flush, so the
+    /// rectangle currently serves as validation and future-proofing rather
+    /// than as a bandwidth optimisation.
     /// `TRANSFER_TO_HOST_2D`'s `rect` gives the destination sub-region on
     /// the resource, but its `offset` field must independently give the
     /// matching byte offset into the linear backing buffer
@@ -478,10 +472,10 @@ libpanda::main! {
             serve_provider_requests(p, device.as_mut());
         }
 
-        // Cooperative shutdown — see
-        // `userspace/drivers/virtio-keyboard`'s identical convention and
-        // `plans/device-driver-model.md`'s Phase 7 landed-deviations note
-        // for why this exists.
+        // Cooperative shutdown — see `userspace/drivers/virtio-keyboard`'s
+        // identical convention: the kernel cannot safely tear down a
+        // running process's hardware claims synchronously from another
+        // process's call stack, so the driver exits on its own instead.
         if let Some(parent) = parent.as_ref() {
             let mut shutdown_buf = [0u8; 16];
             if let Ok(Some(n)) = parent.try_recv(&mut shutdown_buf)
@@ -609,13 +603,12 @@ fn serve_provider_requests(provider: &SchemeProvider, mut device: Option<&mut De
             Request::Connect { request_id, .. } => {
                 let _ = provider.reply_connect_err(request_id, ErrorCode::NotSupported);
             }
-            // `display:` never serves `OP_SIZE` — that request kind (M4's
-            // block driver service) only arrives on a `block:` provider
-            // (`userspace/drivers/virtio-blk`).
+            // `display:` never serves `OP_SIZE` — that request kind only
+            // arrives on a `block:` provider (`userspace/drivers/virtio-blk`).
             Request::Size { request_id, .. } => {
                 let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
             }
-            // Likewise the M5 filesystem request kinds, which only ever
+            // Likewise the filesystem request kinds, which only ever
             // arrive on the filesystem service's `file:` provider
             // (`userspace/services/fs`).
             Request::Stat { .. }

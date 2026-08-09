@@ -94,7 +94,7 @@ pub fn handle_read(
 ///
 /// `offset` is the handle's current file position (see `handle.offset()`),
 /// forwarded as `Request::Read`'s `offset` field so random-access providers
-/// (M4's `block:`) see the position `OP_FILE_SEEK` last set — stream-like
+/// (`block:`) see the position `OP_FILE_SEEK` last set — stream-like
 /// providers (e.g. `keyboard:`) are free to ignore it. On success, the
 /// handle's offset is advanced by the number of bytes actually read, same
 /// as `handle_read_vfs` — this is what gives `block_test`'s
@@ -297,11 +297,11 @@ pub fn handle_write(
         return handle_write_scheme_proxy(ua, handle_id, offset, buf_ptr, buf_len, resource);
     }
 
-    // There is no VFS write path any more: the kernel's one remaining
-    // filesystem (`initrd:`'s `TarFs`) is read-only, so `vfs::File` has no
-    // `write` method (roadmap M5). A VFS-backed handle therefore falls
-    // through to the sync path below and is rejected `NotWritable` there,
-    // same as any other non-writable resource.
+    // There is no VFS write path: the kernel's one remaining filesystem
+    // (`initrd:`'s `TarFs`) is read-only, so `vfs::File` has no `write`
+    // method. A VFS-backed handle therefore falls through to the sync path
+    // below and is rejected `NotWritable` there, same as any other
+    // non-writable resource.
     handle_write_sync(ua, handle_id, buf_ptr, buf_len)
 }
 
@@ -312,9 +312,9 @@ pub fn handle_write(
 /// anything larger is split across several round trips rather than
 /// truncated to the first. A single `OP_FILE_WRITE` therefore still writes
 /// the whole caller-supplied buffer (up to `MAX_FILE_IO_SIZE`, the same cap
-/// the deleted VFS path used), which is what callers expect: roadmap M5
-/// moved `file:` onto this path, and `ext2_write_test`'s single 4096-byte
-/// write caught the truncation immediately.
+/// the deleted VFS path used), which is what callers expect —
+/// `ext2_write_test`'s single 4096-byte write caught the truncation
+/// immediately when this path was first exercised.
 fn handle_write_scheme_proxy(
     ua: &UserAccess,
     handle_id: u64,
@@ -407,7 +407,7 @@ pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> Syscal
     let offset = ((offset_hi as u64) << 32) | (offset_lo as u64);
     let whence = (offset_hi >> 32) as u32;
 
-    // Scheme-provider proxy resources (M4: `block:`) support seeking too —
+    // Scheme-provider proxy resources (`block:`) support seeking too —
     // SEEK_SET/SEEK_CUR are pure handle-table arithmetic (no VFS file
     // needed at all), and SEEK_END queries the provider's size via
     // `Request::Size` (see `SchemeProxyResource::size`) instead of a VFS
@@ -493,7 +493,7 @@ pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> Syscal
     }
 }
 
-/// Seek path for scheme-provider proxy resources (M4: `block:`) — see
+/// Seek path for scheme-provider proxy resources (`block:`) — see
 /// `handle_seek`'s doc comment for how this differs from the VFS path.
 fn handle_seek_scheme_proxy(
     handle_id: u64,
@@ -570,8 +570,8 @@ fn handle_seek_scheme_proxy(
 pub fn handle_stat(handle_id: u64, stat_ptr: usize) -> SyscallFuture {
     let dst = UserSlice::new(stat_ptr, core::mem::size_of::<FileStat>());
 
-    // Scheme-provider proxy resources (`file:` since roadmap M5) answer via
-    // a `Request::Stat` round trip. Without this they would fall through to
+    // Scheme-provider proxy resources (`file:`) answer via a
+    // `Request::Stat` round trip. Without this they would fall through to
     // the sync path below, which reports `size: 0, is_dir: false` for
     // anything that isn't a directory handle — see `MSG_STAT`'s doc comment.
     if let Some(resource) = get_scheme_proxy(handle_id) {

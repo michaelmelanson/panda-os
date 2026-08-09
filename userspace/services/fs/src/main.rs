@@ -1,8 +1,7 @@
-//! The Panda filesystem service (roadmap M5).
+//! The Panda filesystem service.
 //!
 //! Registers the `file:` scheme and serves it from the mount table in
-//! [`fs::mount`], exactly the interface the kernel's deleted
-//! `resource::scheme::FileScheme` used to present. Its own mounts are:
+//! [`fs::mount`]. Its own mounts are:
 //!
 //! - `/initrd` — the kernel's `initrd:` scheme, proxied so
 //!   `file:/initrd/...` keeps resolving for existing clients (see
@@ -13,11 +12,11 @@
 //! # Startup order
 //!
 //! Mount first, register `file:` second, signal readiness third. That
-//! ordering is what replaces the deleted `OP_ENVIRONMENT_MOUNT` syscall:
-//! `file:` does not resolve to anything until this process has registered
-//! it, and by then both mounts have been attempted, so a client that has
-//! seen the readiness handshake (`libpanda::process::wait_ready`, task #43)
-//! never observes a half-mounted filesystem. A failed ext2 mount is not
+//! ordering is what makes a mount-syscall-free design safe: `file:` does
+//! not resolve to anything until this process has registered it, and by
+//! then both mounts have been attempted, so a client that has seen the
+//! readiness handshake (`libpanda::process::wait_ready`) never observes a
+//! half-mounted filesystem. A failed ext2 mount is not
 //! fatal — the service still comes up serving `/initrd`, and says so on the
 //! log — because several tests run with no block device attached at all.
 //!

@@ -79,10 +79,9 @@ impl Compositor {
     /// serving.
     ///
     /// If the display is unavailable the compositor still runs: it serves
-    /// windows and skips presentation (Risk 1 of the plan). Until the
-    /// kernel compositor is deleted in Phase 5 its permanent claim makes
-    /// `Busy` the *normal* outcome here, so failing to open must not be
-    /// fatal and must not be retried in a loop.
+    /// windows and skips presentation. A second claimant getting `Busy` is
+    /// an expected outcome (the display driver enforces exclusivity), so
+    /// failing to open must not be fatal and must not be retried in a loop.
     ///
     /// Scheme registration failing (e.g. `AlreadyExists` if two compositors
     /// somehow start in the same kernel instance) is logged but likewise
@@ -192,12 +191,12 @@ impl Compositor {
                 }
                 // `compositor:` is a Connect-only scheme (see the arm
                 // above); the `Size`/`DisplayInfo`/`DisplayMap`/
-                // `DisplayFlush` request kinds (M4) only ever arrive on a
+                // `DisplayFlush` request kinds only ever arrive on a
                 // `block:`/`display:` provider (`userspace/drivers/virtio-blk`/
                 // `virtio-gpu`), and `Stat`/`Create`/`Unlink`/`Mkdir`/`Rmdir`
-                // (M5) only on the filesystem service
-                // (`userspace/services/fs`), not here, so there's nothing
-                // meaningful to answer beyond a generic rejection.
+                // only on the filesystem service (`userspace/services/fs`),
+                // not here, so there's nothing meaningful to answer beyond a
+                // generic rejection.
                 SchemeRequest::Size { request_id, .. } => {
                     let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
                 }

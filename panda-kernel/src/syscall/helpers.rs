@@ -123,8 +123,7 @@ pub(super) fn complete_mailbox_attach(proc: &Process, mailbox: &Mailbox, handle_
 /// can't reintroduce the self-deadlock class documented on
 /// `panda-kernel/src/syscall/device.rs::handle_device_subscribe` and hit
 /// again (independently) in `handle_close`, before this helper existed to
-/// prevent a third copy of the same mistake. See
-/// `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
+/// prevent a third copy of the same mistake.
 pub(super) fn remove_handle(handle_id: u64) -> Option<Handle> {
     scheduler::with_current_process(|proc| proc.handles_mut().remove(handle_id))
 }

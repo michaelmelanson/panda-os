@@ -94,14 +94,8 @@ unsafe impl Hal for VirtioHal {
 }
 
 // =============================================================================
-// Shared `virtio_drivers` PCI transport glue.
-//
-// These impls used to live in the now-deleted `devices/virtio_gpu/mod.rs`
-// (ported to a userspace driver in roadmap M4 — see
-// `plans/device-driver-model.md`'s M4 landed-deviations note) but are
-// needed by every remaining kernel-resident virtio-pci driver (currently
-// just `virtio_block`), so they moved here rather than being deleted with
-// it.
+// Shared `virtio_drivers` PCI transport glue, for any kernel-resident
+// virtio-pci driver that needs `ConfigurationAccess`.
 // =============================================================================
 
 use crate::pci::device::{PciDevice, PciDeviceAddress};

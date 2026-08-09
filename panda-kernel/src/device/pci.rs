@@ -8,12 +8,7 @@ use crate::pci::{self, device::PciDevice};
 /// Register every currently-enumerated PCI device with [`DEVICE_REGISTRY`],
 /// posting `EVENT_DEVICE_ADDED` to any subscriber that already matches it.
 ///
-/// Called once, after `pci::init()`, from `devices::init()`. This is
-/// additive: it does not replace the existing kernel-resident driver
-/// dispatch in `devices::init()` (virtio-blk/gpu/keyboard) — removing that
-/// in favour of userspace drivers is Phase 7's atomic cutover, out of scope
-/// here (Phases 1-5 are IOMMU-independent and explicitly do not touch
-/// driver ownership).
+/// Called once, after `pci::init()`, from `devices::init()`.
 pub fn register_enumerated_devices() {
     pci::enumerate_pci_devices(|pci_device: PciDevice| {
         let addr = pci_device.address();
@@ -34,7 +29,7 @@ pub fn register_enumerated_devices() {
 }
 
 /// Find the live [`PciDevice`] (config-space accessor) for a `PciAddress`
-/// recorded in [`DeviceInfo::Pci`], for the Phase 6 hardware-access
+/// recorded in [`DeviceInfo::Pci`], for the hardware-access
 /// syscalls (`OP_DEVICE_MAP_MMIO`/`OP_DMA_ALLOC`/`OP_DEVICE_SUBSCRIBE_IRQ`),
 /// which need to read BARs / configure MSI-X, not just the bus-agnostic
 /// identity `DeviceRegistry` stores.

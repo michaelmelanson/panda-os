@@ -1,15 +1,13 @@
 //! Display syscall handlers (`OP_DISPLAY_*`).
 //!
-//! `display:` is served by a userspace driver process (roadmap M4 —
-//! `userspace/drivers/virtio-gpu`), so every handle this operates on is a
+//! `display:` is served by a userspace driver process
+//! (`userspace/drivers/virtio-gpu`), so every handle this operates on is a
 //! [`crate::resource::SchemeProxyResource`]. Each handler forwards to the
 //! provider (via [`crate::resource::SchemeProxyResource::display_info`]/
 //! `display_map`/`display_flush`) and, for `OP_DISPLAY_MAP`, maps the
 //! physical range the provider discloses directly into the calling
 //! process — see `panda_abi::scheme_protocol::MSG_DISPLAY_MAP`'s doc
 //! comment for why that's a raw physical address rather than proxied bytes.
-//! This is the same client-facing contract the old kernel-resident
-//! `DisplayDevice` served; only the provider moved to userspace.
 
 #![deny(unsafe_code)]
 

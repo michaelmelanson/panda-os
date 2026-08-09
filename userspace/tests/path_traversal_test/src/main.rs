@@ -14,8 +14,8 @@ libpanda::main! {
     environment::log("path_traversal_test: Starting");
 
     // This test plays the role of `init`, so it starts the filesystem
-    // service that provides `file:` itself (roadmap M5) — see `vfs_test`.
-    // The canonicalisation under test now lives in that service's mount
+    // service that provides `file:` itself — see `vfs_test`. The
+    // canonicalisation under test lives in that service's mount
     // table (`userspace/services/fs/src/mount.rs`), so this is the
     // end-to-end counterpart of that module's host unit tests.
     let Ok(fs_handle) = environment::spawn("initrd:/fs") else {

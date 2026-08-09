@@ -4,9 +4,9 @@
 //! A compositor instance spawned by a test rather than by `init`.
 //!
 //! This is the counterpart to `compositor_start_test`'s in-process
-//! `compositor::server::run` call: several Phase 4 tests (see
-//! plans/userspace-compositor.md) need a real `libpanda::graphics::Window`
-//! talking to a real compositor process over a real channel, which needs
+//! `compositor::server::run` call: several window-protocol tests need a
+//! real `libpanda::graphics::Window` talking to a real compositor process
+//! over a real channel, which needs
 //! two OS processes. Since the parent that spawns a process is the one
 //! that gets a channel to it (`docs/IPC.md` "Handle transfer"), the test
 //! is this compositor's parent — the reverse of production, where `init`
@@ -61,8 +61,8 @@ libpanda::main! {
     // This process plays the role of `init` for every screenshot-verified
     // test (see the module doc comment) — like `keyboard_test`, there is no
     // service manager here to spawn `display:`'s provider from
-    // `initrd:/drivers`, so spawn the userspace virtio-gpu driver (roadmap
-    // M4) directly and wait for its "ready" signal before starting the
+    // `initrd:/drivers`, so spawn the userspace virtio-gpu driver directly
+    // and wait for its "ready" signal before starting the
     // compositor, which otherwise races the driver's async device-claim/
     // feature-negotiation/scanout-setup startup and degrades to "running
     // without output" (see `compositor::server::Compositor::new`).

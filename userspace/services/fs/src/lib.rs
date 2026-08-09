@@ -1,21 +1,17 @@
-//! The Panda filesystem service (roadmap M5).
+//! The Panda filesystem service.
 //!
-//! This crate holds everything the kernel's `panda-kernel/src/vfs/` used to
-//! own except the read-only initrd reader: the VFS mount table, the
-//! `Filesystem`/`File` interfaces, and the ext2 implementation. The kernel
-//! keeps only `vfs::TarFs` (the in-memory ustar archive behind `initrd:`),
-//! which is what bootstraps `init` and this service.
+//! This crate holds the mount table, the `Filesystem`/`File` interfaces,
+//! and the ext2 implementation. The kernel keeps only
+//! `vfs::TarFs` (the in-memory ustar archive behind `initrd:`), which is
+//! what bootstraps `init` and this service.
 //!
 //! # Layering
 //!
-//! - [`fs`] — the filesystem interfaces (`Filesystem`, `File`, `FsError`,
-//!   …), moved verbatim from the kernel's `vfs` module.
-//! - [`mount`] — the mount table and path canonicalisation policy, moved
-//!   from the kernel's `vfs` module.
+//! - [`fs`] — the filesystem interfaces (`Filesystem`, `File`, `FsError`, …).
+//! - [`mount`] — the mount table and path canonicalisation policy.
 //! - [`block`] — the [`block::BlockDevice`] interface ext2 reads and writes
-//!   through, moved from `panda-kernel/src/resource/block.rs`.
-//! - [`ext2`] — the ext2 implementation, moved from
-//!   `panda-kernel/src/vfs/ext2/`.
+//!   through.
+//! - [`ext2`] — the ext2 implementation.
 //!
 //! Everything above is platform-independent, so it builds (and unit-tests)
 //! on the host. The `os` feature adds the parts that talk to the kernel:

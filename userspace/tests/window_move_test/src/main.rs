@@ -1,9 +1,9 @@
 #![no_std]
 #![no_main]
 
-//! Moving a window against a real compositor process
-//! (plans/userspace-compositor.md, Phase 4). See `window_test` for why this
-//! is a protocol round-trip test rather than a screenshot comparison;
+//! Moving a window against a real compositor process. See `window_test`
+//! for why this is a protocol round-trip test rather than a screenshot
+//! comparison;
 //! repainting both the old and new position is covered by `compositor`'s
 //! `MemoryTarget`-based `manager::tests::moving_a_window_repaints_both_
 //! the_old_and_new_positions`.

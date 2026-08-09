@@ -71,8 +71,7 @@ pub fn sleep(duration_ms: u64) -> isize {
 /// `MOUNT_RETRY_ATTEMPTS`/`MOUNT_RETRY_SLEEP_MS`
 /// (`panda-kernel/src/vfs/mod.rs`) and `DISPLAY_OPEN_RETRY_ATTEMPTS`/
 /// `DISPLAY_OPEN_RETRY_SLEEP_MS` (`userspace/compositor/src/display.rs`)
-/// used to each hand-roll separately (task #43: "Redesign scheme-open
-/// readiness to eliminate the driver-registration race class").
+/// use.
 pub const READY_WAIT_ATTEMPTS: u32 = 200;
 /// See [`READY_WAIT_ATTEMPTS`].
 pub const READY_WAIT_SLEEP_MS: u64 = 10;
@@ -83,25 +82,23 @@ pub const READY_WAIT_SLEEP_MS: u64 = 10;
 ///
 /// # Background
 ///
-/// `init` used to spawn a driver and immediately spawn/unblock whatever
-/// depends on it (mounting `ext2` off `block:`, spawning the compositor
-/// onto `display:`) — spawning only starts the driver process, it doesn't
-/// block until the driver has actually claimed its device and called
-/// `OP_SCHEME_REGISTER`, so the dependant's first scheme-open attempt could
-/// (and, under real multi-device boot timing, reliably did) lose that race.
-/// This used to be papered over with a blind hand-rolled retry loop at each
-/// dependent call site instead of being closed at the source.
+/// Spawning a driver (`init` spawning `virtio-blk` before mounting `ext2`
+/// off `block:`, or `virtio-gpu` before spawning the compositor onto
+/// `display:`) only starts the driver process — it doesn't block until the
+/// driver has actually claimed its device and called `OP_SCHEME_REGISTER`,
+/// so a dependant's first scheme-open attempt can lose that race under real
+/// multi-device boot timing.
 ///
 /// Every boot driver (`virtio-blk`, `virtio-gpu`, `virtio-keyboard`, ...)
-/// already sends a single `b"ready"` message on its spawn channel right
-/// after registering its scheme (see e.g. the `main!` loop in
+/// sends a single `b"ready"` message on its spawn channel right after
+/// registering its scheme (see e.g. the `main!` loop in
 /// `userspace/drivers/virtio-blk/src/main.rs`) — nothing else is ever sent
 /// unprompted on that channel in the child-to-parent direction (the only
 /// other traffic on it is `init` asking the driver to shut down, which
-/// flows parent-to-child). `init` just wasn't waiting on it. Calling this
-/// right after `environment::spawn`, before doing anything that depends on
-/// the driver being ready, eliminates the race outright: the dependant's
-/// very first scheme-open attempt succeeds instead of merely "eventually"
+/// flows parent-to-child). Calling this right after `environment::spawn`,
+/// before doing anything that depends on the driver being ready, eliminates
+/// the race outright: the dependant's very first scheme-open attempt
+/// succeeds instead of merely "eventually"
 /// succeeding within a retry budget.
 ///
 /// The bounded retry here is defense-in-depth, not the mechanism that

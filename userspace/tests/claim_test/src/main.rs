@@ -5,14 +5,8 @@
 //! plus ext2's claim on a mounted block device, and the same full lifecycle
 //! against the real `display:` scheme.
 //!
-//! The display lifecycle case used to be untestable: before Phase 5 of
-//! plans/userspace-compositor.md the in-kernel compositor held the display's
-//! claim permanently, so every open from a test process failed `Busy` and
-//! only that one outcome could be asserted (see the Phase 2 note in the
-//! plan). With the in-kernel compositor deleted, nothing holds the display
-//! at boot, so this test now exercises the full open/Busy/close/reopen cycle
-//! against `display:/pci/display/0` directly — the "carried forward as
-//! explicit, tracked debt against Phase 5" round trip the plan called for.
+//! Nothing holds the display at boot, so this test exercises the full
+//! open/Busy/close/reopen cycle against `display:/pci/display/0` directly.
 
 #![no_std]
 #![no_main]
@@ -26,10 +20,9 @@ libpanda::main! {
     // This test plays the role of `init` (it's the initrd's `init`
     // binary), so unlike the real boot path there is no service manager
     // running to spawn either driver — do it directly, the same way
-    // `keyboard_test`/`display_test` spawn their drivers (M4 Phase 2 and
-    // roadmap M4, plans/device-driver-model.md). Both `block:` opens below
-    // plus the ext2 mount in Test 5 need virtio-blk running, and Test 4
-    // needs virtio-gpu running.
+    // `keyboard_test`/`display_test` spawn their drivers. Both `block:`
+    // opens below plus the ext2 mount in Test 5 need virtio-blk running,
+    // and Test 4 needs virtio-gpu running.
     let Ok(blk_driver_handle) = environment::spawn("initrd:/virtio-blk") else {
         environment::log("FAIL: could not spawn virtio-blk driver");
         return 1;
@@ -132,8 +125,8 @@ libpanda::main! {
 
     // Test 5: a mounted block device refuses raw opens.
     //
-    // Since roadmap M5 the mount is performed by the filesystem service,
-    // which holds its `block:` handle open for the mount's lifetime — that
+    // The mount is performed by the filesystem service, which holds its
+    // `block:` handle open for the mount's lifetime — that
     // open *is* the exclusive claim, so this still checks exactly what it
     // used to. `wait_ready` returns only once the service has attempted the
     // mount, so the raw open below cannot race it.
@@ -163,8 +156,7 @@ libpanda::main! {
     // boot path), so this test (playing `init`) must ask each to exit
     // before returning itself, or QEMU never shuts down — see
     // `block_test`'s/`display_test`'s identical shutdown requests.
-    // The filesystem service spawned for test 5 is likewise persistent
-    // (roadmap M5).
+    // The filesystem service spawned for test 5 is likewise persistent.
     if let Some(fs_channel) = libpanda::ipc::Channel::from_handle_borrowed(fs_handle) {
         let _ = fs_channel.send(b"shutdown");
     }

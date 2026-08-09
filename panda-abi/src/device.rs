@@ -242,7 +242,7 @@ pub const EVENT_DEVICE_IRQ: u32 = 1 << 8;
 // Operation codes
 //
 // Device operations (0xA_0000 - 0xA_FFFF). All six ops have kernel handlers
-// (see panda-kernel/src/syscall/device.rs) as of Phase 6.
+// (see panda-kernel/src/syscall/device.rs).
 // =============================================================================
 
 /// Subscribe to device add/remove events for a bus type + match filter:
@@ -286,12 +286,9 @@ pub const OP_DEVICE_POLL_EVENT: u32 = 0xA_0006;
 ///
 /// This is the primitive a userspace driver needs to walk a virtio-pci
 /// (modern, virtio 1.0) device's PCI capability list to find its common
-/// config / notify / ISR / device-specific config structures, since (unlike
-/// the deleted kernel-resident driver, which used the `virtio_drivers`
-/// crate's `PciTransport`) there is no in-kernel virtio-aware transport for
-/// userspace drivers — they must do the capability walk themselves. Added
-/// in Phase 7 when the userspace virtio-keyboard driver needed it; see
-/// `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
+/// config / notify / ISR / device-specific config structures: there is no
+/// in-kernel virtio-aware transport for userspace drivers, so they must do
+/// the capability walk themselves.
 ///
 /// `width` must be 1, 2, or 4; `offset + width` must not exceed 256 bytes
 /// (the standard PCI config space size for functions without extended

@@ -65,8 +65,8 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
     // contiguity that make it fragile. The 2MB is a small price for stability.
 
     // Parse the initrd and register the `initrd:` scheme over it. This is
-    // the kernel's only filesystem since roadmap M5 — there is no mount
-    // table any more, so the archive is served directly (see
+    // the kernel's only filesystem — there is no mount table, so the
+    // archive is served directly (see
     // resource::InitrdScheme). Everything else, `file:` included, comes from
     // `userspace/services/fs`, which is itself one of the binaries read out
     // of here.
@@ -93,7 +93,7 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
     scheduler::init(init_process);
 
     // Note: ext2 is mounted by the userspace filesystem service, which
-    // `init` spawns out of the initrd (roadmap M5).
+    // `init` spawns out of the initrd.
 
     unsafe { scheduler::exec_next_runnable() };
 }

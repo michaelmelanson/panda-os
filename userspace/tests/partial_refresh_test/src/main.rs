@@ -1,9 +1,9 @@
 #![no_std]
 #![no_main]
 
-//! Full then partial buffer updates against a real compositor process
-//! (plans/userspace-compositor.md, Phase 4). See `window_test` for why
-//! this is a protocol round-trip test rather than a screenshot comparison;
+//! Full then partial buffer updates against a real compositor process.
+//! See `window_test` for why this is a protocol round-trip test rather
+//! than a screenshot comparison;
 //! damage-rect coalescing itself is covered by `compositor`'s
 //! `MemoryTarget`-based `manager::tests::only_committed_damage_is_
 //! composited_and_flushed` and `dirty_regions_coalesce_when_overlapping_

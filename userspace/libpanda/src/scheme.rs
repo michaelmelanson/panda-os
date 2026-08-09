@@ -209,8 +209,8 @@ impl SchemeProvider {
     /// rest *somehow* — a request left unanswered leaves the caller blocked
     /// in `round_trip` forever. Without this, each provider needed one
     /// hand-written rejection arm per unsupported kind, which is how
-    /// `Request` gaining the M5 filesystem kinds broke the build of all
-    /// three drivers and the compositor at once. The kind-to-reply mapping
+    /// `Request` gaining the filesystem request kinds broke the build of
+    /// all three drivers and the compositor at once. The kind-to-reply mapping
     /// belongs here, next to the reply helpers, rather than being repeated
     /// in every serve loop.
     pub fn reply_unsupported(&self, request: &Request<'_>) -> Result<()> {

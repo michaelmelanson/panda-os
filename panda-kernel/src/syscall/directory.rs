@@ -22,10 +22,10 @@ use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess};
 /// log messages, to keep them identifiable per-caller.
 ///
 /// The result is a full URI (e.g. `"file:/mnt/newfile.txt"`) rather than a
-/// bare path because roadmap M5 moved the filesystem out of the kernel:
-/// these operations are now dispatched through the scheme registry to
-/// whichever provider owns the scheme (see `resource::create` and friends),
-/// instead of calling `vfs::create` directly.
+/// bare path because the filesystem lives outside the kernel: these
+/// operations are dispatched through the scheme registry to whichever
+/// provider owns the scheme (see `resource::create` and friends), not a
+/// direct kernel VFS call.
 fn resolve_dir_op_uri(
     ua: &UserAccess,
     handle_id: u64,

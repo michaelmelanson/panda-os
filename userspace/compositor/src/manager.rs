@@ -1,25 +1,24 @@
 //! Window management: buffer lifecycle, damage tracking and compositing.
 //!
-//! This is the in-kernel `compositor::WindowManager` moved to userspace
-//! (plans/userspace-compositor.md, Phase 3). The compositing algorithm is
-//! unchanged — dirty-region coalescing, clear to background, blend
-//! back-to-front with an opaque row-copy fast path — but a window's pixels
-//! now live in a buffer the *client* allocated and the compositor mapped,
-//! rather than in a `Vec<u8>` the kernel owned and clients copied into.
+//! The compositing algorithm is dirty-region coalescing, clear to
+//! background, then blend back-to-front with an opaque row-copy fast path.
+//! A window's pixels live in a buffer the *client* allocated and the
+//! compositor mapped, rather than a buffer the compositor owns and clients
+//! copy into.
 
 use alloc::vec::Vec;
 use compositor_protocol::{Event, FORMAT_BGRA8888, Rect, Request, alpha_blend, is_region_opaque};
 
 use crate::target::Target;
 
-/// Background colour (Nord dark grey), as in the kernel compositor.
+/// Background colour (Nord dark grey).
 pub const BACKGROUND_COLOUR: u32 = 0xFF2E3440;
 
 /// A client buffer mapped into the compositor's address space.
 ///
-/// The compositor holds its own handle to the underlying shared buffer, so
-/// the memory stays valid even if the client exits (Phase 1 refcounts the
-/// frames by handle); the mapping simply goes stale.
+/// The compositor holds its own handle to the underlying shared buffer
+/// (frames are refcounted by handle), so the memory stays valid even if the
+/// client exits; the mapping simply goes stale.
 pub struct Attachment {
     /// Per-window attach sequence number, reported by `BufferReleased`.
     pub id: u64,

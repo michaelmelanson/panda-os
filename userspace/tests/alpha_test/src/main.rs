@@ -1,9 +1,9 @@
 #![no_std]
 #![no_main]
 
-//! Three overlapping translucent windows against a real compositor process
-//! (plans/userspace-compositor.md, Phase 4). See `window_test` for why this
-//! is a protocol round-trip test rather than a screenshot comparison; the
+//! Three overlapping translucent windows against a real compositor process.
+//! See `window_test` for why this is a protocol round-trip test rather than
+//! a screenshot comparison; the
 //! blend maths itself (output alpha = src_a + dst_a·(1−src_a)) is covered
 //! by `compositor_protocol::blend`'s own unit tests and by `compositor`'s
 //! `MemoryTarget`-based `manager::tests::a_translucent_window_is_blended_

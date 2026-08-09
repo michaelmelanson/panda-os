@@ -13,8 +13,7 @@ pub const DISPLAY_PATH: &str = "display:/pci/display/0";
 // `init` (`userspace/init/src/main.rs`) spawns the userspace virtio-gpu
 // driver and waits for its readiness handshake (`libpanda::process::
 // wait_ready`) before spawning the compositor, which closes the startup
-// race against `display:` registration at the source (task #43: "Redesign
-// scheme-open readiness to eliminate the driver-registration race class").
+// race against `display:` registration at the source.
 // `Framebuffer::open`'s first attempt should therefore always succeed when
 // spawned by `init` in the normal boot path.
 //
