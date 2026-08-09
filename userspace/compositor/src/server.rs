@@ -326,23 +326,23 @@ fn map_attachment(
         return None;
     };
 
-    let Ok(address) = buffer::map(handle) else {
+    let Ok((address, real_size)) = buffer::map_with_size(handle) else {
         environment::log("compositor: could not map an attached buffer");
         return None;
     };
 
-    // The client declares the geometry; the kernel guarantees the mapping
-    // is at least as large as the buffer, so validating against the
-    // declared size is the check that matters (Risk 2 of the plan).
-    let len = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|pixels| pixels.checked_mul(4))?;
-
+    // `real_size` is the buffer's actual size, reported by the kernel from
+    // OP_BUFFER_MAP — it must be what `Attachment::new` validates the
+    // declared width/height against. The client's declared width/height
+    // cannot be trusted on their own: a malicious or buggy client can
+    // attach an under-allocated buffer with an inflated declared size, and
+    // validating declared-vs-declared can never catch that.
     let id = client.next_buffer_id(window);
     // SAFETY: `address` was just returned by a successful OP_BUFFER_MAP for
     // this process, and the compositor holds `handle` for as long as the
     // attachment lives, so the frames stay alive.
-    let attachment = unsafe { Attachment::new(id, address as *mut u8, len, width, height, format) };
+    let attachment =
+        unsafe { Attachment::new(id, address as *mut u8, real_size, width, height, format) };
     if attachment.is_none() {
         environment::log("compositor: rejecting an invalid buffer attachment");
     }

@@ -492,7 +492,10 @@ pub const OP_DIRECTORY_RMDIR: u32 = Operation::DirectoryRmdir as u32;
 /// Allocate a shared buffer: (size, info_ptr) -> buffer_handle or error
 /// If info_ptr is non-zero, writes BufferAllocInfo (addr, size) to that address.
 pub const OP_BUFFER_ALLOC: u32 = Operation::BufferAlloc as u32;
-/// Map an already-existing buffer into the current process: (buffer_handle) -> vaddr or error.
+/// Map an already-existing buffer into the current process: (buffer_handle, info_ptr) -> vaddr or error.
+/// If info_ptr is non-zero, writes BufferAllocInfo (addr, size) to that address —
+/// this is the buffer's real, kernel-known size, needed to validate a mapping
+/// against a size a caller can't spoof.
 pub const OP_BUFFER_MAP: u32 = Operation::BufferMap as u32;
 /// Resize a buffer: (buffer_handle, new_size, info_ptr) -> 0 or error
 /// If info_ptr is non-zero, writes BufferAllocInfo (addr, size) to that address.

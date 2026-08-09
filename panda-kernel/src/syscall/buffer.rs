@@ -252,25 +252,54 @@ pub fn handle_resize(
 /// memory. Closing `handle_id` does NOT unmap this mapping — the mapping
 /// itself keeps the buffer's frames alive independent of the handle; that
 /// is deliberate future work (see the same doc comment).
-pub fn handle_map(handle_id: u64) -> SyscallFuture {
-    let result: Result<usize, panda_abi::ErrorCode> = scheduler::with_current_process(|proc| {
-        let buffer = {
-            let Some(handle) = proc.handles().get(handle_id) else {
-                return Err(panda_abi::ErrorCode::InvalidHandle);
-            };
-            let Some(buffer) = handle.resource_arc().as_shared_buffer() else {
-                return Err(panda_abi::ErrorCode::InvalidHandle);
-            };
-            buffer
-        };
+///
+/// If `info_ptr` is non-zero, writes the buffer's real size alongside the
+/// mapped address. Callers that need to validate a caller-declared size
+/// (e.g. the compositor validating a client's declared buffer geometry)
+/// must use this rather than trusting anything the mapping's other end
+/// claims — the kernel is the only party that actually knows how large the
+/// backing allocation is.
+pub fn handle_map(ua: &UserAccess, handle_id: u64, info_ptr: usize) -> SyscallFuture {
+    let info_out: Option<UserPtr<panda_abi::BufferAllocInfo>> = if info_ptr != 0 {
+        Some(UserPtr::new(info_ptr))
+    } else {
+        None
+    };
 
-        buffer
-            .map_into_process(proc)
-            .map_err(|_| panda_abi::ErrorCode::IoError)
-    });
+    let result: Result<(usize, usize), panda_abi::ErrorCode> =
+        scheduler::with_current_process(|proc| {
+            let buffer = {
+                let Some(handle) = proc.handles().get(handle_id) else {
+                    return Err(panda_abi::ErrorCode::InvalidHandle);
+                };
+                let Some(buffer) = handle.resource_arc().as_shared_buffer() else {
+                    return Err(panda_abi::ErrorCode::InvalidHandle);
+                };
+                buffer
+            };
+
+            let buffer_size = Buffer::size(&*buffer);
+            buffer
+                .map_into_process(proc)
+                .map(|vaddr| (vaddr, buffer_size))
+                .map_err(|_| panda_abi::ErrorCode::IoError)
+        });
 
     match result {
-        Ok(vaddr) => Box::pin(core::future::ready(SyscallResult::ok(vaddr as isize))),
+        Ok((vaddr, buffer_size)) => {
+            if let Some(out) = info_out {
+                let info = panda_abi::BufferAllocInfo {
+                    addr: vaddr,
+                    size: buffer_size,
+                };
+                if ua.write_user(out, &info).is_err() {
+                    return Box::pin(core::future::ready(SyscallResult::err(
+                        panda_abi::ErrorCode::InvalidArgument,
+                    )));
+                }
+            }
+            Box::pin(core::future::ready(SyscallResult::ok(vaddr as isize)))
+        }
         Err(code) => Box::pin(core::future::ready(SyscallResult::err(code))),
     }
 }
