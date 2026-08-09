@@ -149,6 +149,51 @@ pub async fn connect(uri: &str) -> Result<Arc<dyn Resource>, OpenError> {
     handler.connect(path).await
 }
 
+/// Shared retry budget for scheme-open races that a synchronous readiness
+/// handshake doesn't close (task #43: "Redesign scheme-open readiness to
+/// eliminate the driver-registration race class"). 200 * 10ms = ~2s,
+/// matching `libpanda::process::READY_WAIT_ATTEMPTS`/`READY_WAIT_SLEEP_MS`
+/// on the userspace side of the same fix.
+///
+/// This kernel-side path exists for callers `init` itself can't put a
+/// synchronous wait in front of — currently only `vfs::mount_ext2`, which
+/// runs inside the kernel's `OP_ENVIRONMENT_MOUNT` syscall handler rather
+/// than in `init`'s own address space, so it can't reach `init`'s spawn
+/// handle for `virtio-blk` to wait on directly. `init` waiting on
+/// `virtio-blk`'s readiness handshake before calling `mount` (see
+/// `libpanda::process::wait_ready`) is what actually closes that race in
+/// practice; this retry is defense-in-depth for whenever that
+/// isn't true, not the mechanism the race is closed by.
+pub const OPEN_RETRY_ATTEMPTS: u32 = 200;
+/// See [`OPEN_RETRY_ATTEMPTS`].
+pub const OPEN_RETRY_SLEEP_MS: u64 = 10;
+
+/// Retry an async scheme-resolution attempt with a bounded backoff, using
+/// the shared budget in [`OPEN_RETRY_ATTEMPTS`]/[`OPEN_RETRY_SLEEP_MS`].
+///
+/// Generic over the attempt itself (not just `open`/`connect`) so any
+/// future kernel-side caller with the same "driver may not have registered
+/// its scheme yet" race can share this one retry loop and constant pair,
+/// instead of hand-rolling its own — see `vfs::mount_ext2`'s use of this
+/// for `block:` for the pattern to follow.
+pub async fn open_retrying<T, E, F, Fut>(mut attempt: F) -> Result<T, E>
+where
+    F: FnMut() -> Fut,
+    Fut: core::future::Future<Output = Result<T, E>>,
+{
+    let mut n = 0;
+    loop {
+        match attempt().await {
+            Ok(v) => return Ok(v),
+            Err(_) if n < OPEN_RETRY_ATTEMPTS => {
+                n += 1;
+                crate::executor::sleep::sleep_ms(OPEN_RETRY_SLEEP_MS).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// List directory contents by URI (e.g., "file:/initrd")
 pub async fn readdir(uri: &str) -> Option<Vec<DirEntry>> {
     let (scheme, path) = uri.split_once(':')?;

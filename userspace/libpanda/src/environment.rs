@@ -42,6 +42,35 @@ pub fn open(path: &str, mailbox: u64, event_mask: u32) -> Result<Handle> {
     error::from_syscall_handle(sys::env::open(path, mailbox, event_mask))
 }
 
+/// [`open`], but retrying on failure for up to
+/// `crate::process::READY_WAIT_ATTEMPTS * crate::process::READY_WAIT_SLEEP_MS`
+/// (~2s) before giving up.
+///
+/// Shared fallback for scheme-open races that `crate::process::wait_ready`
+/// can't close (task #43): `wait_ready` eliminates the race for a driver
+/// `init` itself spawned, by making `init` wait on the driver's own
+/// readiness handshake before touching anything that depends on it — but a
+/// consumer with no spawn-time relationship to its driver (e.g. a process
+/// opening a scheme much later, or one that isn't `init`) has no handle to
+/// wait on. This retries the plain scheme-open instead — strictly weaker
+/// (it can't distinguish "driver not ready yet" from any other transient
+/// open failure, and it burns the full retry budget on a genuine, permanent
+/// error), so prefer `wait_ready` at any call site that has a spawn-time
+/// relationship to the driver it depends on.
+pub fn open_retrying(path: &str, mailbox: u64, event_mask: u32) -> Result<Handle> {
+    let mut attempt = 0;
+    loop {
+        match open(path, mailbox, event_mask) {
+            Ok(handle) => return Ok(handle),
+            Err(_) if attempt < crate::process::READY_WAIT_ATTEMPTS => {
+                attempt += 1;
+                crate::process::sleep(crate::process::READY_WAIT_SLEEP_MS);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 /// Spawn a new process from an executable path.
 ///
 /// Returns a raw handle for manual process management.

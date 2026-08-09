@@ -31,9 +31,10 @@ pub use initrd::InitrdScheme;
 pub use mailbox::{Mailbox, MailboxRef};
 pub use process::{Process as ProcessInterface, ProcessError};
 pub use scheme::{
-    ConsoleScheme, DirectoryResource, FileScheme, OpenError, SchemeHandler, SchemeProxyResource,
-    UserSchemeProvider, connect, init as init_schemes, open, readdir, register_initrd_scheme,
-    register_scheme, register_user_scheme,
+    ConsoleScheme, DirectoryResource, FileScheme, OPEN_RETRY_ATTEMPTS, OPEN_RETRY_SLEEP_MS,
+    OpenError, SchemeHandler, SchemeProxyResource, UserSchemeProvider, connect,
+    init as init_schemes, open, open_retrying, readdir, register_initrd_scheme, register_scheme,
+    register_user_scheme,
 };
 pub(crate) use scheme::unregister_scheme_if_present;
 pub use spawn_handle::SpawnHandle;
