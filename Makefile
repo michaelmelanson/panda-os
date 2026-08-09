@@ -1,6 +1,6 @@
 # Resolve bash from PATH (NixOS has no /bin/bash); $(shell) itself uses /bin/sh which is universal.
 SHELL := $(shell command -v bash)
-.PHONY: build panda-kernel init fs compositor run test kernel-test userspace-test unit-test check-extras ext2-image clean-ext2 release
+.PHONY: build panda-kernel init fs compositor run boot-repro test kernel-test userspace-test unit-test check-extras ext2-image clean-ext2 release
 
 # Set PROFILE=release for optimized builds: make build PROFILE=release
 PROFILE ?= dev
@@ -170,6 +170,22 @@ run: build ext2-image
 		-no-shutdown -no-reboot \
 		-monitor vc
 
+# Headless full-boot repro: same devices as `run`, but with no display and a
+# bounded timeout, for verifying a boot end-to-end without a GUI.
+BOOT_REPRO_LOG ?= build/boot-repro.log
+BOOT_REPRO_TIMEOUT ?= 400
+
+boot-repro: QEMU_DISPLAY = none
+boot-repro: build ext2-image
+	@mkdir -p $(dir $(BOOT_REPRO_LOG))
+	timeout $(BOOT_REPRO_TIMEOUT) $(QEMU_COMMON) \
+		-drive format=raw,file=fat:rw:build/run \
+		-drive file=$(EXT2_IMAGE),format=raw,if=none,id=ext2disk \
+		-device virtio-blk-pci,drive=ext2disk \
+		-no-shutdown -no-reboot \
+		> $(BOOT_REPRO_LOG) 2>&1; \
+	echo "boot repro exited with $$? (log: $(BOOT_REPRO_LOG))"
+
 # Create ext2 test disk image
 ext2-image: $(EXT2_IMAGE)
 
@@ -310,13 +326,15 @@ userspace-test: panda-kernel
 endif
 
 # QEMU command for interactive use
+QEMU_DISPLAY ?= gtk,zoom-to-fit=off
+
 QEMU_COMMON = qemu-system-x86_64 -nodefaults \
 	-machine q35,kernel-irqchip=split -m 1G \
 	-cpu qemu64,+smap \
 	-device intel-iommu \
 	-serial stdio \
 	-boot menu=off \
-	-display gtk,zoom-to-fit=off \
+	-display $(QEMU_DISPLAY) \
 	-device virtio-gpu,xres=1920,yres=1080 \
 	-device virtio-mouse \
 	-device virtio-keyboard \
