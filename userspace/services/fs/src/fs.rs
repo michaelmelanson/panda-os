@@ -1,7 +1,6 @@
 //! Filesystem interfaces.
 //!
-//! Moved from `panda-kernel/src/vfs/mod.rs` (roadmap M5) and made
-//! synchronous — see the crate doc comment's "Why synchronous?" section.
+//! Synchronous — see the crate doc comment's "Why synchronous?" section.
 //! The kernel keeps its own copy of these traits for `vfs::TarFs`/`initrd:`
 //! only; nothing crosses the syscall boundary as a trait object, so the two
 //! are independent by construction rather than by a shared crate.

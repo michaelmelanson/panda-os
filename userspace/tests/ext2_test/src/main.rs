@@ -28,9 +28,9 @@ libpanda::main! {
         return 1;
     }
 
-    // Start the filesystem service (roadmap M5): it registers `file:` and
-    // mounts ext2 on `block:/pci/storage/0` itself. There is no mount
-    // syscall any more — the kernel has no mount table — so this spawn plus
+    // Start the filesystem service: it registers `file:` and mounts ext2
+    // on `block:/pci/storage/0` itself. There is no mount syscall — the
+    // kernel has no mount table — so this spawn plus
     // its readiness handshake is what replaces it: `wait_ready` returns only
     // once the mount has been attempted and `file:` is registered.
     environment::log("ext2_test: Starting filesystem service");
@@ -140,7 +140,7 @@ libpanda::main! {
     // exit before returning itself, or QEMU never shuts down — see
     // `block_test`'s identical shutdown request.
     // The filesystem service is likewise persistent and must be asked to
-    // exit too (roadmap M5).
+    // exit too.
     if let Some(fs_channel) = libpanda::ipc::Channel::from_handle_borrowed(fs_handle) {
         let _ = fs_channel.send(b"shutdown");
     }

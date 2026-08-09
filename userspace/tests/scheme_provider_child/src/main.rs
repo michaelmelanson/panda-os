@@ -135,7 +135,7 @@ libpanda::main! {
             Ok(Some(Request::DisplayFlush { request_id, .. })) => {
                 let _ = provider.reply_display_flush_err(request_id, ErrorCode::NotSupported);
             }
-            // The M5 filesystem request kinds only reach the filesystem
+            // The filesystem request kinds only reach the filesystem
             // service's `file:` provider, never this echo scheme.
             Ok(Some(
                 request @ (Request::Stat { .. }

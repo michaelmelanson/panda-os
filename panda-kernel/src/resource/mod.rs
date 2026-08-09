@@ -193,11 +193,10 @@ pub enum LoadBinaryError {
 pub async fn load_binary(uri: &str) -> Result<*const [u8], LoadBinaryError> {
     let resource = open(uri).await.map_err(|_| LoadBinaryError::NotFound)?;
 
-    // Provider-backed resources (`file:` since roadmap M5, when the
-    // filesystem moved to `userspace/services/fs`) have no kernel-side
-    // `vfs::File` to read through — every read is a round trip to the
-    // provider. Only the initrd (`initrd:`, still kernel-resident) takes
-    // the VFS path below.
+    // Provider-backed resources (`file:`, served by `userspace/services/fs`)
+    // have no kernel-side `vfs::File` to read through — every read is a
+    // round trip to the provider. Only the initrd (`initrd:`, still
+    // kernel-resident) takes the VFS path below.
     if let Some(proxy) = resource.as_scheme_proxy() {
         return load_binary_from_proxy(proxy).await;
     }

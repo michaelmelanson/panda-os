@@ -7,7 +7,7 @@ libpanda::main! {
     environment::log("readdir test starting");
 
     // This test plays the role of `init`, so it starts the filesystem
-    // service that provides `file:` itself (roadmap M5) — see `vfs_test`.
+    // service that provides `file:` itself — see `vfs_test`.
     let Ok(fs_handle) = environment::spawn("initrd:/fs") else {
         environment::log("FAIL: could not spawn filesystem service");
         return 1;

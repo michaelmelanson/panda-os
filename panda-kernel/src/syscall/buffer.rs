@@ -382,9 +382,9 @@ pub fn handle_read_buffer(file_handle_id: u64, buffer_handle_id: u64) -> Syscall
         )));
     }
 
-    // Provider-backed file handles (`file:` since roadmap M5) round-trip to
-    // the provider instead of going through the VFS; only `initrd:` still
-    // resolves to a kernel-side `vfs::File`.
+    // Provider-backed file handles (`file:`) round-trip to the provider
+    // instead of going through the VFS; only `initrd:` still resolves to a
+    // kernel-side `vfs::File`.
     if let Some((resource, file_offset)) = scheme_proxy_handle(file_handle_id) {
         return Box::pin(async move {
             let proxy = resource.as_scheme_proxy().unwrap();
@@ -501,9 +501,9 @@ pub fn handle_write_buffer(
         }
     };
 
-    // Writing is only possible to a provider-backed handle now: the
-    // kernel's one remaining filesystem (`initrd:`'s `TarFs`) is read-only,
-    // so `vfs::File` lost its `write` method entirely in roadmap M5.
+    // Writing is only possible to a provider-backed handle: the kernel's
+    // one remaining filesystem (`initrd:`'s `TarFs`) is read-only, so
+    // `vfs::File` has no `write` method at all.
     let Some((resource, file_offset)) = scheme_proxy_handle(file_handle_id) else {
         return Box::pin(core::future::ready(SyscallResult::err(
             panda_abi::ErrorCode::NotWritable,

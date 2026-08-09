@@ -162,8 +162,8 @@ pub fn screenshot_ready() {
     log("<<<SCREENSHOT_READY>>>");
 }
 
-// `mount` was deleted in roadmap M5. Mounting is no longer something a
-// process asks the kernel to do: `userspace/services/fs` mounts ext2 on
+// There is no `mount` function: mounting is not something a process asks
+// the kernel to do. `userspace/services/fs` mounts ext2 on
 // `block:/pci/storage/0` at startup, before registering `file:` and
 // signalling readiness on its spawn channel. A process that needs the
 // filesystem waits for that handshake (`libpanda::process::wait_ready`)

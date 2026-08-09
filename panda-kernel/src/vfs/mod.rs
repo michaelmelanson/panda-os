@@ -1,9 +1,9 @@
 //! Filesystem interfaces for the kernel's one remaining filesystem: the
 //! read-only in-memory initrd behind the `initrd:` scheme.
 //!
-//! Roadmap M5 moved everything else out of here into
-//! `userspace/services/fs`: the mount table, the `file:` scheme, ext2, and
-//! the `BlockDevice` interface they read through. What is left is the
+//! Everything else lives in `userspace/services/fs`: the mount table, the
+//! `file:` scheme, ext2, and the `BlockDevice` interface they read through.
+//! What is left here is the
 //! minimum needed to bootstrap — [`TarFs`] parses the ustar archive UEFI
 //! handed the kernel at boot, and `resource::initrd::InitrdScheme` serves it
 //! directly, with no mount table involved (see that module's doc comment for

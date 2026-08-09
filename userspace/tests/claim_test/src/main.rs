@@ -125,8 +125,8 @@ libpanda::main! {
 
     // Test 5: a mounted block device refuses raw opens.
     //
-    // Since roadmap M5 the mount is performed by the filesystem service,
-    // which holds its `block:` handle open for the mount's lifetime — that
+    // The mount is performed by the filesystem service, which holds its
+    // `block:` handle open for the mount's lifetime — that
     // open *is* the exclusive claim, so this still checks exactly what it
     // used to. `wait_ready` returns only once the service has attempted the
     // mount, so the raw open below cannot race it.
@@ -156,8 +156,7 @@ libpanda::main! {
     // boot path), so this test (playing `init`) must ask each to exit
     // before returning itself, or QEMU never shuts down — see
     // `block_test`'s/`display_test`'s identical shutdown requests.
-    // The filesystem service spawned for test 5 is likewise persistent
-    // (roadmap M5).
+    // The filesystem service spawned for test 5 is likewise persistent.
     if let Some(fs_channel) = libpanda::ipc::Channel::from_handle_borrowed(fs_handle) {
         let _ = fs_channel.send(b"shutdown");
     }

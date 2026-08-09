@@ -194,9 +194,9 @@ impl Compositor {
                 // `DisplayFlush` request kinds only ever arrive on a
                 // `block:`/`display:` provider (`userspace/drivers/virtio-blk`/
                 // `virtio-gpu`), and `Stat`/`Create`/`Unlink`/`Mkdir`/`Rmdir`
-                // (M5) only on the filesystem service
-                // (`userspace/services/fs`), not here, so there's nothing
-                // meaningful to answer beyond a generic rejection.
+                // only on the filesystem service (`userspace/services/fs`),
+                // not here, so there's nothing meaningful to answer beyond a
+                // generic rejection.
                 SchemeRequest::Size { request_id, .. } => {
                     let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
                 }

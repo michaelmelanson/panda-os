@@ -1,8 +1,7 @@
 //! Ext2 filesystem driver.
 //!
 //! This module implements an ext2 filesystem driver supporting both read and
-//! write operations (moved from `panda-kernel/src/vfs/ext2/` in roadmap M5).
-//! Mutable filesystem state (superblock and
+//! write operations. Mutable filesystem state (superblock and
 //! block group descriptors) is protected by a single `RwSpinlock` to allow
 //! concurrent reads while serialising allocation and metadata updates.
 

@@ -9,8 +9,8 @@ libpanda::main! {
 
     // This test plays the role of `init` (it's the initrd's `init` binary),
     // so nothing has started the filesystem service that provides `file:`
-    // (roadmap M5) — do it directly, the same way the ext2 tests spawn
-    // virtio-blk. `wait_ready` returns once the service has mounted and
+    // — do it directly, the same way the ext2 tests spawn virtio-blk.
+    // `wait_ready` returns once the service has mounted and
     // registered `file:`, so the open below can't race it.
     let Ok(fs_handle) = environment::spawn("initrd:/fs") else {
         environment::log("FAIL: could not spawn filesystem service");

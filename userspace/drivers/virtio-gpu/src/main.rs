@@ -608,7 +608,7 @@ fn serve_provider_requests(provider: &SchemeProvider, mut device: Option<&mut De
             Request::Size { request_id, .. } => {
                 let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
             }
-            // Likewise the M5 filesystem request kinds, which only ever
+            // Likewise the filesystem request kinds, which only ever
             // arrive on the filesystem service's `file:` provider
             // (`userspace/services/fs`).
             Request::Stat { .. }

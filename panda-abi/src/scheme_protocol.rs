@@ -83,24 +83,21 @@ pub const MSG_DISPLAY_MAP: u8 = 10;
 /// whole surface) to the display.
 pub const MSG_DISPLAY_FLUSH: u8 = 11;
 /// Request/response kind: fetch a provider resource's metadata (byte size
-/// and whether it is a directory). Added in roadmap M5, when `file:` became
-/// a userspace scheme (`userspace/services/fs`): `OP_FILE_STAT` used to
-/// read that metadata straight off the VFS file the kernel held, and for a
-/// provider-backed resource there was nothing to read it from — the sync
-/// fallback in `syscall::file::handle_stat` reported `size: 0, is_dir:
-/// false` for *every* scheme-proxy handle. [`MSG_SIZE`] alone is not
-/// enough: it predates this and deliberately answers only the byte size
-/// (`block:` has no notion of a directory), whereas `OP_FILE_STAT`'s
-/// `FileStat` also carries `is_dir`.
+/// and whether it is a directory). There is no kernel VFS file to read
+/// this metadata from for a provider-backed resource — `file:` is served
+/// by `userspace/services/fs` — so `OP_FILE_STAT` needs a round trip to the
+/// provider. [`MSG_SIZE`] alone is not enough: it deliberately answers only
+/// the byte size (`block:` has no notion of a directory), whereas
+/// `OP_FILE_STAT`'s `FileStat` also carries `is_dir`.
 pub const MSG_STAT: u8 = 12;
 /// Request/response kind: create a file at a path, returning it open (the
 /// success payload is a `resource_id`, exactly like [`MSG_OPEN`]).
 ///
-/// This and [`MSG_UNLINK`]/[`MSG_MKDIR`]/[`MSG_RMDIR`] were added in
-/// roadmap M5 for the same reason: `OP_DIRECTORY_CREATE`/`UNLINK`/`MKDIR`/
-/// `RMDIR` used to call `vfs::create`/… directly in the kernel, and once
-/// the mount table and ext2 moved to `userspace/services/fs` the kernel had
-/// no filesystem left to call. They are path-based rather than
+/// This and [`MSG_UNLINK`]/[`MSG_MKDIR`]/[`MSG_RMDIR`] exist for the same
+/// reason: the kernel has no filesystem of its own to call —
+/// `OP_DIRECTORY_CREATE`/`UNLINK`/`MKDIR`/`RMDIR` must round-trip to the
+/// mount table and ext2 implementation in `userspace/services/fs`. They are
+/// path-based rather than
 /// resource_id-based because that is what the syscalls already are: the
 /// directory handle only supplies the directory's path, which the kernel
 /// joins with the caller's `name` before dispatching (see
@@ -1015,7 +1012,7 @@ impl<'a> Iterator for ReaddirEntriesIter<'a> {
 
 #[cfg(test)]
 mod tests {
-    //! Round-trip coverage for the M5 filesystem request kinds
+    //! Round-trip coverage for the filesystem request kinds
     //! ([`MSG_STAT`]/[`MSG_CREATE`]/[`MSG_UNLINK`]/[`MSG_MKDIR`]/
     //! [`MSG_RMDIR`]), whose frames are hand-encoded byte offsets like every
     //! other kind here.

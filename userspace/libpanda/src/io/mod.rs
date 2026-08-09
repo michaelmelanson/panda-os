@@ -34,9 +34,9 @@ pub trait Read {
     ///
     /// Returns the number of bytes read.
     /// The chunk size is one protocol frame's payload
-    /// (`scheme_protocol::MAX_TRANSFER_SIZE`), because since roadmap M5
-    /// `file:` is served by a userspace process
-    /// (`userspace/services/fs`): every `read` here is a round trip to it,
+    /// (`scheme_protocol::MAX_TRANSFER_SIZE`), because `file:` is served by
+    /// a userspace process (`userspace/services/fs`): every `read` here is
+    /// a round trip to it,
     /// and the kernel caps a single scheme-proxy read at one frame anyway,
     /// so a smaller chunk buys nothing and costs a round trip per chunk.
     /// It was 512 bytes, which meant reading a multi-megabyte driver

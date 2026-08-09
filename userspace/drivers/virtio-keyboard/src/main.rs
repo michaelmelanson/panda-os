@@ -575,7 +575,7 @@ fn serve_provider_requests(
             Request::DisplayFlush { request_id, .. } => {
                 let _ = provider.reply_display_flush_err(request_id, ErrorCode::NotSupported);
             }
-            // The M5 filesystem request kinds only ever arrive on the
+            // The filesystem request kinds only ever arrive on the
             // filesystem service's `file:` provider
             // (`userspace/services/fs`), never here.
             Request::Stat { .. }

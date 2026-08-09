@@ -1,14 +1,11 @@
 //! The VFS mount table and path canonicalisation policy.
 //!
-//! Moved from `panda-kernel/src/vfs/mod.rs` (roadmap M5). Two changes from
-//! the kernel version, both consequences of this now being a process rather
-//! than kernel-global state:
+//! This lives in a process rather than being kernel-global state:
 //!
 //! - the mount list is an owned [`MountTable`] rather than a global
 //!   `static RwSpinlock<Vec<Mount>>` — the service owns exactly one and
 //!   passes it around, which is also what makes the mount-resolution rules
-//!   unit-testable on the host (see the tests at the bottom of this file,
-//!   ported from the deleted `panda-kernel/tests/vfs_path.rs`);
+//!   unit-testable on the host (see the tests at the bottom of this file);
 //! - there is no device-claim guard on a mount entry. Exclusivity is
 //!   enforced by the `block:` provider's own `Open` handling now (see
 //!   `userspace/drivers/virtio-blk`), and this service simply holds its
@@ -167,12 +164,12 @@ impl MountTable {
 
 #[cfg(test)]
 mod tests {
-    //! Mount-resolution and path-canonicalisation tests, ported from the
-    //! deleted `panda-kernel/tests/vfs_path.rs` (which ran in QEMU because
-    //! the mount table used to be kernel-global state). The read-only
-    //! in-memory [`MemFs`] below stands in for that test's `TarFs`: what is
-    //! under test is the mount table's canonicalise-then-longest-prefix
-    //! policy, not any particular filesystem.
+    //! Mount-resolution and path-canonicalisation tests, run on the host
+    //! since this mount table is plain process state rather than requiring
+    //! QEMU. The read-only in-memory [`MemFs`] below stands in for a real
+    //! filesystem: what is under test is the mount table's
+    //! canonicalise-then-longest-prefix policy, not any particular
+    //! filesystem.
 
     use super::*;
     use crate::fs::{File, SeekFrom};

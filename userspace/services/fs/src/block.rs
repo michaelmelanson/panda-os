@@ -1,10 +1,8 @@
 //! Block device interface for random-access data.
 //!
-//! Moved from `panda-kernel/src/resource/block.rs` (roadmap M5) together
-//! with its only remaining consumer, [`crate::ext2`], and made synchronous —
-//! see the crate doc comment's "Why synchronous?" section. The kernel no
-//! longer has a `BlockDevice` trait at all: `block:` is a userspace scheme
-//! (`userspace/drivers/virtio-blk`) with a userspace client
+//! Synchronous — see the crate doc comment's "Why synchronous?" section.
+//! The kernel has no `BlockDevice` trait at all: `block:` is a userspace
+//! scheme (`userspace/drivers/virtio-blk`) with a userspace client
 //! ([`crate::schemes::SchemeBlockDevice`]).
 
 /// Errors that can occur during block operations.

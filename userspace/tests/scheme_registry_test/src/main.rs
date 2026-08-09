@@ -76,8 +76,8 @@ libpanda::main! {
     // succeed), so none of the four ever appears here.
     //
     // "initrd" *is* in the list: it is the kernel's own read-only view of
-    // the boot archive, and roadmap M5 left it there deliberately, since
-    // the filesystem service is itself loaded through it.
+    // the boot archive, kept deliberately since the filesystem service is
+    // itself loaded through it.
     for expected in ["console", "initrd", "scheme"] {
         if !names.iter().any(|n| n.as_str() == expected) {
             environment::log(&format!(

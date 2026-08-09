@@ -63,9 +63,9 @@ impl Future for SleepFuture {
             // registered block: scheme", when the kernel still mounted ext2
             // itself and its `OP_ENVIRONMENT_MOUNT` handler slept in a
             // retry loop racing the block driver's startup. That caller is
-            // gone (roadmap M5 moved mounting to
-            // `userspace/services/fs`), but the dispatch rule below is what
-            // makes *any* in-syscall `sleep_ms` work at all.
+            // gone (mounting now happens in `userspace/services/fs`), but
+            // the dispatch rule below is what makes *any* in-syscall
+            // `sleep_ms` work at all.
             let entity = match super::current_task_id() {
                 Some(task_id) => Some(crate::scheduler::SchedulableEntity::KernelTask(task_id)),
                 None => {

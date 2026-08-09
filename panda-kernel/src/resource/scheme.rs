@@ -65,9 +65,9 @@ pub trait SchemeHandler: Send + Sync {
     /// Create a file at `path` within this scheme, returning it open.
     ///
     /// Backs `OP_DIRECTORY_CREATE` (see `syscall::directory::handle_create`).
-    /// Roadmap M5: this used to call `vfs::create` directly in the kernel;
-    /// now the filesystem lives in `userspace/services/fs`, so it has to be
-    /// a request to whichever provider owns the scheme. Only
+    /// The filesystem lives in `userspace/services/fs`, so this is a
+    /// request to whichever provider owns the scheme, not a direct kernel
+    /// VFS call. Only
     /// [`UserSchemeProvider`] implements it — everything else inherits this
     /// default, which is also the honest answer for `initrd:` (read-only)
     /// and the device schemes.
@@ -229,7 +229,7 @@ pub async fn rmdir(uri: &str) -> Result<(), panda_abi::ErrorCode> {
 }
 
 // =============================================================================
-// File Scheme - moved to a userspace service in roadmap M5
+// File Scheme - served by a userspace service
 // =============================================================================
 //
 // The kernel-resident `FileScheme` (which walked `vfs`'s mount table) has
@@ -277,9 +277,8 @@ impl super::VfsFile for VfsFileResource {
 /// (`OP_DIRECTORY_CREATE`/`UNLINK`/`MKDIR`/`RMDIR`) possible: they join it
 /// with the caller's entry name and dispatch the result back through the
 /// scheme registry (see [`create`]/[`unlink`]/[`mkdir`]/[`rmdir`] and
-/// `syscall::directory`). Before roadmap M5 this was a bare VFS path,
-/// because the only mutable filesystem was the kernel's own; it is a full
-/// URI now so the operation reaches whichever provider owns that scheme.
+/// `syscall::directory`). It is a full URI (rather than a bare VFS path) so
+/// the operation reaches whichever provider owns that scheme.
 pub struct DirectoryResource {
     entries: Vec<DirEntry>,
     /// The URI this listing came from (e.g. `"file:/mnt"`), if it supports
@@ -1090,9 +1089,8 @@ impl SchemeProxyResource {
 
     /// Query the resource's metadata, returning `(size, is_dir)` — see
     /// `Request::Stat`'s doc comment. Backs `OP_FILE_STAT` for a
-    /// provider-backed resource (roadmap M5, when `file:` became a
-    /// userspace scheme); distinct from [`size`](Self::size), which predates
-    /// it and deliberately answers only a byte count.
+    /// provider-backed resource; distinct from [`size`](Self::size), which
+    /// deliberately answers only a byte count.
     pub async fn stat(&self) -> Result<(u64, bool), panda_abi::ErrorCode> {
         use panda_abi::scheme_protocol::{Request, Response};
 
@@ -1288,8 +1286,7 @@ pub fn init() {
     register_scheme("console", Arc::new(ConsoleScheme));
     // "file", "block" and "display" are intentionally not registered here —
     // each is registered by its userspace provider via `OP_SCHEME_REGISTER`,
-    // same as "keyboard": "file" by `userspace/services/fs` (roadmap M5),
-    // "block"/"display" by `userspace/drivers/virtio-blk`/`virtio-gpu`
-    // (roadmap M4).
+    // same as "keyboard": "file" by `userspace/services/fs`, "block"/
+    // "display" by `userspace/drivers/virtio-blk`/`virtio-gpu`.
     register_scheme("scheme", Arc::new(SchemeScheme));
 }

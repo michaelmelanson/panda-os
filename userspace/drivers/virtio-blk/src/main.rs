@@ -569,9 +569,9 @@ fn register_scheme() -> Option<SchemeProvider> {
 /// Exclusivity (the M1 claim rules `block:` must honour — see `claim_test`)
 /// is enforced entirely here: `open` tracks whether the single resource is
 /// currently held, `Open` fails `Busy` while it is, and `Close` releases it
-/// — this driver has no separate kernel-side claim table to lean on (the
-/// kernel's `devices::claims` was deleted in roadmap M5 once its last user,
-/// the in-kernel ext2 mount, moved to userspace).
+/// — this driver has no separate kernel-side claim table to lean on: the
+/// kernel's `devices::claims` was deleted once its last user, the in-kernel
+/// ext2 mount, moved to userspace.
 fn serve_provider_requests(provider: &SchemeProvider, device: Option<&mut DeviceState>, open: &mut bool) {
     let Some(device) = device else { return };
     let mut buf = [0u8; panda_abi::MAX_MESSAGE_SIZE];
@@ -664,7 +664,7 @@ fn serve_provider_requests(provider: &SchemeProvider, device: Option<&mut Device
             Request::DisplayFlush { request_id, .. } => {
                 let _ = provider.reply_display_flush_err(request_id, ErrorCode::NotSupported);
             }
-            // The M5 filesystem request kinds only ever arrive on the
+            // The filesystem request kinds only ever arrive on the
             // filesystem service's `file:` provider
             // (`userspace/services/fs`), never here.
             Request::Stat { .. }

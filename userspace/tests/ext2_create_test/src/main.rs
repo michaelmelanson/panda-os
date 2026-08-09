@@ -36,8 +36,8 @@ libpanda::main! {
     }
 
     // Start the filesystem service, which registers `file:` and mounts
-    // ext2 itself — see `ext2_test` for why this replaces the deleted mount
-    // syscall (roadmap M5).
+    // ext2 itself — see `ext2_test` for why there is no mount syscall to
+    // call instead.
     environment::log("ext2_create_test: Starting filesystem service");
     let Ok(fs_handle) = environment::spawn("initrd:/fs") else {
         environment::log("FAIL: could not spawn filesystem service");
@@ -204,7 +204,7 @@ libpanda::main! {
     // exit before returning itself, or QEMU never shuts down — see
     // `block_test`'s identical shutdown request.
     // The filesystem service is likewise persistent and must be asked to
-    // exit too (roadmap M5).
+    // exit too.
     if let Some(fs_channel) = libpanda::ipc::Channel::from_handle_borrowed(fs_handle) {
         let _ = fs_channel.send(b"shutdown");
     }
