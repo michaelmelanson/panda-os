@@ -1,0 +1,1095 @@
+//! Ext2 filesystem driver.
+//!
+//! This module implements an ext2 filesystem driver supporting both read and
+//! write operations (moved from `panda-kernel/src/vfs/ext2/` in roadmap M5).
+//! Mutable filesystem state (superblock and
+//! block group descriptors) is protected by a single `RwSpinlock` to allow
+//! concurrent reads while serialising allocation and metadata updates.
+
+pub mod bitmap;
+mod dir;
+mod file;
+mod guards;
+mod structs;
+
+pub use guards::{BlockGuard, InodeGuard};
+
+pub use file::Ext2File;
+pub use structs::*;
+
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
+
+use core::ops::ControlFlow;
+use spinning_top::RwSpinlock;
+
+use crate::block::BlockDevice;
+use crate::fs::{DirEntry, File, FileStat, Filesystem, FsError};
+
+// =============================================================================
+// Block indirection helpers (shared between Ext2Fs and Ext2File)
+// =============================================================================
+
+/// Get block number for a file block index, handling indirect blocks.
+///
+/// Block pointers in an inode:
+/// - 0-11: direct blocks
+/// - 12: single indirect (points to block of pointers)
+/// - 13: double indirect (points to block of single indirect blocks)
+/// - 14: triple indirect (points to block of double indirect blocks)
+pub fn get_block_number(
+    device: &dyn BlockDevice,
+    block_pointers: &[u32; 15],
+    block_size: u32,
+    file_block: u32,
+) -> Result<u32, FsError> {
+    let ptrs_per_block = block_size / 4;
+
+    // Direct blocks (0-11)
+    if file_block < 12 {
+        return Ok(block_pointers[file_block as usize]);
+    }
+
+    // Indirect block (12)
+    let fb = file_block - 12;
+    if fb < ptrs_per_block {
+        return read_block_ptr(device, block_pointers[12], fb, block_size);
+    }
+
+    // Double indirect block (13)
+    let fb = fb - ptrs_per_block;
+    if fb < ptrs_per_block * ptrs_per_block {
+        let ind =
+            read_block_ptr(device, block_pointers[13], fb / ptrs_per_block, block_size)?;
+        return read_block_ptr(device, ind, fb % ptrs_per_block, block_size);
+    }
+
+    // Triple indirect block (14)
+    let fb = fb - ptrs_per_block * ptrs_per_block;
+    let pp = ptrs_per_block * ptrs_per_block;
+    let dbl = read_block_ptr(device, block_pointers[14], fb / pp, block_size)?;
+    let ind = read_block_ptr(device, dbl, (fb % pp) / ptrs_per_block, block_size)?;
+    read_block_ptr(device, ind, fb % ptrs_per_block, block_size)
+}
+
+/// Read a single block pointer from an indirect block.
+fn read_block_ptr(
+    device: &dyn BlockDevice,
+    block: u32,
+    index: u32,
+    block_size: u32,
+) -> Result<u32, FsError> {
+    if block == 0 {
+        return Ok(0);
+    }
+    let offset = block as u64 * block_size as u64 + index as u64 * 4;
+    let mut buf = [0u8; 4];
+    device.read_at(offset, &mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+/// Write a single block pointer into an indirect block.
+///
+/// If `block` is 0, this is a bug — the caller must allocate the indirect block
+/// before calling this function.
+fn write_block_ptr(
+    device: &dyn BlockDevice,
+    block: u32,
+    index: u32,
+    block_size: u32,
+    value: u32,
+) -> Result<(), FsError> {
+    if block == 0 {
+        return Err(FsError::IoError);
+    }
+    let offset = block as u64 * block_size as u64 + index as u64 * 4;
+    let buf = value.to_le_bytes();
+    device.write_at(offset, &buf)?;
+    Ok(())
+}
+
+// =============================================================================
+// Mutable filesystem state
+// =============================================================================
+
+/// Mutable ext2 state that requires locking for concurrent access.
+///
+/// This holds the superblock (for free block/inode counts) and block group
+/// descriptors (for per-group free counts and bitmap locations). A single
+/// `RwSpinlock` protects all mutable state — this is the simplest correct
+/// approach and can be made more granular later if SMP contention becomes
+/// an issue.
+pub struct Ext2FsMutable {
+    /// The superblock, kept in memory for free-count tracking.
+    pub superblock: Superblock,
+    /// Block group descriptors, updated during allocation/deallocation.
+    pub block_groups: Vec<BlockGroupDescriptor>,
+}
+
+/// An ext2 filesystem instance.
+pub struct Ext2Fs {
+    /// The underlying block device.
+    device: Arc<dyn BlockDevice>,
+    /// Block size in bytes (immutable after mount).
+    block_size: u32,
+    /// Inode size in bytes (immutable after mount).
+    inode_size: u32,
+    /// Total number of blocks in the filesystem (immutable after mount).
+    blocks_count: u32,
+    /// Inodes per block group (immutable after mount).
+    inodes_per_group: u32,
+    /// Mutable filesystem state protected by a read-write spinlock.
+    mutable: RwSpinlock<Ext2FsMutable>,
+    // The kernel version of this struct also held an `alloc_lock`
+    // (`executor::async_mutex::AsyncMutex`) serialising the bitmap
+    // read-modify-write cycle, because that cycle spanned several `.await`
+    // points at which another kernel task could interleave and allocate the
+    // same block or inode. Nothing can interleave here: this is a
+    // single-threaded process and every operation now runs straight through
+    // (see the crate doc comment's "Why synchronous?" section), so the lock
+    // has no state left to protect and is gone rather than reimplemented.
+    /// Weak self-reference used to hand `Arc<Ext2Fs>` to open files so they
+    /// can perform writes (block allocation, inode writeback, etc.).
+    self_ref: RwSpinlock<Weak<Ext2Fs>>,
+}
+
+impl Ext2Fs {
+    /// Mount an ext2 filesystem from a block device.
+    pub fn mount(device: Arc<dyn BlockDevice>) -> Result<Arc<Self>, &'static str> {
+        // Read superblock (buffer is exactly 1024 bytes, matching Superblock struct size)
+        let mut sb_buf = [0u8; 1024];
+        device
+            .read_at(SUPERBLOCK_OFFSET, &mut sb_buf)
+            
+            .map_err(|_| "failed to read superblock")?;
+
+        // Safety: sb_buf is 1024 bytes and Superblock is repr(C) with size 1024.
+        // We validate all fields before use below.
+        let sb: Superblock = unsafe { core::ptr::read(sb_buf.as_ptr() as *const _) };
+
+        if sb.magic != EXT2_SUPER_MAGIC {
+            return Err("invalid ext2 magic number");
+        }
+
+        // Validate superblock fields to prevent overflow, division by zero,
+        // and excessive allocations from malicious disk images.
+        sb.validate()?;
+
+        // Check for unsupported incompatible features
+        let unsupported = sb.unsupported_incompat_features();
+        if unsupported != 0 {
+            crate::error!(
+                "ext2: unsupported incompatible features: {:#x}",
+                unsupported
+            );
+            return Err("ext2 filesystem has unsupported features");
+        }
+
+        // Safe to unwrap: validate() already checked these won't fail
+        let block_size = sb.block_size().unwrap();
+        let inode_size = sb.inode_size();
+        let block_group_count = sb.block_group_count().unwrap();
+
+        // Block group descriptor table location:
+        // - For 1KB blocks: starts at block 2 (byte offset 2048)
+        // - For larger blocks: starts at block 1 (byte offset = block_size)
+        let bgdt_offset = if block_size == 1024 {
+            2048u64
+        } else {
+            block_size as u64
+        };
+        let bgdt_size = block_group_count as usize * core::mem::size_of::<BlockGroupDescriptor>();
+
+        let mut bgdt_buf = alloc::vec![0u8; bgdt_size];
+        device
+            .read_at(bgdt_offset, &mut bgdt_buf)
+            
+            .map_err(|_| "failed to read block group descriptors")?;
+
+        let desc_size = core::mem::size_of::<BlockGroupDescriptor>();
+        let block_groups: Vec<BlockGroupDescriptor> = (0..block_group_count as usize)
+            .map(|i| {
+                // Safety: We allocated bgdt_buf with exactly block_group_count * desc_size bytes,
+                // so i * desc_size + desc_size <= bgdt_buf.len() always holds.
+                unsafe { core::ptr::read(bgdt_buf[i * desc_size..].as_ptr() as *const _) }
+            })
+            .collect();
+
+        let fs = Arc::new(Self {
+            device,
+            block_size,
+            inode_size,
+            blocks_count: sb.blocks_count,
+            inodes_per_group: sb.inodes_per_group,
+            mutable: RwSpinlock::new(Ext2FsMutable {
+                superblock: sb,
+                block_groups,
+            }),
+            self_ref: RwSpinlock::new(Weak::new()),
+        });
+        *fs.self_ref.write() = Arc::downgrade(&fs);
+        Ok(fs)
+    }
+
+    // =========================================================================
+    // Read operations
+    // =========================================================================
+
+    /// Read an inode by number (1-indexed).
+    pub fn read_inode(&self, ino: u32) -> Result<Inode, FsError> {
+        if ino == 0 {
+            return Err(FsError::NotFound);
+        }
+
+        let group = (ino - 1) / self.inodes_per_group;
+        let index = (ino - 1) % self.inodes_per_group;
+
+        // Read inode table block number from the block group descriptor
+        let inode_table = {
+            let m = self.mutable.read();
+            if group as usize >= m.block_groups.len() {
+                crate::warn!("ext2: inode {} references out-of-bounds group {}", ino, group);
+                return Err(FsError::NotFound);
+            }
+            m.block_groups[group as usize].inode_table
+        };
+
+        let offset =
+            inode_table as u64 * self.block_size as u64 + index as u64 * self.inode_size as u64;
+
+        // Safety: buf is 128 bytes and Inode is repr(C) with size <= 128 bytes.
+        // The compile-time assert below ensures the buffer is large enough.
+        const _: () = assert!(core::mem::size_of::<Inode>() <= 128);
+        let mut buf = [0u8; 128];
+        self.device.read_at(offset, &mut buf)?;
+
+        Ok(unsafe { core::ptr::read(buf.as_ptr() as *const Inode) })
+    }
+
+    /// Resolve path to inode number.
+    ///
+    /// Defence-in-depth: `.` and `..` components are rejected here even though
+    /// the VFS layer should have already canonicalised the path. This prevents
+    /// mount-point escape if canonicalization is ever bypassed.
+    pub fn lookup(&self, path: &str) -> Result<u32, FsError> {
+        let path = path.trim_matches('/');
+        if path.is_empty() {
+            return Ok(EXT2_ROOT_INO);
+        }
+
+        let mut current = EXT2_ROOT_INO;
+        for component in path.split('/').filter(|s| !s.is_empty()) {
+            // Reject . and .. to prevent traversal beyond mount boundary
+            if component == "." || component == ".." {
+                return Err(FsError::NotFound);
+            }
+            let inode = self.read_inode(current)?;
+            if !inode.is_dir() {
+                return Err(FsError::NotFound);
+            }
+            current = self.find_entry(&inode, component)?;
+        }
+        Ok(current)
+    }
+
+    /// Walk every live (non-deleted) directory entry in `dir`, calling `f`
+    /// with the raw entry header and its (unvalidated-UTF-8) name bytes.
+    ///
+    /// This is the single iteration primitive shared by `find_entry`,
+    /// `list_dir`, and `is_dir_empty` — it owns the block-by-block scan and
+    /// the on-disk record validation so those callers only need to decide
+    /// what to do with each entry.
+    ///
+    /// Validation rules (matching ext2 on-disk invariants):
+    /// - `rec_len` must be at least the 8-byte header and must not extend
+    ///   past the end of the block. A violation means the rest of the block
+    ///   can't be trusted, so the scan of that block stops there (but other
+    ///   blocks are still scanned).
+    /// - `name_len` must fit within `rec_len`. A violation means just that
+    ///   one entry is untrustworthy, so it is skipped and the scan continues
+    ///   with the next entry.
+    /// - Deleted entries (`inode == 0`) are skipped without calling `f`.
+    ///
+    /// Returns `Ok(Some(value))` if `f` returns `ControlFlow::Break(value)`
+    /// for some entry (stopping the walk early), or `Ok(None)` if every
+    /// block is scanned without a break.
+    fn for_each_dir_entry<T>(
+        &self,
+        dir: &Inode,
+        mut f: impl FnMut(&DirEntryRaw, &[u8]) -> ControlFlow<T>,
+    ) -> Result<Option<T>, FsError> {
+        let size = dir.size();
+        let block_len = self.block_size as usize;
+        let dir_entry_size = core::mem::size_of::<DirEntryRaw>();
+        let num_blocks = size.div_ceil(self.block_size as u64) as u32;
+        let mut block_buf = alloc::vec![0u8; block_len];
+
+        for file_block in 0..num_blocks {
+            let block_num = self.get_block(dir, file_block)?;
+            if block_num == 0 {
+                continue;
+            }
+
+            self.read_block(block_num, &mut block_buf)?;
+
+            let mut pos = 0usize;
+            while pos < block_len {
+                // Bounds check before reading DirEntryRaw
+                if pos + dir_entry_size > block_len {
+                    break;
+                }
+
+                let entry: DirEntryRaw =
+                    unsafe { core::ptr::read(block_buf[pos..].as_ptr() as *const _) };
+
+                // rec_len must be at least 8 (header size) and must not extend past block
+                if entry.rec_len < 8 || pos + entry.rec_len as usize > block_len {
+                    crate::warn!("ext2: invalid dir entry rec_len {} at offset {}", entry.rec_len, pos);
+                    break;
+                }
+
+                if entry.inode != 0 {
+                    let name_len = entry.name_len as usize;
+                    // Validate name_len fits within the record
+                    if name_len > entry.rec_len as usize - 8 {
+                        crate::warn!("ext2: invalid dir entry name_len {} at offset {}", name_len, pos);
+                    } else {
+                        let name_start = pos + 8;
+                        let name_bytes = &block_buf[name_start..name_start + name_len];
+                        if let ControlFlow::Break(value) = f(&entry, name_bytes) {
+                            return Ok(Some(value));
+                        }
+                    }
+                }
+                pos += entry.rec_len as usize;
+            }
+        }
+        Ok(None)
+    }
+
+    /// Find directory entry by name.
+    fn find_entry(&self, dir: &Inode, name: &str) -> Result<u32, FsError> {
+        let name_bytes = name.as_bytes();
+        let found = self
+            .for_each_dir_entry(dir, |entry, entry_name| {
+                if entry_name == name_bytes {
+                    ControlFlow::Break(entry.inode)
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            ?;
+        found.ok_or(FsError::NotFound)
+    }
+
+    /// List directory entries.
+    fn list_dir(&self, dir: &Inode) -> Result<Vec<DirEntry>, FsError> {
+        let mut entries = Vec::new();
+        self.for_each_dir_entry(dir, |entry, name_bytes| {
+            if let Ok(name) = core::str::from_utf8(name_bytes) {
+                if name != "." && name != ".." {
+                    entries.push(DirEntry {
+                        name: String::from(name),
+                        is_dir: entry.file_type == FT_DIR,
+                    });
+                }
+            }
+            ControlFlow::<()>::Continue(())
+        })
+        ?;
+        Ok(entries)
+    }
+
+    /// Get block number for file block index (handles indirection).
+    pub fn get_block(&self, inode: &Inode, file_block: u32) -> Result<u32, FsError> {
+        get_block_number(&*self.device, &inode.block, self.block_size, file_block)
+    }
+
+    /// Set the physical block number for a file block index, handling indirect blocks.
+    ///
+    /// This is the write-side mirror of `get_block`. For file block indices
+    /// beyond the 12 direct slots it will allocate indirect, double-indirect,
+    /// or triple-indirect index blocks as needed.
+    ///
+    /// The caller must update the inode on disk after this returns (the inode's
+    /// `block` array may have been mutated for direct or first-level indirect
+    /// pointers).
+    /// Set the physical block number for a logical file block index.
+    ///
+    /// Returns the number of *metadata* blocks (indirect index blocks) that
+    /// were newly allocated. The caller must include these in `inode.blocks`
+    /// alongside the data block itself.
+    pub fn set_block_number(
+        &self,
+        inode: &mut Inode,
+        file_block: u32,
+        value: u32,
+    ) -> Result<u32, FsError> {
+        let ptrs_per_block = self.block_size / 4;
+        let mut meta_blocks: u32 = 0;
+
+        // Direct blocks (0-11)
+        if file_block < 12 {
+            inode.block[file_block as usize] = value;
+            return Ok(0);
+        }
+
+        // Single indirect block (12)
+        let fb = file_block - 12;
+        if fb < ptrs_per_block {
+            if inode.block[12] == 0 {
+                let ind = self.alloc_block()?;
+                // Zero out the new indirect block
+                let zeroes = alloc::vec![0u8; self.block_size as usize];
+                self.write_block(ind, &zeroes)?;
+                inode.block[12] = ind;
+                meta_blocks += 1;
+            }
+            write_block_ptr(&*self.device, inode.block[12], fb, self.block_size, value)
+                ?;
+            return Ok(meta_blocks);
+        }
+
+        // Double indirect block (13)
+        let fb = fb - ptrs_per_block;
+        if fb < ptrs_per_block * ptrs_per_block {
+            if inode.block[13] == 0 {
+                let dbl = self.alloc_block()?;
+                let zeroes = alloc::vec![0u8; self.block_size as usize];
+                self.write_block(dbl, &zeroes)?;
+                inode.block[13] = dbl;
+                meta_blocks += 1;
+            }
+            let idx1 = fb / ptrs_per_block;
+            let idx2 = fb % ptrs_per_block;
+            let ind = read_block_ptr(&*self.device, inode.block[13], idx1, self.block_size)?;
+            let ind = if ind == 0 {
+                let new_ind = self.alloc_block()?;
+                let zeroes = alloc::vec![0u8; self.block_size as usize];
+                self.write_block(new_ind, &zeroes)?;
+                write_block_ptr(
+                    &*self.device,
+                    inode.block[13],
+                    idx1,
+                    self.block_size,
+                    new_ind,
+                )
+                ?;
+                meta_blocks += 1;
+                new_ind
+            } else {
+                ind
+            };
+            write_block_ptr(&*self.device, ind, idx2, self.block_size, value)?;
+            return Ok(meta_blocks);
+        }
+
+        // Triple indirect block (14)
+        let fb = fb - ptrs_per_block * ptrs_per_block;
+        let pp = ptrs_per_block * ptrs_per_block;
+        if inode.block[14] == 0 {
+            let tri = self.alloc_block()?;
+            let zeroes = alloc::vec![0u8; self.block_size as usize];
+            self.write_block(tri, &zeroes)?;
+            inode.block[14] = tri;
+            meta_blocks += 1;
+        }
+
+        let idx1 = fb / pp;
+        let idx2 = (fb % pp) / ptrs_per_block;
+        let idx3 = fb % ptrs_per_block;
+
+        let dbl = read_block_ptr(&*self.device, inode.block[14], idx1, self.block_size)?;
+        let dbl = if dbl == 0 {
+            let new_dbl = self.alloc_block()?;
+            let zeroes = alloc::vec![0u8; self.block_size as usize];
+            self.write_block(new_dbl, &zeroes)?;
+            write_block_ptr(
+                &*self.device,
+                inode.block[14],
+                idx1,
+                self.block_size,
+                new_dbl,
+            )
+            ?;
+            meta_blocks += 1;
+            new_dbl
+        } else {
+            dbl
+        };
+
+        let ind = read_block_ptr(&*self.device, dbl, idx2, self.block_size)?;
+        let ind = if ind == 0 {
+            let new_ind = self.alloc_block()?;
+            let zeroes = alloc::vec![0u8; self.block_size as usize];
+            self.write_block(new_ind, &zeroes)?;
+            write_block_ptr(&*self.device, dbl, idx2, self.block_size, new_ind)?;
+            meta_blocks += 1;
+            new_ind
+        } else {
+            ind
+        };
+
+        write_block_ptr(&*self.device, ind, idx3, self.block_size, value)?;
+        Ok(meta_blocks)
+    }
+
+    /// Read a full block from disk.
+    pub fn read_block(&self, block: u32, buf: &mut [u8]) -> Result<(), FsError> {
+        if block >= self.blocks_count {
+            crate::warn!("ext2: block {} out of range (total {})", block, self.blocks_count);
+            return Err(FsError::NotReadable);
+        }
+        let offset = block as u64 * self.block_size as u64;
+        self.device.read_at(offset, buf)?;
+        Ok(())
+    }
+
+    // =========================================================================
+    // Write operations
+    // =========================================================================
+
+    /// Write a full block to disk.
+    ///
+    /// The buffer must be exactly `block_size` bytes. The block number must be
+    /// within the valid range for the filesystem.
+    pub fn write_block(&self, block: u32, data: &[u8]) -> Result<(), FsError> {
+        if block >= self.blocks_count {
+            crate::warn!("ext2: write_block {} out of range (total {})", block, self.blocks_count);
+            return Err(FsError::IoError);
+        }
+        if data.len() != self.block_size as usize {
+            crate::warn!(
+                "ext2: write_block buffer size {} != block_size {}",
+                data.len(),
+                self.block_size
+            );
+            return Err(FsError::IoError);
+        }
+        let offset = block as u64 * self.block_size as u64;
+        self.device.write_at(offset, data)?;
+        Ok(())
+    }
+
+    /// Write an inode to disk.
+    ///
+    /// Serialises the `Inode` struct and writes it to the correct position
+    /// in the inode table for the block group containing `ino`.
+    pub fn write_inode(&self, ino: u32, inode: &Inode) -> Result<(), FsError> {
+        if ino == 0 {
+            return Err(FsError::NotFound);
+        }
+
+        let group = (ino - 1) / self.inodes_per_group;
+        let index = (ino - 1) % self.inodes_per_group;
+
+        let inode_table = {
+            let m = self.mutable.read();
+            if group as usize >= m.block_groups.len() {
+                crate::warn!("ext2: write_inode {} references out-of-bounds group {}", ino, group);
+                return Err(FsError::NotFound);
+            }
+            m.block_groups[group as usize].inode_table
+        };
+
+        let offset =
+            inode_table as u64 * self.block_size as u64 + index as u64 * self.inode_size as u64;
+
+        let bytes = inode.to_bytes();
+        self.device.write_at(offset, &bytes)?;
+        Ok(())
+    }
+
+    /// Write the in-memory superblock back to disk.
+    ///
+    /// Call this after modifying free block/inode counts in the superblock
+    /// to persist the changes.
+    pub fn write_superblock(&self) -> Result<(), FsError> {
+        let bytes = {
+            let m = self.mutable.read();
+            m.superblock.to_bytes()
+        };
+        self.device.write_at(SUPERBLOCK_OFFSET, &bytes)?;
+        Ok(())
+    }
+
+    /// Write a block group descriptor back to disk.
+    ///
+    /// The descriptor is written to the block group descriptor table at
+    /// the position for `group_num`.
+    pub fn write_block_group_descriptor(&self, group_num: u32) -> Result<(), FsError> {
+        let bytes = {
+            let m = self.mutable.read();
+            if group_num as usize >= m.block_groups.len() {
+                crate::warn!(
+                    "ext2: write_block_group_descriptor {} out of range",
+                    group_num
+                );
+                return Err(FsError::IoError);
+            }
+            m.block_groups[group_num as usize].to_bytes()
+        };
+
+        let desc_size = core::mem::size_of::<BlockGroupDescriptor>() as u64;
+        // Block group descriptor table location: block 2 for 1KB, block 1 for larger
+        let bgdt_offset = if self.block_size == 1024 {
+            2048u64
+        } else {
+            self.block_size as u64
+        };
+        let offset = bgdt_offset + group_num as u64 * desc_size;
+
+        self.device.write_at(offset, &bytes)?;
+        Ok(())
+    }
+
+    // =========================================================================
+    // Accessors
+    // =========================================================================
+
+    /// Get block size.
+    pub fn block_size(&self) -> u32 {
+        self.block_size
+    }
+
+    /// Get the total number of blocks in the filesystem.
+    pub fn blocks_count(&self) -> u32 {
+        self.blocks_count
+    }
+
+    /// Get the number of inodes per block group.
+    pub fn inodes_per_group(&self) -> u32 {
+        self.inodes_per_group
+    }
+
+    /// Get a reference to the device.
+    pub fn device(&self) -> &Arc<dyn BlockDevice> {
+        &self.device
+    }
+
+    /// Get a reference to the mutable state lock.
+    pub fn mutable(&self) -> &RwSpinlock<Ext2FsMutable> {
+        &self.mutable
+    }
+
+    /// Free all data blocks and indirect index blocks owned by an inode.
+    ///
+    /// Walks the direct block pointers (0–11), single indirect (12),
+    /// double indirect (13), and triple indirect (14) block pointers,
+    /// freeing every allocated block. This is used by `unlink` when the
+    /// link count reaches zero, and will also be needed by `truncate`.
+    pub fn free_inode_blocks(&self, inode: &Inode) -> Result<(), FsError> {
+        let ptrs_per_block = self.block_size() / 4;
+        let block_size = self.block_size() as usize;
+
+        // Free direct blocks (0–11)
+        for i in 0..12 {
+            if inode.block[i] != 0 {
+                self.free_block(inode.block[i])?;
+            }
+        }
+
+        // Free indirect blocks at each level of indirection
+        for (slot, depth) in [(12, 1u32), (13, 2), (14, 3)] {
+            if inode.block[slot] != 0 {
+                self.free_indirect_block(inode.block[slot], block_size, ptrs_per_block, depth)
+                    ?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Recursively free an indirect block and all blocks it points to.
+    ///
+    /// `depth` is 1 for single indirect, 2 for double, 3 for triple.
+    /// At depth 1, the block contains data block pointers which are freed.
+    /// At depth > 1, each pointer leads to another level of indirection.
+    /// The indirect block itself is freed after all its children.
+    ///
+    /// The kernel version returned a boxed future so the recursion had a
+    /// finite type (an `async fn` cannot call itself directly); as a plain
+    /// synchronous function it simply recurses.
+    fn free_indirect_block(
+        &self,
+        block_num: u32,
+        block_size: usize,
+        ptrs_per_block: u32,
+        depth: u32,
+    ) -> Result<(), FsError> {
+        let mut buf = alloc::vec![0u8; block_size];
+        self.read_block(block_num, &mut buf)?;
+
+        for i in 0..ptrs_per_block as usize {
+            let ptr = read_block_ptr_from_buf(&buf, i);
+            if ptr == 0 {
+                continue;
+            }
+            if depth == 1 {
+                self.free_block(ptr)?;
+            } else {
+                self.free_indirect_block(ptr, block_size, ptrs_per_block, depth - 1)?;
+            }
+        }
+
+        // Free the indirect block itself
+        self.free_block(block_num)?;
+        Ok(())
+    }
+}
+
+/// Read a u32 block pointer from a buffer at the given index.
+fn read_block_ptr_from_buf(buf: &[u8], index: usize) -> u32 {
+    let offset = index * 4;
+    u32::from_le_bytes([
+        buf[offset],
+        buf[offset + 1],
+        buf[offset + 2],
+        buf[offset + 3],
+    ])
+}
+
+
+impl Filesystem for Ext2Fs {
+    fn open(&self, path: &str) -> Result<Box<dyn File>, FsError> {
+        let ino = self.lookup(path)?;
+        let inode = self.read_inode(ino)?;
+
+        if !inode.is_file() {
+            return Err(FsError::NotFound); // Can't open directories as files
+        }
+
+        let fs_arc = self
+            .self_ref
+            .read()
+            .upgrade()
+            .ok_or(FsError::IoError)?;
+
+        Ok(Box::new(Ext2File::new(fs_arc, inode, ino)))
+    }
+
+    fn stat(&self, path: &str) -> Result<FileStat, FsError> {
+        let ino = self.lookup(path)?;
+        let inode = self.read_inode(ino)?;
+        Ok(FileStat {
+            size: inode.size(),
+            is_dir: inode.is_dir(),
+            mode: inode.mode,
+            inode: ino as u64,
+            nlinks: inode.links_count as u64,
+            mtime: inode.mtime as u64,
+            ctime: inode.ctime as u64,
+            atime: inode.atime as u64,
+        })
+    }
+
+    fn readdir(&self, path: &str) -> Result<Vec<DirEntry>, FsError> {
+        let ino = self.lookup(path)?;
+        let inode = self.read_inode(ino)?;
+
+        if !inode.is_dir() {
+            return Err(FsError::NotFound);
+        }
+
+        self.list_dir(&inode)
+    }
+
+    /// Create a new regular file at the given path.
+    ///
+    /// Allocates a fresh inode, initialises it as a zero-length regular file,
+    /// adds a directory entry in the parent directory, and returns the opened
+    /// file handle. If directory entry insertion fails after the inode has been
+    /// allocated, the inode is freed to prevent leaks.
+    fn create(&self, path: &str, mode: u16) -> Result<Box<dyn File>, FsError> {
+        let (parent_path, file_name) = split_parent_name(path)?;
+
+        // Resolve parent directory
+        let parent_ino = self.lookup(parent_path)?;
+        let parent_inode = self.read_inode(parent_ino)?;
+        if !parent_inode.is_dir() {
+            return Err(FsError::NotFound);
+        }
+
+        // Check file does not already exist
+        if self.find_entry(&parent_inode, file_name).is_ok() {
+            return Err(FsError::AlreadyExists);
+        }
+
+        // Get Arc<Self> for file handle
+        let fs_arc = self
+            .self_ref
+            .read()
+            .upgrade()
+            .ok_or(FsError::IoError)?;
+
+        // Allocate a new inode (guarded for automatic rollback)
+        let inode_guard = fs_arc.alloc_inode()?;
+
+        // Initialise the new inode as a regular file
+        let new_inode = Inode {
+            mode: S_IFREG | (mode & 0o7777),
+            uid: 0,
+            size: 0,
+            atime: 0,
+            ctime: 0,
+            mtime: 0,
+            dtime: 0,
+            gid: 0,
+            links_count: 1,
+            blocks: 0,
+            flags: 0,
+            osd1: 0,
+            block: [0u32; 15],
+            generation: 0,
+            file_acl: 0,
+            size_high: 0,
+            faddr: 0,
+            osd2: [0u8; 12],
+        };
+
+        // Add directory entry, consuming the guard on success
+        // The guard is consumed here, which is the commit point
+        let (new_ino, updated_parent) = self
+            .add_dir_entry(parent_ino, parent_inode, file_name, inode_guard, FT_REG_FILE)
+            ?;
+
+        // Write the new inode to disk (guard already consumed, inode is committed)
+        self.write_inode(new_ino, &new_inode)?;
+
+        // Persist updated parent inode
+        self.write_inode(parent_ino, &updated_parent)?;
+
+        Ok(Box::new(Ext2File::new(fs_arc, new_inode, new_ino)))
+    }
+
+    /// Remove (unlink) a file at the given path.
+    ///
+    /// Removes the directory entry from the parent, decrements the target
+    /// inode's link count, and if links reach zero, frees all data blocks
+    /// (direct, indirect, double-indirect, triple-indirect) and the inode.
+    fn unlink(&self, path: &str) -> Result<(), FsError> {
+        let (parent_path, file_name) = split_parent_name(path)?;
+
+        // Resolve parent directory
+        let parent_ino = self.lookup(parent_path)?;
+        let parent_inode = self.read_inode(parent_ino)?;
+        if !parent_inode.is_dir() {
+            return Err(FsError::NotFound);
+        }
+
+        // Remove directory entry and get the removed inode number
+        let (target_ino, updated_parent) = self
+            .remove_dir_entry(parent_ino, parent_inode, file_name)
+            ?;
+
+        // Persist updated parent inode
+        self.write_inode(parent_ino, &updated_parent)?;
+
+        // Read and update target inode
+        let mut target_inode = self.read_inode(target_ino)?;
+        target_inode.links_count = target_inode.links_count.saturating_sub(1);
+
+        if target_inode.links_count == 0 {
+            // Free all data blocks
+            self.free_inode_blocks(&target_inode)?;
+
+            // Mark as deleted (dtime != 0 signals deletion to fsck)
+            target_inode.dtime = 1;
+            target_inode.set_size(0);
+            target_inode.blocks = 0;
+
+            // Write the zeroed inode, then free it
+            self.write_inode(target_ino, &target_inode)?;
+            self.free_inode(target_ino)?;
+        } else {
+            // Just persist the decremented link count
+            self.write_inode(target_ino, &target_inode)?;
+        }
+
+        Ok(())
+    }
+
+    /// Create a new directory at the given path.
+    ///
+    /// Allocates a new inode with directory mode, creates an initial block
+    /// containing `.` (self-reference) and `..` (parent reference) entries,
+    /// adds a directory entry in the parent, and updates link counts.
+    ///
+    /// # Ext2 semantics
+    ///
+    /// - The new directory's `links_count` is 2: one from the parent's entry,
+    ///   one from its own `.` entry
+    /// - The parent's `links_count` is incremented by 1 for the `..` back-reference
+    /// - The block group's `used_dirs_count` is incremented
+    fn mkdir(&self, path: &str, mode: u16) -> Result<(), FsError> {
+        let (parent_path, dir_name) = split_parent_name(path)?;
+
+        // Resolve parent directory
+        let parent_ino = self.lookup(parent_path)?;
+        let parent_inode = self.read_inode(parent_ino)?;
+        if !parent_inode.is_dir() {
+            return Err(FsError::NotFound);
+        }
+
+        // Check for duplicates
+        if self.find_entry(&parent_inode, dir_name).is_ok() {
+            return Err(FsError::AlreadyExists);
+        }
+
+        // Get Arc<Self> for RAII guards
+        let fs_arc = self
+            .self_ref
+            .read()
+            .upgrade()
+            .ok_or(FsError::IoError)?;
+
+        // Allocate a new inode for the directory (guarded for automatic rollback)
+        let inode_guard = fs_arc.alloc_inode()?;
+
+        // Allocate initial block for the directory (guarded for automatic rollback)
+        let block_guard = BlockGuard::new(fs_arc, self.alloc_block()?);
+
+        // Safety: We peek the block number here for use in the inode initialization,
+        // but keep the guard alive until after add_dir_entry succeeds. If any
+        // operation fails before we consume the guard, the block will be automatically
+        // freed on drop.
+        let initial_block = unsafe { block_guard.peek() };
+
+        // Add entry in parent directory, consuming the inode guard
+        // This is the commit point for the inode allocation
+        let (new_ino, updated_parent) = self
+            .add_dir_entry(parent_ino, parent_inode, dir_name, inode_guard, FT_DIR)
+            ?;
+
+        // Initialise the new inode as a directory (now that we have the ino)
+        let new_inode = Inode {
+            mode: S_IFDIR | (mode & 0o7777),
+            uid: 0,
+            size: self.block_size(),
+            atime: 0,
+            ctime: 0,
+            mtime: 0,
+            dtime: 0,
+            gid: 0,
+            links_count: 2, // '.' points to self, parent entry points to us
+            blocks: self.block_size() / 512, // Sectors used by initial block
+            flags: 0,
+            osd1: 0,
+            block: {
+                let mut b = [0u32; 15];
+                b[0] = initial_block;
+                b
+            },
+            generation: 0,
+            file_acl: 0,
+            size_high: 0,
+            faddr: 0,
+            osd2: [0u8; 12],
+        };
+
+        // Write . and .. entries to initial block (using the committed inode number)
+        let init_buf = self.init_dir_block(new_ino, parent_ino);
+        self.write_block(initial_block, &init_buf)?;
+
+        // Write inode to disk
+        self.write_inode(new_ino, &new_inode)?;
+
+        // Commit the block allocation now that inode is written
+        block_guard.consume();
+
+        // Increment parent's link count (for .. reference)
+        let mut updated_parent = updated_parent;
+        updated_parent.links_count += 1;
+        self.write_inode(parent_ino, &updated_parent)?;
+
+        // Update used_dirs_count in block group descriptor
+        self.inc_used_dirs_count(new_ino)?;
+
+        Ok(())
+    }
+
+    /// Remove an empty directory at the given path.
+    ///
+    /// Verifies the directory contains only `.` and `..` entries, removes
+    /// the directory entry from the parent, frees the directory's blocks
+    /// and inode, and updates link counts.
+    ///
+    /// # Errors
+    ///
+    /// - `NotFound` if the path doesn't exist
+    /// - `NotDirectory` if the target is not a directory
+    /// - `NotEmpty` if the directory contains entries other than `.` and `..`
+    fn rmdir(&self, path: &str) -> Result<(), FsError> {
+        let (parent_path, dir_name) = split_parent_name(path)?;
+
+        // Validate not removing root
+        if dir_name.is_empty() || path.trim_matches('/').is_empty() {
+            return Err(FsError::IoError); // Can't remove root
+        }
+
+        // Resolve parent directory
+        let parent_ino = self.lookup(parent_path)?;
+        let parent_inode = self.read_inode(parent_ino)?;
+        if !parent_inode.is_dir() {
+            return Err(FsError::NotFound);
+        }
+
+        // Find target entry and get inode
+        let target_ino = self.find_entry(&parent_inode, dir_name)?;
+        let target_inode = self.read_inode(target_ino)?;
+
+        // Verify target is a directory
+        if !target_inode.is_dir() {
+            return Err(FsError::NotDirectory);
+        }
+
+        // Verify directory is empty
+        if !self.is_dir_empty(&target_inode)? {
+            return Err(FsError::NotEmpty);
+        }
+
+        // Remove entry from parent
+        let (_, updated_parent) = self
+            .remove_dir_entry(parent_ino, parent_inode, dir_name)
+            ?;
+
+        // Free the directory's data blocks
+        self.free_inode_blocks(&target_inode)?;
+
+        // Mark inode as deleted and free it
+        let mut deleted_inode = target_inode;
+        deleted_inode.dtime = 1;
+        deleted_inode.set_size(0);
+        deleted_inode.blocks = 0;
+        deleted_inode.links_count = 0;
+        self.write_inode(target_ino, &deleted_inode)?;
+        self.free_inode(target_ino)?;
+
+        // Decrement parent's link count (removing .. reference)
+        let mut updated_parent = updated_parent;
+        updated_parent.links_count = updated_parent.links_count.saturating_sub(1);
+        self.write_inode(parent_ino, &updated_parent)?;
+
+        // Update used_dirs_count in block group descriptor
+        self.dec_used_dirs_count(target_ino)?;
+
+        Ok(())
+    }
+}
+
+/// Split a path into (parent_path, file_name).
+///
+/// The path is relative to the filesystem mount point (no leading slash after
+/// mount-point stripping). Returns `NotFound` if the path has no name component.
+fn split_parent_name(path: &str) -> Result<(&str, &str), FsError> {
+    let path = path.trim_matches('/');
+    if path.is_empty() {
+        return Err(FsError::NotFound);
+    }
+    match path.rfind('/') {
+        Some(idx) => Ok((&path[..idx], &path[idx + 1..])),
+        None => Ok(("", path)), // File in root directory
+    }
+}
