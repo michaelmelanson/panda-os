@@ -341,38 +341,30 @@ pub async fn sync(path: &str) -> Result<(), FsError> {
 // Ext2 mount
 // =============================================================================
 
-/// How long to retry `SchemeBlockDevice::open` before giving up (M4 Phase 2:
-/// `block:` is now provided by a userspace driver, spawned from the initrd
-/// by `init` *just before* it calls this — see `userspace/init/src/main.rs`
-/// — but that spawn is asynchronous: the driver process needs to actually
-/// run, claim the device, and call `OP_SCHEME_REGISTER` before `block:`
-/// resolves to anything. Retrying briefly instead of failing on the first
-/// attempt closes that race without needing a dedicated "wait for scheme
-/// registration" primitive.
-const MOUNT_RETRY_ATTEMPTS: u32 = 200;
-const MOUNT_RETRY_SLEEP_MS: u64 = 10;
-
 /// Mount ext2 filesystem from the block device at `block:/pci/storage/0`
 /// (the first storage-class device — see `device_path`) at the given
 /// mountpoint.
 ///
-/// This is called from the mount syscall handler.
+/// This is called from the mount syscall handler, itself called by `init`
+/// (`userspace/init/src/main.rs`) right after it waits for `virtio-blk`'s
+/// readiness handshake (`libpanda::process::wait_ready`) — that wait is
+/// what actually closes the startup race against `block:` registration
+/// (task #43: "Redesign scheme-open readiness to eliminate the
+/// driver-registration race class"), so `open_retrying` below should
+/// normally resolve on its first attempt. It stays in place as
+/// defense-in-depth for any caller of this function that isn't `init`'s
+/// synchronous-wait boot path — see `resource::open_retrying`'s doc
+/// comment.
 pub async fn mount_ext2(mountpoint: &str) -> Result<(), &'static str> {
     use log::info;
 
     info!("Attempting to mount ext2 from block:/pci/storage/0");
 
-    let mut attempt = 0;
-    let device = loop {
-        match crate::resource::SchemeBlockDevice::open("block:/pci/storage/0").await {
-            Ok(device) => break device,
-            Err(_) if attempt < MOUNT_RETRY_ATTEMPTS => {
-                attempt += 1;
-                crate::executor::sleep::sleep_ms(MOUNT_RETRY_SLEEP_MS).await;
-            }
-            Err(_) => return Err("No block device found (block: never became available)"),
-        }
-    };
+    let device = crate::resource::open_retrying(|| {
+        crate::resource::SchemeBlockDevice::open("block:/pci/storage/0")
+    })
+    .await
+    .map_err(|_| "No block device found (block: never became available)")?;
 
     let device: Arc<dyn crate::resource::BlockDevice> = Arc::new(device);
 

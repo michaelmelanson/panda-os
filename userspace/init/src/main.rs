@@ -28,14 +28,21 @@ libpanda::main! {
     // spawning is unconditional rather than filtered by a specific
     // enumerated device's identity.
     //
-    // This spawn is asynchronous — `virtio-blk` still needs to run, claim
-    // its device, and call `OP_SCHEME_REGISTER` before `block:` resolves to
-    // anything — so `mount_ext2` (`panda-kernel/src/vfs/mod.rs`) retries
-    // internally for up to ~2s rather than this needing an explicit "wait
-    // for driver ready" step here.
+    // Spawning only starts the driver process — it still needs to run,
+    // claim its device, and call `OP_SCHEME_REGISTER` before `block:`
+    // resolves to anything. Waiting here for each driver's readiness
+    // handshake (task #43: "Redesign scheme-open readiness to eliminate the
+    // driver-registration race class") closes that race outright, so
+    // `mount` below doesn't have to gamble on a blind retry loop —
+    // see `libpanda::process::wait_ready`'s doc comment.
     for path in drivers.binary_paths() {
-        if environment::spawn(path).is_err() {
-            environment::log("init: failed to spawn initrd driver");
+        match environment::spawn(path) {
+            Ok(handle) => {
+                if libpanda::process::wait_ready(handle).is_err() {
+                    environment::log("init: initrd driver did not become ready");
+                }
+            }
+            Err(_) => environment::log("init: failed to spawn initrd driver"),
         }
     }
 
@@ -64,8 +71,18 @@ libpanda::main! {
         if already_spawned.iter().any(|s| s == path) {
             continue;
         }
-        if environment::spawn(path).is_err() {
-            environment::log("init: failed to spawn driver");
+        // Wait for each driver's readiness handshake before moving on, same
+        // as the initrd drivers above — critically including `virtio-gpu`,
+        // whose `display:` scheme the compositor spawned right after this
+        // loop depends on (see `libpanda::process::wait_ready`'s doc
+        // comment; task #43).
+        match environment::spawn(path) {
+            Ok(handle) => {
+                if libpanda::process::wait_ready(handle).is_err() {
+                    environment::log("init: driver did not become ready");
+                }
+            }
+            Err(_) => environment::log("init: failed to spawn driver"),
         }
     }
 
