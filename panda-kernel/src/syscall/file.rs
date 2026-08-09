@@ -94,7 +94,7 @@ pub fn handle_read(
 ///
 /// `offset` is the handle's current file position (see `handle.offset()`),
 /// forwarded as `Request::Read`'s `offset` field so random-access providers
-/// (M4's `block:`) see the position `OP_FILE_SEEK` last set — stream-like
+/// (`block:`) see the position `OP_FILE_SEEK` last set — stream-like
 /// providers (e.g. `keyboard:`) are free to ignore it. On success, the
 /// handle's offset is advanced by the number of bytes actually read, same
 /// as `handle_read_vfs` — this is what gives `block_test`'s
@@ -407,7 +407,7 @@ pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> Syscal
     let offset = ((offset_hi as u64) << 32) | (offset_lo as u64);
     let whence = (offset_hi >> 32) as u32;
 
-    // Scheme-provider proxy resources (M4: `block:`) support seeking too —
+    // Scheme-provider proxy resources (`block:`) support seeking too —
     // SEEK_SET/SEEK_CUR are pure handle-table arithmetic (no VFS file
     // needed at all), and SEEK_END queries the provider's size via
     // `Request::Size` (see `SchemeProxyResource::size`) instead of a VFS
@@ -493,7 +493,7 @@ pub fn handle_seek(handle_id: u64, offset_lo: usize, offset_hi: usize) -> Syscal
     }
 }
 
-/// Seek path for scheme-provider proxy resources (M4: `block:`) — see
+/// Seek path for scheme-provider proxy resources (`block:`) — see
 /// `handle_seek`'s doc comment for how this differs from the VFS path.
 fn handle_seek_scheme_proxy(
     handle_id: u64,

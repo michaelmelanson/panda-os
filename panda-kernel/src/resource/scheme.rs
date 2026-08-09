@@ -392,27 +392,26 @@ impl CharacterOutput for SerialConsoleResource {
 }
 
 // =============================================================================
-// Display Scheme - moved to a userspace driver in roadmap M4
+// Display Scheme - served by a userspace driver
 // =============================================================================
 //
-// The kernel-resident `DisplayScheme`/`DisplayDevice` (`display:
-// /pci/display/0`, with a kernel-side exclusive claim) has been
-// deleted: the display driver is now a userspace process
-// (`userspace/drivers/virtio-gpu`) that registers `display:` itself via
-// `OP_SCHEME_REGISTER`, exactly like `userspace/drivers/virtio-keyboard`
-// registers `keyboard:`. `OP_DISPLAY_INFO`/`MAP`/`FLUSH` (the client-facing
-// contract, unchanged) are served for a `SchemeProxyResource`-backed
-// `display:` open by forwarding to the provider — see
-// `SchemeProxyResource::display_info`/`display_map`/`display_flush` above
-// and `panda-kernel/src/syscall/display.rs`. Exclusivity (a second open
-// failing `Busy`) is now the provider's responsibility, not a kernel claim —
-// see the virtio-gpu driver's `Open` handler.
+// There is no kernel-resident `DisplayScheme`/`DisplayDevice`: the display
+// driver is a userspace process (`userspace/drivers/virtio-gpu`) that
+// registers `display:` itself via `OP_SCHEME_REGISTER`, exactly like
+// `userspace/drivers/virtio-keyboard` registers `keyboard:`.
+// `OP_DISPLAY_INFO`/`MAP`/`FLUSH` (the client-facing contract) are served
+// for a `SchemeProxyResource`-backed `display:` open by forwarding to the
+// provider — see `SchemeProxyResource::display_info`/`display_map`/
+// `display_flush` above and `panda-kernel/src/syscall/display.rs`.
+// Exclusivity (a second open failing `Busy`) is the provider's
+// responsibility, not a kernel claim — see the virtio-gpu driver's `Open`
+// handler.
 
 // =============================================================================
-// Block Scheme - moved to userspace (M4 Phase 2, plans/device-driver-model.md)
+// Block Scheme - served by userspace (plans/device-driver-model.md)
 // =============================================================================
 //
-// `block:` is no longer a kernel-native scheme handler. The userspace
+// `block:` is not a kernel-native scheme handler. The userspace
 // `virtio-blk` driver (userspace/drivers/virtio-blk) registers it via
 // `OP_SCHEME_REGISTER`/`register_user_scheme`, exactly like `keyboard:` —
 // `resource::open("block:/...")` resolves through `UserSchemeProvider`
@@ -979,8 +978,7 @@ impl SchemeProxyResource {
     /// request/response protocol, e.g. `userspace/drivers/virtio-keyboard`)
     /// made every read through it block, non-blocking or not, which hung
     /// `mailbox_keyboard_test`'s non-blocking drain loop forever once it
-    /// caught up with the buffered events. See
-    /// `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
+    /// caught up with the buffered events.
     pub async fn read(&self, len: usize, nonblocking: bool) -> Result<Vec<u8>, panda_abi::ErrorCode> {
         self.read_at(0, len, nonblocking).await
     }
@@ -1124,8 +1122,7 @@ impl SchemeProxyResource {
 
     /// Forward `OP_DISPLAY_INFO` to the provider — see
     /// `panda-kernel/src/syscall/display.rs`'s scheme-proxy fallback branch,
-    /// used when the opened resource is a userspace display driver
-    /// (roadmap M4) rather than the old kernel-resident `DisplayDevice`.
+    /// used when the opened resource is a userspace display driver.
     /// Returns `(width, height, format, stride)`.
     pub async fn display_info(&self) -> Result<(u32, u32, u32, u32), panda_abi::ErrorCode> {
         use panda_abi::scheme_protocol::{Request, Response};

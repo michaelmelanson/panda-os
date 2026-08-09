@@ -1,11 +1,8 @@
 #![no_std]
 #![no_main]
 
-//! Wire-protocol validation ground that the deleted `surface_test`/
-//! `surface_overflow_test` used to cover through the raw `surface:` scheme
-//! (plans/userspace-compositor.md, Phase 4): out-of-bounds damage rects,
-//! oversized/undersized attach requests, and commits with no attached
-//! buffer.
+//! Wire-protocol validation: out-of-bounds damage rects, oversized/
+//! undersized attach requests, and commits with no attached buffer.
 //!
 //! This talks to a real compositor process (`compositor_test_child`) using
 //! `compositor_protocol` directly rather than through `libpanda::graphics::

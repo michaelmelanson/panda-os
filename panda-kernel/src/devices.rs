@@ -7,8 +7,7 @@ use crate::pci::{self, device::PciDevice};
 
 pub fn init() {
     // Register enumerated devices with the device driver model's registry
-    // (see plans/device-driver-model.md) alongside the existing
-    // kernel-resident driver dispatch below.
+    // (see plans/device-driver-model.md).
     device::pci::register_enumerated_devices();
 
     pci::enumerate_pci_devices(|pci_device: PciDevice| {
@@ -28,23 +27,20 @@ pub fn init() {
             pci_device.subclass(),
         ) {
             // Virtio Block (legacy device ID 0x1001, modern transitional
-            // 0x1042): moved to a userspace driver
-            // (userspace/drivers/virtio-blk) — see plans/device-driver-model.md
-            // M4 Phase 2. No kernel-resident init for this device anymore;
-            // it is claimed via the OP_DEVICE_SUBSCRIBE/OP_DEVICE_CLAIM
-            // model instead, same as virtio-keyboard.
+            // 0x1042): served by a userspace driver
+            // (userspace/drivers/virtio-blk), claimed via the
+            // OP_DEVICE_SUBSCRIBE/OP_DEVICE_CLAIM model. No kernel-resident
+            // init for this device.
             (0x1AF4, 0x1001, _) | (0x1AF4, 0x1042, _) => {}
-            // Virtio GPU: moved to a userspace driver
-            // (userspace/drivers/virtio-gpu) — see plans/device-driver-model.md's
-            // M4 landed-deviations note. No kernel-resident init for this
-            // device anymore; it is claimed via the
-            // OP_DEVICE_SUBSCRIBE/OP_DEVICE_CLAIM model instead.
+            // Virtio GPU: served by a userspace driver
+            // (userspace/drivers/virtio-gpu), claimed via the
+            // OP_DEVICE_SUBSCRIBE/OP_DEVICE_CLAIM model. No kernel-resident
+            // init for this device.
             (0x1AF4, 0x1050, _) => {}
-            // Virtio Input - keyboard (subclass 0x00): moved to a userspace
-            // driver (userspace/drivers/virtio-keyboard) — see
-            // plans/device-driver-model.md Phase 7. No kernel-resident init
-            // for this device anymore; it is claimed via the
-            // OP_DEVICE_SUBSCRIBE/OP_DEVICE_CLAIM model instead.
+            // Virtio Input - keyboard (subclass 0x00): served by a userspace
+            // driver (userspace/drivers/virtio-keyboard), claimed via the
+            // OP_DEVICE_SUBSCRIBE/OP_DEVICE_CLAIM model. No kernel-resident
+            // init for this device.
             (0x1AF4, 0x1052, 0x00) => {}
             // Virtio Input - mouse (subclass 0x02) - skip for now
             (0x1AF4, 0x1052, 0x02) => {}

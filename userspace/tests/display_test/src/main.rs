@@ -6,12 +6,6 @@
 //! open, a second open refused `Busy`, `OP_DISPLAY_INFO`/`MAP`/`FLUSH`
 //! succeeding for the owner, close releasing the claim, and a reopen then
 //! succeeding — plus path resolution and rejection of non-display handles.
-//!
-//! Before Phase 5 of plans/userspace-compositor.md this round trip was not
-//! testable: the in-kernel compositor held the display's claim permanently,
-//! so every userspace open was refused `Busy` and that was the only outcome
-//! this test could assert (see the Phase 2 note in the plan). This is that
-//! debt being paid off.
 
 #![no_std]
 #![no_main]
@@ -23,11 +17,11 @@ use panda_abi::{SurfaceInfoOut, SurfaceRect};
 libpanda::main! {
     environment::log("display_test: starting");
 
-    // Roadmap M4: `display:` is now served by a userspace driver
-    // (`userspace/drivers/virtio-gpu`), not kernel plumbing — like
-    // `keyboard_test`, this process plays the role of `init` (no service
-    // manager runs to spawn it from `initrd:/drivers`), so spawn it
-    // directly and wait for its "ready" signal.
+    // `display:` is served by a userspace driver
+    // (`userspace/drivers/virtio-gpu`) — like `keyboard_test`, this process
+    // plays the role of `init` (no service manager runs to spawn it from
+    // `initrd:/drivers`), so spawn it directly and wait for its "ready"
+    // signal.
     let Ok(driver_handle) = environment::spawn("initrd:/virtio-gpu") else {
         environment::log("FAIL: could not spawn virtio-gpu driver");
         return 1;
@@ -111,14 +105,12 @@ libpanda::main! {
     file::close(display2);
 
     // Path-based rejection of non-display device addresses (e.g.
-    // "display:/pci/display/7" or "display:/pci/storage/0") was the deleted
-    // kernel-resident `DisplayScheme`'s job (`device_path::resolve` compared
-    // against the framebuffer's own PCI address). The userspace driver
-    // (`userspace/drivers/virtio-gpu`) grants any path once, matching
-    // `userspace/drivers/virtio-keyboard`'s identical simplification for
-    // `keyboard:` — this driver only ever serves the one device it claimed,
-    // so path resolution add no real access control here. See
-    // `plans/device-driver-model.md`'s M4 landed-deviations note.
+    // "display:/pci/display/7" or "display:/pci/storage/0") is not
+    // enforced: the userspace driver (`userspace/drivers/virtio-gpu`)
+    // grants any path once, matching `userspace/drivers/virtio-keyboard`'s
+    // identical simplification for `keyboard:` — this driver only ever
+    // serves the one device it claimed, so path resolution adds no real
+    // access control here.
 
     // The display operations must reject handles that are not displays —
     // which, since the handle *is* the proof of ownership, is exactly what a

@@ -30,9 +30,7 @@ pub trait Target {
 
 /// A `Target` over a plain byte buffer, used by the unit tests and by
 /// integration tests that need to inspect composited pixels without a real
-/// display (Phase 4 of plans/userspace-compositor.md: the in-kernel
-/// compositor still holds the only display claim, so `display:` is `Busy`
-/// for the userspace compositor throughout this phase).
+/// display.
 #[cfg(any(test, feature = "test-target"))]
 pub struct MemoryTarget {
     pub pixels: alloc::vec::Vec<u8>,

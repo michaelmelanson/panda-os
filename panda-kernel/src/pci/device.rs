@@ -90,12 +90,11 @@ impl PciDevice {
     /// set for every enumerated device, and unlike the kernel-only
     /// `virtio_drivers` crate's `PciTransport` (which sets this internally
     /// as part of transport setup), nothing else in the userspace device
-    /// driver model did before this — see
-    /// `plans/device-driver-model.md`'s Phase 7 landed-deviations note for
-    /// how this was found (a virtio-keyboard driver that mapped BARs,
-    /// negotiated features, and set up a virtqueue correctly, but never
-    /// received an interrupt and never saw the device touch memory, because
-    /// the device was never actually permitted to master the bus).
+    /// driver model does this automatically — a driver that maps BARs,
+    /// negotiates features, and sets up a virtqueue correctly but skips this
+    /// will never receive an interrupt and never see the device touch
+    /// memory, because the device is never actually permitted to master the
+    /// bus.
     pub fn enable_bus_mastering(&self) {
         let command = self.command();
         unsafe {

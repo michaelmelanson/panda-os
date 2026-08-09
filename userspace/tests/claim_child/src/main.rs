@@ -2,11 +2,9 @@
 //! closing it, so the parent can verify that process exit alone (dropping the
 //! child's handle table) releases the device claim.
 //!
-//! This used to claim the framebuffer via `surface:/fb0`. It can't any more:
-//! the in-kernel compositor now holds the display's claim for as long as it
-//! runs (see plans/userspace-compositor.md, Phase 2), so no userspace process
-//! can take the display. The block device exercises the identical
-//! `ClaimGuard` drop-on-exit path.
+//! Uses the block device rather than the display because the display driver
+//! enforces exclusivity itself, whereas the block device exercises the
+//! `ClaimGuard` drop-on-exit path directly.
 
 #![no_std]
 #![no_main]

@@ -1,9 +1,9 @@
 #![no_std]
 #![no_main]
 
-//! Two windows sharing one client connection to a real compositor process
-//! (plans/userspace-compositor.md, Phase 4). See `window_test` for why this
-//! is a protocol round-trip test rather than a screenshot comparison.
+//! Two windows sharing one client connection to a real compositor process.
+//! See `window_test` for why this is a protocol round-trip test rather than
+//! a screenshot comparison.
 
 use libpanda::environment;
 use libpanda::graphics::{Colour, PixelBuffer, Window};

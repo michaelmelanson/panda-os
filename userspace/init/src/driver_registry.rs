@@ -34,8 +34,8 @@ struct Entry {
 /// Maps device match tables (read from driver ELF metadata) to the binary
 /// path that declared them.
 ///
-/// Built via repeated calls to [`DriverRegistry::scan`] (Phase 5a:
-/// `initrd:/drivers/`, Phase 5b: `file:/mnt/drivers/`) — later scans add to
+/// Built via repeated calls to [`DriverRegistry::scan`] (once for
+/// `initrd:/drivers/`, once for `file:/mnt/drivers/`) — later scans add to
 /// the registry without clearing earlier entries, so a driver found in the
 /// initrd remains matchable after the root filesystem is scanned too.
 #[derive(Default)]
@@ -149,8 +149,7 @@ impl DriverRegistry {
     /// driver is spawned unconditionally; each one only actually claims
     /// hardware for the device(s) matching its own `.panda_devices.<bus>`
     /// table (via its own `device_subscribe` call, which is itself the
-    /// filter — see `plans/device-driver-model.md`'s Phase 7
-    /// landed-deviations note).
+    /// filter).
     pub fn binary_paths(&self) -> Vec<&str> {
         let mut paths: Vec<&str> = Vec::new();
         for entry in &self.entries {

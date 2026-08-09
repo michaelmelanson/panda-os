@@ -1,9 +1,8 @@
-//! Userspace virtio-blk driver (M4 Phase 2 of `plans/device-driver-model.md`).
+//! Userspace virtio-blk driver.
 //!
-//! Replaces the deleted kernel-resident driver
-//! (`panda-kernel/src/devices/virtio_block/`). Follows the same lifecycle as
-//! `userspace/drivers/virtio-keyboard` (Phase 7): subscribe to PCI device
-//! events, claim the device on `EVENT_DEVICE_ADDED`, walk its virtio PCI
+//! Follows the same lifecycle as `userspace/drivers/virtio-keyboard`:
+//! subscribe to PCI device events, claim the device on `EVENT_DEVICE_ADDED`,
+//! walk its virtio PCI
 //! capability list, map the common-config/notify/device-config BARs,
 //! negotiate virtio features, set up the requestq split virtqueue, subscribe
 //! to its IRQ, register the `block:` scheme, and serve clients until
@@ -31,12 +30,10 @@
 //! reply before issuing the next — there is no pipelining anywhere in this
 //! codebase's block I/O path today. This driver takes advantage of that: it
 //! only ever has one virtio request outstanding, reusing a single scratch
-//! DMA buffer rather than tracking a pool of in-flight requests (unlike the
-//! deleted kernel driver's `futures.rs`, which supported real concurrent
-//! I/O). If a second `Read`/`Write` somehow arrived while one was still
-//! pending, it would be rejected with `IoError` rather than queued — noted
-//! as follow-up debt in `plans/device-driver-model.md` alongside the other
-//! M4 landed-deviations.
+//! DMA buffer rather than tracking a pool of in-flight requests. If a
+//! second `Read`/`Write` somehow arrived while one was still pending, it
+//! would be rejected with `IoError` rather than queued — noted as
+//! follow-up debt in `plans/device-driver-model.md`.
 //!
 //! # Sector alignment and read-modify-write
 //!
@@ -656,7 +653,7 @@ fn serve_provider_requests(provider: &SchemeProvider, device: Option<&mut Device
                 let _ = provider.reply_connect_err(request_id, ErrorCode::NotSupported);
             }
             // `block:` never serves `OP_DISPLAY_*` — those request kinds
-            // (roadmap M4) only arrive on a `display:` provider
+            // only arrive on a `display:` provider
             // (`userspace/drivers/virtio-gpu`).
             Request::DisplayInfo { request_id, .. } => {
                 let _ = provider.reply_display_info_err(request_id, ErrorCode::NotSupported);

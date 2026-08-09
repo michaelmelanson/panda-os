@@ -107,8 +107,7 @@ impl Process for SpawnHandle {
         // in the *target's own* context. Cooperative self-exit (the target
         // process observing a request and exiting normally) is the safe
         // alternative used instead — see the shutdown-request handling in
-        // `userspace/drivers/virtio-keyboard`'s main loop and
-        // `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
+        // `userspace/drivers/virtio-keyboard`'s main loop.
         Err(ProcessError::NotSupported)
     }
 

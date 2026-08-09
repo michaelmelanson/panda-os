@@ -2,17 +2,17 @@
 #![no_main]
 
 //! `libpanda::graphics::Window` end to end against a real compositor
-//! process (plans/userspace-compositor.md, Phase 4/5).
+//! process.
 //!
 //! Proves the client-visible protocol contract — window creation, buffer
 //! attach, commit, and `FrameDone` all round-trip correctly through the real
-//! `Window` API and a real (spawned) compositor process — and, now that the
-//! in-kernel compositor is deleted and the spawned compositor process is the
-//! display's real owner (Phase 5), also verifies the actual rendered pixels
-//! via a screenshot comparison against `expected.png` (see
-//! `docs/TESTING.md`, "Screenshot testing"). Pixel-level blending/positioning
-//! correctness is additionally covered by `compositor`'s own
-//! `MemoryTarget`-based unit tests in `userspace/compositor/src/manager.rs`.
+//! `Window` API and a real (spawned) compositor process — and, since the
+//! spawned compositor process is the display's real owner, also verifies
+//! the actual rendered pixels via a screenshot comparison against
+//! `expected.png` (see `docs/TESTING.md`, "Screenshot testing").
+//! Pixel-level blending/positioning correctness is additionally covered by
+//! `compositor`'s own `MemoryTarget`-based unit tests in
+//! `userspace/compositor/src/manager.rs`.
 
 use libpanda::environment;
 use libpanda::graphics::{Colour, PixelBuffer, Rect, Window};

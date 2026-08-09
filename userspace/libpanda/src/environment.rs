@@ -47,7 +47,7 @@ pub fn open(path: &str, mailbox: u64, event_mask: u32) -> Result<Handle> {
 /// (~2s) before giving up.
 ///
 /// Shared fallback for scheme-open races that `crate::process::wait_ready`
-/// can't close (task #43): `wait_ready` eliminates the race for a driver
+/// can't close: `wait_ready` eliminates the race for a driver
 /// `init` itself spawned, by making `init` wait on the driver's own
 /// readiness handshake before touching anything that depends on it — but a
 /// consumer with no spawn-time relationship to its driver (e.g. a process

@@ -18,11 +18,10 @@ use crate::scheduler;
 
 /// Who's currently registered as waiting on an [`IoWaker`].
 ///
-/// Originally this was always a userspace process (a syscall handler
-/// blocked on device I/O). Phase 7 added persistent kernel background
-/// tasks (`crate::executor::spawn`) that also need to block on an
-/// `IoWaker` — e.g. `resource::scheme::ProviderState`'s reader task
-/// waiting on a `ChannelEndpoint`'s waker — so this now covers both.
+/// Either a userspace process (a syscall handler blocked on device I/O) or
+/// a persistent kernel background task (`crate::executor::spawn`) — e.g.
+/// `resource::scheme::ProviderState`'s reader task waiting on a
+/// `ChannelEndpoint`'s waker.
 enum Waiter {
     Process(ProcessId),
     Task(crate::executor::TaskId),

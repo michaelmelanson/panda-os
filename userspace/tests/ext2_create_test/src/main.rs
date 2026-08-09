@@ -20,8 +20,7 @@ libpanda::main! {
     // This test plays the role of `init` (it's the initrd's `init`
     // binary), so unlike the real boot path there is no service manager
     // running to spawn the virtio-blk driver the mount below needs — do it
-    // directly, the same way `keyboard_test` spawns virtio-keyboard (M4
-    // Phase 2, plans/device-driver-model.md).
+    // directly, the same way `keyboard_test` spawns virtio-keyboard.
     let Ok(driver_handle) = environment::spawn("initrd:/virtio-blk") else {
         environment::log("FAIL: could not spawn virtio-blk driver");
         return 1;

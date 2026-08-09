@@ -55,35 +55,29 @@ pub const MSG_CONNECT: u8 = 6;
 /// 0` (see [`Response::encode_notify`]/[`ProviderState`]'s background
 /// reader in `panda-kernel/src/resource/scheme.rs`, which routes frames
 /// with `request_id == 0` to attached mailboxes instead of a pending
-/// round-trip). Added in Phase 7 for the userspace virtio-keyboard driver;
-/// see `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
+/// round-trip).
 pub const MSG_NOTIFY: u8 = 7;
-/// Request/response kind: query a provider resource's byte size. Added for
-/// M4's block driver service (`resource::block_client::SchemeBlockDevice`):
-/// the kernel's `BlockDevice` trait needs a synchronous `size()` accessor,
-/// so the size is fetched once (via this request) and cached at open time
+/// Request/response kind: query a provider resource's byte size. The
+/// kernel's `BlockDevice` trait needs a synchronous `size()` accessor, so
+/// the size is fetched once (via this request) and cached at open time
 /// rather than being queryable per-call. Not meaningful for stream-like
 /// resources (e.g. `keyboard:`'s eventq) — those providers should reply
 /// `SizeErr(NotSupported)`.
 pub const MSG_SIZE: u8 = 8;
 /// Request/response kind: fetch a display resource's mode info (width,
-/// height, pixel format, stride). Added in roadmap M4 so `OP_DISPLAY_INFO`
-/// can be served by a userspace display driver (via `SchemeProxyResource`)
-/// instead of only a kernel-resident display resource — see
-/// `panda-kernel/src/syscall/display.rs`'s scheme-proxy forwarding branch
-/// and `plans/device-driver-model.md`'s M4 landed-deviations note.
+/// height, pixel format, stride), served by a userspace display driver via
+/// `SchemeProxyResource` — see `panda-kernel/src/syscall/display.rs`'s
+/// scheme-proxy forwarding branch.
 pub const MSG_DISPLAY_INFO: u8 = 9;
 /// Request/response kind: map a display resource's framebuffer into the
 /// calling process. Unlike every other request kind, `DisplayMapOk`'s
 /// payload carries a raw guest-physical address + size rather than opaque
-/// bytes — the kernel maps that physical range directly into the caller,
-/// the same way the old kernel-resident display driver did, instead of
-/// proxying page contents through read/write. This means the provider is
-/// trusted to disclose a real, exclusively-owned physical range: only the
-/// blessed display driver should ever hold the `display:` scheme
-/// registration in practice; see the M4 landed-deviations note for the
-/// follow-up scheme-registration ACL gap this leaves (any process can
-/// currently call `OP_SCHEME_REGISTER` for any name).
+/// bytes — the kernel maps that physical range directly into the caller
+/// instead of proxying page contents through read/write. This means the
+/// provider is trusted to disclose a real, exclusively-owned physical
+/// range: only the blessed display driver should ever hold the `display:`
+/// scheme registration in practice (there is currently no ACL preventing
+/// any process from calling `OP_SCHEME_REGISTER` for any name).
 pub const MSG_DISPLAY_MAP: u8 = 10;
 /// Request/response kind: flush a damaged rectangle (or, if none given, the
 /// whole surface) to the display.

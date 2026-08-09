@@ -2,8 +2,7 @@
 //! and the `OP_DEVICE_*` syscall wrappers.
 //!
 //! See `plans/device-driver-model.md`. All seven syscall wrappers below
-//! round-trip to real kernel handlers (`panda-kernel/src/syscall/device.rs`)
-//! as of Phase 6.
+//! round-trip to real kernel handlers (`panda-kernel/src/syscall/device.rs`).
 
 // `panda_abi::device::Handle` is just `u64`, distinct from (and not
 // re-exported over) `crate::Handle`, libpanda's typed handle wrapper.

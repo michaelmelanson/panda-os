@@ -3,12 +3,10 @@
 
 //! Boot the userspace compositor and run a bounded number of frames.
 //!
-//! Until Phase 5 of plans/userspace-compositor.md deletes the in-kernel
-//! compositor, its permanent claim makes `display:` `Busy` for everyone
-//! else — so this test's job is to prove the compositor process comes up,
-//! survives that refusal, and ticks. It runs the service in-process (the
-//! same `compositor::server::run` the `compositor` binary calls) with a
-//! tick budget, so it terminates instead of looping forever.
+//! This test's job is to prove the compositor process comes up and ticks
+//! even if a display claim attempt fails. It runs the service in-process
+//! (the same `compositor::server::run` the `compositor` binary calls) with
+//! a tick budget, so it terminates instead of looping forever.
 
 use libpanda::environment;
 use libpanda::ipc::Channel;
@@ -20,7 +18,7 @@ const TICKS: u64 = 10;
 libpanda::main! {
     environment::log("Compositor start test: starting");
 
-    // Roadmap M4: spawn the userspace display driver directly, the same way
+    // Spawn the userspace display driver directly, the same way
     // `userspace/tests/display_test`/`compositor_test_child` do — this
     // process is its own `init`, so nothing else will.
     let driver_channel = if let Ok(driver_handle) = environment::spawn("initrd:/virtio-gpu") {

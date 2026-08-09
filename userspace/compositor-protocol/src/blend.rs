@@ -16,14 +16,13 @@
 ///
 /// The output alpha is `src_a + dst_a·(1 − src_a)`, which is the
 /// mathematically correct Porter–Duff "over" result and the form this
-/// codebase standardises on (plans/userspace-compositor.md, Phase 3). It is
-/// chosen over the two divergent forms it replaces because it is the only
-/// one that composes: blending A over B and then over C gives the same
-/// result as blending A over (B over C). The kernel's `255` form is a
-/// special case of it — when the destination is the opaque framebuffer,
-/// `dst_a` is 255 and the formula yields 255 — so no existing rendering
-/// changes, while blending into a *translucent* intermediate buffer (which
-/// clients now do, since they own their buffers) becomes correct.
+/// codebase standardises on. It is the only form that composes: blending A
+/// over B and then over C gives the same result as blending A over (B over
+/// C). Blending onto an opaque destination is a special case of it — when
+/// `dst_a` is 255 the formula yields 255 — so opaque-destination rendering
+/// (the framebuffer) is unaffected, while blending into a *translucent*
+/// intermediate buffer (which clients do, since they own their buffers)
+/// stays correct too.
 pub fn alpha_blend(src: [u8; 4], dst: [u8; 4]) -> [u8; 4] {
     let src_alpha = src[3] as u32;
 
@@ -89,8 +88,8 @@ mod tests {
 
     #[test]
     fn half_alpha_over_opaque_destination_stays_opaque() {
-        // The kernel form's special case: an opaque destination must keep
-        // producing an opaque result, so no existing rendering changes.
+        // Special case: an opaque destination must keep producing an
+        // opaque result, so framebuffer rendering is unaffected.
         let out = alpha_blend([0, 0, 0, 128], [255, 255, 255, 255]);
         assert_eq!(out[3], 255);
         assert_eq!(out[0], 127);
@@ -98,8 +97,8 @@ mod tests {
 
     #[test]
     fn half_alpha_over_translucent_destination_accumulates_alpha() {
-        // The case the old kernel form got wrong: 128 over 128 is 191, not
-        // 255 and not 128.
+        // 128 over 128 is 191, not 255 and not 128 — alpha accumulates
+        // rather than saturating or averaging.
         let out = alpha_blend([0, 0, 0, 128], [0, 0, 0, 128]);
         assert_eq!(out[3], 191);
     }

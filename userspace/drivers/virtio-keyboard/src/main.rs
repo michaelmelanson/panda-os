@@ -1,8 +1,7 @@
-//! Userspace virtio-keyboard driver (Phase 7 of `plans/device-driver-model.md`).
+//! Userspace virtio-keyboard driver.
 //!
-//! Replaces the deleted kernel-resident driver
-//! (`panda-kernel/src/devices/virtio_keyboard.rs`). Follows the lifecycle
-//! documented in the plan's "Driver lifecycle" section: subscribe to PCI
+//! Follows the lifecycle documented in
+//! `plans/device-driver-model.md`'s "Driver lifecycle" section: subscribe to PCI
 //! device events, claim the device on `EVENT_DEVICE_ADDED`, walk its virtio
 //! PCI capability list, map the common-config/notify BARs, negotiate virtio
 //! features, set up the eventq split virtqueue, subscribe to its IRQ,
@@ -248,8 +247,7 @@ libpanda::main! {
     // was correct but wired to a device that never receives keyboard input
     // at all. Found by tracing QEMU's own `msix_write_config`/PCI address
     // debug output and noticing the claimed device's PCI address (00:02.0)
-    // didn't match `info pci`'s keyboard entry (00:03.0). See
-    // `plans/device-driver-model.md`'s Phase 7 landed-deviations note.
+    // didn't match `info pci`'s keyboard entry (00:03.0).
     const PCI_CLASS_INPUT_KEYBOARD: u32 = 0x0900; // class 0x09, subclass 0x00
     let match_entry = PciDeviceId {
         vendor_id: VIRTIO_VENDOR_ID,
@@ -301,8 +299,7 @@ libpanda::main! {
         // `DeviceResource` from *outside* its own context isn't safe), so
         // shutdown has to be a request this process observes and acts on
         // itself, exiting normally through the same `OP_PROCESS_EXIT` path
-        // every other process uses. See `plans/device-driver-model.md`'s
-        // Phase 7 landed-deviations note.
+        // every other process uses.
         if let Some(parent) = parent.as_ref() {
             let mut shutdown_buf = [0u8; 16];
             if let Ok(Some(n)) = parent.try_recv(&mut shutdown_buf)
@@ -567,7 +564,7 @@ fn serve_provider_requests(
                 let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
             }
             // `keyboard:` never serves `OP_DISPLAY_*` — those request kinds
-            // (roadmap M4) only arrive on a `display:` provider
+            // only arrive on a `display:` provider
             // (`userspace/drivers/virtio-gpu`).
             Request::DisplayInfo { request_id, .. } => {
                 let _ = provider.reply_display_info_err(request_id, ErrorCode::NotSupported);

@@ -7,7 +7,7 @@
 //!
 //! IOMMU-independent by design: this module only tracks claim ownership and
 //! posts events. Actual hardware access (MMIO mapping, DMA, IRQ routing) is
-//! Phase 6, gated on IOMMU support.
+//! gated on IOMMU support.
 
 pub mod pci;
 pub mod subscription;
@@ -337,7 +337,7 @@ impl DeviceRegistry {
         self.owners.get(&device_id).copied()
     }
 
-    /// Look up a device's bus-specific info by ID. Used by the Phase 6
+    /// Look up a device's bus-specific info by ID. Used by the
     /// hardware-access syscalls (`handle_device_claim`/`handle_device_map_mmio`)
     /// to recover the `PciAddress` behind an owned device handle.
     pub fn info(&self, device_id: DeviceId) -> Option<DeviceInfo> {

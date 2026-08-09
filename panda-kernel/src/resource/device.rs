@@ -1,6 +1,6 @@
 //! The `Device`-typed resource: an owned device handle from `OP_DEVICE_CLAIM`.
 //!
-//! This is the root capability for the Phase 6 hardware-access syscalls
+//! This is the root capability for the hardware-access syscalls
 //! (`OP_DEVICE_MAP_MMIO`/`OP_DMA_ALLOC`/`OP_DMA_FREE`/
 //! `OP_DEVICE_SUBSCRIBE_IRQ` — see `panda-kernel/src/syscall/device.rs`).
 //! It tracks every MMIO mapping, DMA allocation, and IRQ subscription made
@@ -213,7 +213,7 @@ impl DeviceResource {
     /// `DisplayDevice::map_into_process`) — this kernel has no PAT/PCD
     /// (non-cacheable) mapping support yet (grepped for it: none exists),
     /// so unlike the plan's description this does not force the mapping
-    /// uncacheable. TODO(plans/device-driver-model.md Phase 6): add a
+    /// uncacheable. TODO(plans/device-driver-model.md): add a
     /// non-cacheable `MemoryMappingOptions` variant (PAT/PCD/PWT) and use
     /// it here once it exists; until then, a driver reading/writing device
     /// registers through this mapping must not rely on write ordering or
