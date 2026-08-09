@@ -615,6 +615,16 @@ fn serve_provider_requests(provider: &SchemeProvider, mut device: Option<&mut De
             Request::Size { request_id, .. } => {
                 let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
             }
+            // Likewise the M5 filesystem request kinds, which only ever
+            // arrive on the filesystem service's `file:` provider
+            // (`userspace/services/fs`).
+            Request::Stat { .. }
+            | Request::Create { .. }
+            | Request::Unlink { .. }
+            | Request::Mkdir { .. }
+            | Request::Rmdir { .. } => {
+                let _ = provider.reply_unsupported(&request);
+            }
             Request::DisplayInfo { request_id, .. } => {
                 let Some(dev) = device.as_deref_mut() else {
                     let _ = provider.reply_display_info_err(request_id, ErrorCode::InvalidHandle);

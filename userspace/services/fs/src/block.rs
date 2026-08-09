@@ -1,10 +1,11 @@
 //! Block device interface for random-access data.
 //!
-//! All block devices are async. Synchronous devices (like in-memory buffers)
-//! simply return immediately-ready futures.
-
-use alloc::boxed::Box;
-use async_trait::async_trait;
+//! Moved from `panda-kernel/src/resource/block.rs` (roadmap M5) together
+//! with its only remaining consumer, [`crate::ext2`], and made synchronous —
+//! see the crate doc comment's "Why synchronous?" section. The kernel no
+//! longer has a `BlockDevice` trait at all: `block:` is a userspace scheme
+//! (`userspace/drivers/virtio-blk`) with a userspace client
+//! ([`crate::schemes::SchemeBlockDevice`]).
 
 /// Errors that can occur during block operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,24 +20,20 @@ pub enum BlockError {
     IoError,
 }
 
-/// Async block device interface for byte-level access.
-///
-/// This is the primary interface for block devices. All operations are async.
-/// Synchronous devices return immediately-ready futures.
+/// Block device interface for byte-level access.
 ///
 /// Implementations handle sector alignment internally.
-#[async_trait]
 pub trait BlockDevice: Send + Sync {
     /// Read bytes at the given byte offset.
     ///
     /// Returns the number of bytes read. May return fewer bytes than requested
     /// at EOF or device boundary.
-    async fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BlockError>;
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<usize, BlockError>;
 
     /// Write bytes at the given byte offset.
     ///
     /// Returns the number of bytes written.
-    async fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, BlockError> {
+    fn write_at(&self, offset: u64, buf: &[u8]) -> Result<usize, BlockError> {
         let _ = (offset, buf);
         Err(BlockError::NotWritable)
     }
@@ -50,7 +47,7 @@ pub trait BlockDevice: Send + Sync {
     }
 
     /// Flush any cached writes to storage.
-    async fn sync(&self) -> Result<(), BlockError> {
+    fn sync(&self) -> Result<(), BlockError> {
         Ok(())
     }
 }

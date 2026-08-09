@@ -28,7 +28,7 @@ libpanda::main! {
     };
     buf.as_mut_slice().fill(PARENT_MARKER);
 
-    let Ok(child) = environment::spawn("file:/initrd/buffer_owner_child") else {
+    let Ok(child) = environment::spawn("initrd:/buffer_owner_child") else {
         environment::log("FAIL: spawn failed");
         return 1;
     };

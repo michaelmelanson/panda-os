@@ -34,7 +34,7 @@ use core::ops::ControlFlow;
 use super::Ext2Fs;
 use super::guards::InodeGuard;
 use super::structs::{DirEntryRaw, FT_DIR, Inode};
-use crate::vfs::FsError;
+use crate::fs::FsError;
 
 /// Minimum ext2 directory entry size (8-byte header, no name).
 const DIR_ENTRY_HEADER_SIZE: usize = 8;
@@ -78,7 +78,7 @@ impl Ext2Fs {
     /// - `AlreadyExists` if an entry with the same name already exists.
     /// - `NoSpace` if the filesystem has no free blocks for directory expansion.
     /// - `IoError` on disk I/O failure.
-    pub async fn add_dir_entry(
+    pub fn add_dir_entry(
         &self,
         _dir_ino: u32,
         mut dir_inode: Inode,
@@ -101,12 +101,12 @@ impl Ext2Fs {
 
         // Scan existing directory blocks
         for file_block in 0..num_blocks {
-            let block_num = self.get_block(&dir_inode, file_block).await?;
+            let block_num = self.get_block(&dir_inode, file_block)?;
             if block_num == 0 {
                 continue;
             }
 
-            self.read_block(block_num, &mut block_buf).await?;
+            self.read_block(block_num, &mut block_buf)?;
 
             let mut pos = 0usize;
 
@@ -157,7 +157,7 @@ impl Ext2Fs {
                             file_type,
                         );
 
-                        self.write_block(block_num, &block_buf).await?;
+                        self.write_block(block_num, &block_buf)?;
                         return Ok((target_ino, dir_inode));
                     }
                 } else {
@@ -173,7 +173,7 @@ impl Ext2Fs {
                             name_bytes,
                             file_type,
                         );
-                        self.write_block(block_num, &block_buf).await?;
+                        self.write_block(block_num, &block_buf)?;
                         return Ok((target_ino, dir_inode));
                     }
                 }
@@ -183,7 +183,7 @@ impl Ext2Fs {
         }
 
         // No space found in existing blocks — allocate a new one
-        let new_block = self.alloc_block().await?;
+        let new_block = self.alloc_block()?;
         let mut new_buf = vec![0u8; block_size];
 
         // Consume the guard: this is the commit point
@@ -199,13 +199,11 @@ impl Ext2Fs {
             file_type,
         );
 
-        self.write_block(new_block, &new_buf).await?;
+        self.write_block(new_block, &new_buf)?;
 
         // Set the new block in the directory inode
         let file_block = num_blocks;
-        let meta_blocks = self
-            .set_block_number(&mut dir_inode, file_block, new_block)
-            .await?;
+        let meta_blocks = self.set_block_number(&mut dir_inode, file_block, new_block)?;
         dir_inode.blocks += (1 + meta_blocks) * (self.block_size() / 512);
         dir_inode.set_size(dir_inode.size() + self.block_size() as u64);
 
@@ -222,7 +220,7 @@ impl Ext2Fs {
     ///
     /// - `NotFound` if no entry with the given name exists.
     /// - `IoError` on disk I/O failure.
-    pub async fn remove_dir_entry(
+    pub fn remove_dir_entry(
         &self,
         _dir_ino: u32,
         dir_inode: Inode,
@@ -237,12 +235,12 @@ impl Ext2Fs {
         let mut block_buf = vec![0u8; block_size];
 
         for file_block in 0..num_blocks {
-            let block_num = self.get_block(&dir_inode, file_block).await?;
+            let block_num = self.get_block(&dir_inode, file_block)?;
             if block_num == 0 {
                 continue;
             }
 
-            self.read_block(block_num, &mut block_buf).await?;
+            self.read_block(block_num, &mut block_buf)?;
 
             let mut pos = 0usize;
             let mut prev_pos: Option<usize> = None;
@@ -283,7 +281,7 @@ impl Ext2Fs {
                                 block_buf[pos + 3] = 0;
                             }
 
-                            self.write_block(block_num, &block_buf).await?;
+                            self.write_block(block_num, &block_buf)?;
                             return Ok((removed_ino, dir_inode));
                         }
                     }
@@ -351,16 +349,14 @@ impl Ext2Fs {
     /// * `Ok(true)` - Directory is empty
     /// * `Ok(false)` - Directory contains entries other than `.` and `..`
     /// * `Err(_)` - I/O error reading directory blocks
-    pub async fn is_dir_empty(&self, dir_inode: &Inode) -> Result<bool, FsError> {
-        let found_non_dot_entry = self
-            .for_each_dir_entry(dir_inode, |_entry, name_bytes| {
-                if name_bytes != b"." && name_bytes != b".." {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                }
-            })
-            .await?;
+    pub fn is_dir_empty(&self, dir_inode: &Inode) -> Result<bool, FsError> {
+        let found_non_dot_entry = self.for_each_dir_entry(dir_inode, |_entry, name_bytes| {
+            if name_bytes != b"." && name_bytes != b".." {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })?;
 
         Ok(found_non_dot_entry.is_none())
     }

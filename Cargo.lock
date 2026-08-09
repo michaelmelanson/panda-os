@@ -397,6 +397,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+ "spinning_top 0.3.0",
+]
+
+[[package]]
 name = "goblin"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

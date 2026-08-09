@@ -15,19 +15,20 @@
 //!
 //! ## Locking
 //!
-//! Each alloc/free operation acquires the `alloc_lock` async mutex for its
-//! entire duration, serialising all bitmap read-modify-write cycles. This
-//! prevents TOCTOU races where two concurrent tasks could read the same
-//! bitmap state and allocate the same block or inode. The `Ext2FsMutable`
-//! `RwSpinlock` is still used for in-memory counter access, but the async
-//! mutex ensures that the full bitmap I/O + counter update sequence is atomic.
+//! The kernel version of this code held an `alloc_lock` async mutex across
+//! each alloc/free, serialising the bitmap read-modify-write cycle against
+//! other kernel tasks interleaving at its `.await` points. In this
+//! single-threaded, synchronous service each cycle runs straight through
+//! with nothing able to interleave, so no such lock exists — see `Ext2Fs`'s
+//! definition and the crate doc comment's "Why synchronous?" section. The
+//! `Ext2FsMutable` `RwSpinlock` is still used for in-memory counter access.
 
 use alloc::sync::Arc;
 use alloc::vec;
 
-use super::guards::InodeGuard;
 use super::Ext2Fs;
-use crate::vfs::FsError;
+use super::guards::InodeGuard;
+use crate::fs::FsError;
 
 impl Ext2Fs {
     /// Allocate a free block from the filesystem.
@@ -37,9 +38,7 @@ impl Ext2Fs {
     /// both the block group descriptor and the superblock, writing both back.
     ///
     /// Returns the allocated block number, or `NoSpace` if the filesystem is full.
-    pub async fn alloc_block(&self) -> Result<u32, FsError> {
-        let _guard = self.alloc_lock.lock().await;
-
+    pub fn alloc_block(&self) -> Result<u32, FsError> {
         let block_size = self.block_size() as usize;
         let (num_groups, first_data_block) = {
             let m = self.mutable().read();
@@ -63,7 +62,12 @@ impl Ext2Fs {
                 } else {
                     m.superblock.blocks_per_group
                 };
-                (bgd.free_blocks_count, bgd.block_bitmap, blocks_in_group, m.superblock.blocks_per_group)
+                (
+                    bgd.free_blocks_count,
+                    bgd.block_bitmap,
+                    blocks_in_group,
+                    m.superblock.blocks_per_group,
+                )
             };
 
             if free_count == 0 {
@@ -72,7 +76,7 @@ impl Ext2Fs {
 
             // Read the block bitmap
             let mut bitmap = vec![0u8; block_size];
-            self.read_block(bitmap_block, &mut bitmap).await?;
+            self.read_block(bitmap_block, &mut bitmap)?;
 
             // Scan for first free bit
             let bits_to_scan = blocks_in_group as usize;
@@ -81,7 +85,7 @@ impl Ext2Fs {
                 set_bit(&mut bitmap, bit_index);
 
                 // Write bitmap back
-                self.write_block(bitmap_block, &bitmap).await?;
+                self.write_block(bitmap_block, &bitmap)?;
 
                 // Update free counts under the write lock
                 {
@@ -91,11 +95,12 @@ impl Ext2Fs {
                 }
 
                 // Write updated metadata to disk
-                self.write_block_group_descriptor(group as u32).await?;
-                self.write_superblock().await?;
+                self.write_block_group_descriptor(group as u32)?;
+                self.write_superblock()?;
 
                 // Calculate the absolute block number, accounting for first_data_block offset
-                let block_num = first_data_block + group as u32 * blocks_per_group + bit_index as u32;
+                let block_num =
+                    first_data_block + group as u32 * blocks_per_group + bit_index as u32;
                 return Ok(block_num);
             }
         }
@@ -107,11 +112,9 @@ impl Ext2Fs {
     ///
     /// Clears the bit in the block bitmap, increments free block counts in
     /// the block group descriptor and superblock, and writes all back to disk.
-    pub async fn free_block(&self, block_num: u32) -> Result<(), FsError> {
-        let _guard = self.alloc_lock.lock().await;
-
+    pub fn free_block(&self, block_num: u32) -> Result<(), FsError> {
         if block_num >= self.blocks_count() {
-            log::warn!("ext2: free_block {} out of range", block_num);
+            crate::warn!("ext2: free_block {} out of range", block_num);
             return Err(FsError::IoError);
         }
 
@@ -136,15 +139,15 @@ impl Ext2Fs {
 
         // Read bitmap, clear bit, write back
         let mut bitmap = vec![0u8; block_size];
-        self.read_block(bitmap_block, &mut bitmap).await?;
+        self.read_block(bitmap_block, &mut bitmap)?;
 
         if !get_bit(&bitmap, bit_index) {
-            log::warn!("ext2: free_block {} was already free", block_num);
+            crate::warn!("ext2: free_block {} was already free", block_num);
             return Err(FsError::IoError);
         }
 
         clear_bit(&mut bitmap, bit_index);
-        self.write_block(bitmap_block, &bitmap).await?;
+        self.write_block(bitmap_block, &bitmap)?;
 
         // Update free counts
         {
@@ -153,8 +156,8 @@ impl Ext2Fs {
             m.superblock.free_blocks_count += 1;
         }
 
-        self.write_block_group_descriptor(group as u32).await?;
-        self.write_superblock().await?;
+        self.write_block_group_descriptor(group as u32)?;
+        self.write_superblock()?;
 
         Ok(())
     }
@@ -170,9 +173,7 @@ impl Ext2Fs {
     /// the inode will be automatically freed.
     ///
     /// Returns `NoSpace` if no inodes are available.
-    pub async fn alloc_inode(self: &Arc<Self>) -> Result<InodeGuard, FsError> {
-        let _guard = self.alloc_lock.lock().await;
-
+    pub fn alloc_inode(self: &Arc<Self>) -> Result<InodeGuard, FsError> {
         let block_size = self.block_size() as usize;
         let num_groups = {
             let m = self.mutable().read();
@@ -196,7 +197,7 @@ impl Ext2Fs {
 
             // Read the inode bitmap
             let mut bitmap = vec![0u8; block_size];
-            self.read_block(bitmap_block, &mut bitmap).await?;
+            self.read_block(bitmap_block, &mut bitmap)?;
 
             // Scan for first free bit
             let bits_to_scan = inodes_per_group as usize;
@@ -205,7 +206,7 @@ impl Ext2Fs {
                 set_bit(&mut bitmap, bit_index);
 
                 // Write bitmap back
-                self.write_block(bitmap_block, &bitmap).await?;
+                self.write_block(bitmap_block, &bitmap)?;
 
                 // Update free counts
                 {
@@ -214,8 +215,8 @@ impl Ext2Fs {
                     m.superblock.free_inodes_count -= 1;
                 }
 
-                self.write_block_group_descriptor(group as u32).await?;
-                self.write_superblock().await?;
+                self.write_block_group_descriptor(group as u32)?;
+                self.write_superblock()?;
 
                 // Inode numbers are 1-indexed
                 let ino = group as u32 * inodes_per_group + bit_index as u32 + 1;
@@ -230,9 +231,7 @@ impl Ext2Fs {
     ///
     /// Clears the bit in the inode bitmap, increments free inode counts in
     /// the block group descriptor and superblock, and writes all back to disk.
-    pub async fn free_inode(&self, ino: u32) -> Result<(), FsError> {
-        let _guard = self.alloc_lock.lock().await;
-
+    pub fn free_inode(&self, ino: u32) -> Result<(), FsError> {
         if ino == 0 {
             return Err(FsError::IoError);
         }
@@ -252,15 +251,15 @@ impl Ext2Fs {
 
         // Read bitmap, clear bit, write back
         let mut bitmap = vec![0u8; block_size];
-        self.read_block(bitmap_block, &mut bitmap).await?;
+        self.read_block(bitmap_block, &mut bitmap)?;
 
         if !get_bit(&bitmap, bit_index) {
-            log::warn!("ext2: free_inode {} was already free", ino);
+            crate::warn!("ext2: free_inode {} was already free", ino);
             return Err(FsError::IoError);
         }
 
         clear_bit(&mut bitmap, bit_index);
-        self.write_block(bitmap_block, &bitmap).await?;
+        self.write_block(bitmap_block, &bitmap)?;
 
         // Update free counts
         {
@@ -269,8 +268,8 @@ impl Ext2Fs {
             m.superblock.free_inodes_count += 1;
         }
 
-        self.write_block_group_descriptor(group as u32).await?;
-        self.write_superblock().await?;
+        self.write_block_group_descriptor(group as u32)?;
+        self.write_superblock()?;
 
         Ok(())
     }
@@ -329,10 +328,7 @@ impl Ext2Fs {
     /// This must be called when a directory inode is allocated (e.g., during `mkdir`).
     /// The count is used by fsck and some allocation heuristics.
     ///
-    /// Acquires `alloc_lock` to serialise with other bitmap operations.
-    pub async fn inc_used_dirs_count(&self, ino: u32) -> Result<(), FsError> {
-        let _guard = self.alloc_lock.lock().await;
-
+    pub fn inc_used_dirs_count(&self, ino: u32) -> Result<(), FsError> {
         let group = ((ino - 1) / self.inodes_per_group()) as usize;
 
         {
@@ -344,7 +340,7 @@ impl Ext2Fs {
                 m.block_groups[group].used_dirs_count.saturating_add(1);
         }
 
-        self.write_block_group_descriptor(group as u32).await?;
+        self.write_block_group_descriptor(group as u32)?;
         Ok(())
     }
 
@@ -353,10 +349,7 @@ impl Ext2Fs {
     /// This must be called when a directory inode is freed (e.g., during `rmdir`).
     /// The count is used by fsck and some allocation heuristics.
     ///
-    /// Acquires `alloc_lock` to serialise with other bitmap operations.
-    pub async fn dec_used_dirs_count(&self, ino: u32) -> Result<(), FsError> {
-        let _guard = self.alloc_lock.lock().await;
-
+    pub fn dec_used_dirs_count(&self, ino: u32) -> Result<(), FsError> {
         let group = ((ino - 1) / self.inodes_per_group()) as usize;
 
         {
@@ -368,8 +361,7 @@ impl Ext2Fs {
                 m.block_groups[group].used_dirs_count.saturating_sub(1);
         }
 
-        self.write_block_group_descriptor(group as u32).await?;
+        self.write_block_group_descriptor(group as u32)?;
         Ok(())
     }
 }
-

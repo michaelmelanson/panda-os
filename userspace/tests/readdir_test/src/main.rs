@@ -6,6 +6,17 @@ use libpanda::{environment, file, DirEntry};
 libpanda::main! {
     environment::log("readdir test starting");
 
+    // This test plays the role of `init`, so it starts the filesystem
+    // service that provides `file:` itself (roadmap M5) — see `vfs_test`.
+    let Ok(fs_handle) = environment::spawn("initrd:/fs") else {
+        environment::log("FAIL: could not spawn filesystem service");
+        return 1;
+    };
+    if libpanda::process::wait_ready(fs_handle).is_err() {
+        environment::log("FAIL: filesystem service did not become ready");
+        return 1;
+    }
+
     // Test: Open the initrd directory
     let handle = if let Ok(h) = environment::opendir("file:/initrd") {
         h
@@ -44,6 +55,12 @@ libpanda::main! {
     if file::close(handle) < 0 {
         environment::log("FAIL: Could not close directory handle");
         return 1;
+    }
+
+    // Ask the filesystem service to exit, or QEMU never shuts down — see
+    // `ext2_test`'s identical shutdown request.
+    if let Some(fs_channel) = libpanda::ipc::Channel::from_handle_borrowed(fs_handle) {
+        let _ = fs_channel.send(b"shutdown");
     }
 
     environment::log("readdir test passed");

@@ -22,7 +22,7 @@ libpanda::main! {
 
     let mailbox = Mailbox::default();
 
-    let Ok(child_handle) = ChildBuilder::new("file:/initrd/mailbox_overflow_child")
+    let Ok(child_handle) = ChildBuilder::new("initrd:/mailbox_overflow_child")
         .mailbox(mailbox.handle(), EVENT_CHANNEL_READABLE | EVENT_CHANNEL_CLOSED)
         .spawn_handle()
     else {

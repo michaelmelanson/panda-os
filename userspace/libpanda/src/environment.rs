@@ -162,15 +162,12 @@ pub fn screenshot_ready() {
     log("<<<SCREENSHOT_READY>>>");
 }
 
-/// Mount a filesystem.
-///
-/// # Arguments
-/// * `fstype` - Filesystem type (e.g., "ext2")
-/// * `mountpoint` - Path where the filesystem should be mounted (e.g., "/mnt")
-#[inline(always)]
-pub fn mount(fstype: &str, mountpoint: &str) -> Result<()> {
-    error::from_syscall_unit(sys::env::mount(fstype, mountpoint))
-}
+// `mount` was deleted in roadmap M5. Mounting is no longer something a
+// process asks the kernel to do: `userspace/services/fs` mounts ext2 on
+// `block:/pci/storage/0` at startup, before registering `file:` and
+// signalling readiness on its spawn channel. A process that needs the
+// filesystem waits for that handshake (`libpanda::process::wait_ready`)
+// instead of calling a mount syscall.
 
 /// Create a new file in a directory.
 ///

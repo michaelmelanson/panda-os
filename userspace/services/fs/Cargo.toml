@@ -1,0 +1,21 @@
+[package]
+name = "fs"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["os"]
+# The parts that talk to the kernel (the `block:`/`initrd:` scheme clients
+# and the `file:` serving loop). Disable to unit-test the mount table and
+# ext2 on the host — mirrors `userspace/compositor`'s `os` feature.
+os = ["dep:libpanda"]
+
+[dependencies]
+libpanda = { workspace = true, optional = true }
+panda-abi = { path = "../../../panda-abi" }
+spinning_top = { workspace = true }
+
+[[bin]]
+name = "fs"
+path = "src/main.rs"
+required-features = ["os"]

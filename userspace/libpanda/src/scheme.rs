@@ -203,6 +203,85 @@ impl SchemeProvider {
         })
     }
 
+    /// Reject `request` with `NotSupported`, whatever kind it is.
+    ///
+    /// Every provider serves a subset of the protocol and has to answer the
+    /// rest *somehow* — a request left unanswered leaves the caller blocked
+    /// in `round_trip` forever. Without this, each provider needed one
+    /// hand-written rejection arm per unsupported kind, which is how
+    /// `Request` gaining the M5 filesystem kinds broke the build of all
+    /// three drivers and the compositor at once. The kind-to-reply mapping
+    /// belongs here, next to the reply helpers, rather than being repeated
+    /// in every serve loop.
+    pub fn reply_unsupported(&self, request: &Request<'_>) -> Result<()> {
+        let request_id = request.request_id();
+        let error = ErrorCode::NotSupported;
+        match request {
+            Request::Open { .. } => self.reply_open_err(request_id, error),
+            Request::Readdir { .. } => self.reply_readdir_err(request_id, error),
+            Request::Read { .. } => self.reply_read_err(request_id, error),
+            Request::Write { .. } => self.reply_write_err(request_id, error),
+            Request::Close { .. } => self.reply_close_err(request_id, error),
+            Request::Connect { .. } => self.reply_connect_err(request_id, error),
+            Request::Size { .. } => self.reply_size_err(request_id, error),
+            Request::Stat { .. } => self.reply_stat_err(request_id, error),
+            Request::Create { .. } => self.reply_create_err(request_id, error),
+            Request::Unlink { .. } => {
+                self.reply_path_op_err(scheme_protocol::MSG_UNLINK, request_id, error)
+            }
+            Request::Mkdir { .. } => {
+                self.reply_path_op_err(scheme_protocol::MSG_MKDIR, request_id, error)
+            }
+            Request::Rmdir { .. } => {
+                self.reply_path_op_err(scheme_protocol::MSG_RMDIR, request_id, error)
+            }
+            Request::DisplayInfo { .. } => self.reply_display_info_err(request_id, error),
+            Request::DisplayMap { .. } => self.reply_display_map_err(request_id, error),
+            Request::DisplayFlush { .. } => self.reply_display_flush_err(request_id, error),
+        }
+    }
+
+    /// Reply to a `Stat` request with the resource's size and whether it is
+    /// a directory — see `panda_abi::scheme_protocol::MSG_STAT`.
+    pub fn reply_stat_ok(&self, request_id: u64, size: u64, is_dir: bool) -> Result<()> {
+        self.send_encoded(|buf| Response::encode_stat_ok(request_id, size, is_dir, buf))
+    }
+
+    /// Reply to a `Stat` request with an error.
+    pub fn reply_stat_err(&self, request_id: u64, error: ErrorCode) -> Result<()> {
+        self.send_encoded(|buf| {
+            Response::encode_err(scheme_protocol::MSG_STAT, request_id, error, buf)
+        })
+    }
+
+    /// Reply to a `Create` request with the newly created file's resource
+    /// id (the same contract as [`reply_open_ok`](Self::reply_open_ok): the
+    /// file comes back open) — see
+    /// `panda_abi::scheme_protocol::MSG_CREATE`.
+    pub fn reply_create_ok(&self, request_id: u64, resource_id: u64) -> Result<()> {
+        self.send_encoded(|buf| Response::encode_create_ok(request_id, resource_id, buf))
+    }
+
+    /// Reply to a `Create` request with an error.
+    pub fn reply_create_err(&self, request_id: u64, error: ErrorCode) -> Result<()> {
+        self.send_encoded(|buf| {
+            Response::encode_err(scheme_protocol::MSG_CREATE, request_id, error, buf)
+        })
+    }
+
+    /// Acknowledge an `Unlink`/`Mkdir`/`Rmdir` request. `kind` must be the
+    /// `MSG_*` constant of the request being answered, since those three
+    /// share one payload-free response shape.
+    pub fn reply_path_op_ok(&self, kind: u8, request_id: u64) -> Result<()> {
+        self.send_encoded(|buf| Response::encode_path_op_ok(kind, request_id, buf))
+    }
+
+    /// Reply to an `Unlink`/`Mkdir`/`Rmdir` request with an error. See
+    /// [`reply_path_op_ok`](Self::reply_path_op_ok) for `kind`.
+    pub fn reply_path_op_err(&self, kind: u8, request_id: u64, error: ErrorCode) -> Result<()> {
+        self.send_encoded(|buf| Response::encode_err(kind, request_id, error, buf))
+    }
+
     /// Reply to a `DisplayInfo` request with the display's mode info.
     pub fn reply_display_info_ok(
         &self,

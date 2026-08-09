@@ -562,8 +562,8 @@ fn serve_provider_requests(
             }
             Request::Size { request_id, .. } => {
                 // The eventq has no addressable size (see `Request::Size`'s
-                // doc comment) — only `resource::block_client::SchemeBlockDevice`
-                // (M4's block driver service) uses this request.
+                // doc comment) — only the filesystem service's `block:`
+                // client (`userspace/services/fs`) uses this request.
                 let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
             }
             // `keyboard:` never serves `OP_DISPLAY_*` — those request kinds
@@ -577,6 +577,16 @@ fn serve_provider_requests(
             }
             Request::DisplayFlush { request_id, .. } => {
                 let _ = provider.reply_display_flush_err(request_id, ErrorCode::NotSupported);
+            }
+            // The M5 filesystem request kinds only ever arrive on the
+            // filesystem service's `file:` provider
+            // (`userspace/services/fs`), never here.
+            Request::Stat { .. }
+            | Request::Create { .. }
+            | Request::Unlink { .. }
+            | Request::Mkdir { .. }
+            | Request::Rmdir { .. } => {
+                let _ = provider.reply_unsupported(&request);
             }
         }
     }

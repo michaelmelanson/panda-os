@@ -17,15 +17,15 @@
 //!
 //! ```ignore
 //! // alloc_inode returns InodeGuard directly
-//! let inode_guard = fs.alloc_inode().await?;
-//! let block_guard = BlockGuard::new(fs.clone(), fs.alloc_block().await?);
+//! let inode_guard = fs.alloc_inode()?;
+//! let block_guard = BlockGuard::new(fs.clone(), fs.alloc_block()?);
 //!
 //! // For operations needing the value before commit, use unsafe peek()
 //! let block_num = unsafe { block_guard.peek() };
-//! fs.write_block(block_num, &data).await?;
+//! fs.write_block(block_num, &data)?;
 //!
 //! // Consume at the commit point (e.g., passing to add_dir_entry)
-//! let (ino, updated) = fs.add_dir_entry(..., inode_guard, ...).await?;
+//! let (ino, updated) = fs.add_dir_entry(..., inode_guard, ...)?;
 //! block_guard.consume();  // Commit block after successful dir entry
 //! ```
 
@@ -77,12 +77,13 @@ impl InodeGuard {
 impl Drop for InodeGuard {
     fn drop(&mut self) {
         if let Some(ino) = self.ino.take() {
-            // Schedule async cleanup. We can't await in drop, so we spawn a task.
-            // The free_inode operation is idempotent and safe to run asynchronously.
-            let fs = self.fs.clone();
-            crate::executor::spawn(async move {
-                let _ = fs.free_inode(ino).await;
-            });
+            // The kernel version spawned an executor task here, because
+            // `free_inode` was async and `drop` cannot await. Now that it is
+            // an ordinary synchronous call (see the crate doc comment's "Why
+            // synchronous?" section) the cleanup happens inline, which also
+            // makes it ordered with respect to whatever the caller does
+            // next instead of running at some arbitrary later point.
+            let _ = self.fs.free_inode(ino);
         }
     }
 }
@@ -134,12 +135,8 @@ impl BlockGuard {
 impl Drop for BlockGuard {
     fn drop(&mut self) {
         if let Some(block) = self.block.take() {
-            // Schedule async cleanup. We can't await in drop, so we spawn a task.
-            // The free_block operation is idempotent and safe to run asynchronously.
-            let fs = self.fs.clone();
-            crate::executor::spawn(async move {
-                let _ = fs.free_block(block).await;
-            });
+            // Synchronous inline cleanup — see `InodeGuard`'s `Drop`.
+            let _ = self.fs.free_block(block);
         }
     }
 }

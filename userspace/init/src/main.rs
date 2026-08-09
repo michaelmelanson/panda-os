@@ -20,11 +20,11 @@ libpanda::main! {
     let mut drivers = DriverRegistry::new();
     drivers.scan("initrd:/drivers");
 
-    // Spawn every driver discovered in the initrd *before* mounting —
-    // critically including `virtio-blk` (M4 Phase 2,
-    // plans/device-driver-model.md): the block driver that `mount("ext2")`
-    // below needs must itself come from the initrd, since nothing else is
-    // readable yet. See `DriverRegistry::binary_paths`'s doc comment for why
+    // Spawn every driver discovered in the initrd *before* starting the
+    // filesystem service — critically including `virtio-blk` (M4 Phase 2,
+    // plans/device-driver-model.md): the block driver that the filesystem
+    // service mounts ext2 through must itself come from the initrd, since
+    // nothing else is readable yet. See `DriverRegistry::binary_paths`'s doc comment for why
     // spawning is unconditional rather than filtered by a specific
     // enumerated device's identity.
     //
@@ -46,13 +46,31 @@ libpanda::main! {
         }
     }
 
-    // Mount ext2 filesystem from the block device the driver(s) spawned
-    // above provide.
-    if environment::mount("ext2", "/mnt").is_err() {
-        environment::log("init: failed to mount ext2");
-        return 1;
+    // Start the filesystem service (roadmap M5). It registers `file:` and
+    // mounts ext2 on `block:/pci/storage/0` itself — there is no mount
+    // syscall any more, because the kernel has no mount table to mount
+    // into. It has to come out of `initrd:` for the same reason
+    // `virtio-blk` does: nothing under `file:` is readable until it is
+    // running.
+    //
+    // Waiting for its readiness handshake here is what makes every
+    // `file:` URI below safe to use: the service sends `b"ready"` only
+    // after both its mounts have been attempted *and* `file:` is
+    // registered, so nothing downstream can observe a half-mounted
+    // filesystem or an unregistered scheme.
+    match environment::spawn("initrd:/fs") {
+        Ok(handle) => {
+            if libpanda::process::wait_ready(handle).is_err() {
+                environment::log("init: filesystem service did not become ready");
+                return 1;
+            }
+        }
+        Err(_) => {
+            environment::log("init: failed to spawn filesystem service");
+            return 1;
+        }
     }
-    environment::log("init: mounted ext2 at /mnt");
+    environment::log("init: filesystem service ready");
 
     // Phase 5b: scan the now-mounted root filesystem for additional driver
     // binaries (e.g. virtio-keyboard) and spawn any not already spawned

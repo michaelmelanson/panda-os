@@ -297,20 +297,24 @@ pub fn handle_write(
         return handle_write_scheme_proxy(ua, handle_id, offset, buf_ptr, buf_len, resource);
     }
 
-    // Check if this is a VFS file (which needs async handling)
-    if let Some(vfs_file) = get_vfs_file(handle_id) {
-        handle_write_vfs(ua, handle_id, buf_ptr, buf_len, vfs_file)
-    } else {
-        // Sync path for non-VFS resources (char output, etc.)
-        handle_write_sync(ua, handle_id, buf_ptr, buf_len)
-    }
+    // There is no VFS write path any more: the kernel's one remaining
+    // filesystem (`initrd:`'s `TarFs`) is read-only, so `vfs::File` has no
+    // `write` method (roadmap M5). A VFS-backed handle therefore falls
+    // through to the sync path below and is rejected `NotWritable` there,
+    // same as any other non-writable resource.
+    handle_write_sync(ua, handle_id, buf_ptr, buf_len)
 }
 
-/// Write path for scheme-provider proxy resources (M2.2): round-trips a
-/// `Write` request to the provider process. `buf_len` is capped to
-/// `MAX_TRANSFER_SIZE` so the request is guaranteed to fit in one channel
-/// message (a short write, like a capped VFS write — see `MAX_FILE_IO_SIZE`
-/// callers elsewhere in this file).
+/// Write path for scheme-provider proxy resources (M2.2): round-trips
+/// `Write` requests to the provider process.
+///
+/// One protocol frame carries at most `MAX_TRANSFER_SIZE` (4000) bytes, so
+/// anything larger is split across several round trips rather than
+/// truncated to the first. A single `OP_FILE_WRITE` therefore still writes
+/// the whole caller-supplied buffer (up to `MAX_FILE_IO_SIZE`, the same cap
+/// the deleted VFS path used), which is what callers expect: roadmap M5
+/// moved `file:` onto this path, and `ext2_write_test`'s single 4096-byte
+/// write caught the truncation immediately.
 fn handle_write_scheme_proxy(
     ua: &UserAccess,
     handle_id: u64,
@@ -319,7 +323,7 @@ fn handle_write_scheme_proxy(
     buf_len: usize,
     resource: Arc<dyn crate::resource::Resource>,
 ) -> SyscallFuture {
-    let buf_len = buf_len.min(panda_abi::scheme_protocol::MAX_TRANSFER_SIZE);
+    let buf_len = buf_len.min(panda_abi::MAX_FILE_IO_SIZE);
     let data = match ua.read(UserSlice::new(buf_ptr, buf_len)) {
         Ok(d) => d,
         Err(_) => {
@@ -331,71 +335,27 @@ fn handle_write_scheme_proxy(
 
     Box::pin(async move {
         let proxy = resource.as_scheme_proxy().unwrap();
-        match proxy.write_at(offset, &data).await {
-            Ok(n) => {
-                scheduler::with_current_process(|proc| {
-                    if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
-                        handle.set_offset(offset + n as u64);
-                    }
-                });
-                SyscallResult::ok(n as isize)
+        let mut done = 0;
+        while done < data.len() {
+            let end = (done + panda_abi::scheme_protocol::MAX_TRANSFER_SIZE).min(data.len());
+            let n = match proxy.write_at(offset + done as u64, &data[done..end]).await {
+                Ok(n) => n,
+                // Report a partial write rather than losing it: the bytes
+                // before the failure really did reach the provider.
+                Err(code) if done == 0 => return SyscallResult::err(code),
+                Err(_) => break,
+            };
+            if n == 0 {
+                break;
             }
-            Err(code) => SyscallResult::err(code),
+            done += n;
         }
-    })
-}
-
-/// Async write path for VFS files.
-///
-/// Copies data from userspace into a kernel buffer before building the future.
-fn handle_write_vfs(
-    ua: &UserAccess,
-    handle_id: u64,
-    buf_ptr: usize,
-    buf_len: usize,
-    vfs_file: Arc<dyn VfsFile>,
-) -> SyscallFuture {
-    let offset = scheduler::with_current_process(|proc| {
-        proc.handles()
-            .get(handle_id)
-            .map(|h| h.offset())
-            .unwrap_or(0)
-    });
-
-    // Cap write size to prevent kernel heap exhaustion
-    let buf_len = buf_len.min(panda_abi::MAX_FILE_IO_SIZE);
-
-    // Copy data from userspace into kernel buffer before building future
-    let data = match ua.read(UserSlice::new(buf_ptr, buf_len)) {
-        Ok(d) => d,
-        Err(_) => {
-            return Box::pin(core::future::ready(SyscallResult::err(
-                panda_abi::ErrorCode::InvalidArgument,
-            )));
-        }
-    };
-
-    Box::pin(async move {
-        let file_lock = vfs_file.file();
-        let mut file = file_lock.lock();
-
-        // Seek to current offset
-        if file.seek(SeekFrom::Start(offset)).await.is_err() {
-            return SyscallResult::err(panda_abi::ErrorCode::IoError);
-        }
-
-        // Write data from kernel buffer
-        match file.write(&data).await {
-            Ok(n) => {
-                scheduler::with_current_process(|proc| {
-                    if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
-                        handle.set_offset(offset + n as u64);
-                    }
-                });
-                SyscallResult::ok(n as isize)
+        scheduler::with_current_process(|proc| {
+            if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
+                handle.set_offset(offset + done as u64);
             }
-            Err(_) => SyscallResult::err(panda_abi::ErrorCode::IoError),
-        }
+        });
+        SyscallResult::ok(done as isize)
     })
 }
 
@@ -609,6 +569,25 @@ fn handle_seek_scheme_proxy(
 /// The result is written back to userspace via WriteBack.
 pub fn handle_stat(handle_id: u64, stat_ptr: usize) -> SyscallFuture {
     let dst = UserSlice::new(stat_ptr, core::mem::size_of::<FileStat>());
+
+    // Scheme-provider proxy resources (`file:` since roadmap M5) answer via
+    // a `Request::Stat` round trip. Without this they would fall through to
+    // the sync path below, which reports `size: 0, is_dir: false` for
+    // anything that isn't a directory handle — see `MSG_STAT`'s doc comment.
+    if let Some(resource) = get_scheme_proxy(handle_id) {
+        return Box::pin(async move {
+            // Safety of unwrap: `resource` was resolved by `get_scheme_proxy`,
+            // which only returns handles where `as_scheme_proxy()` is `Some`.
+            let proxy = resource.as_scheme_proxy().unwrap();
+            match proxy.stat().await {
+                Ok((size, is_dir)) => {
+                    let file_stat = FileStat { size, is_dir };
+                    SyscallResult::write_back_struct(0, &file_stat, dst)
+                }
+                Err(code) => SyscallResult::err(code),
+            }
+        });
+    }
 
     // Check if this is a VFS file
     if let Some(vfs_file) = get_vfs_file(handle_id) {

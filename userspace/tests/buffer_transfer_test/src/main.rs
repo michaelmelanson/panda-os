@@ -38,7 +38,7 @@ libpanda::main! {
     }
     environment::log("Buffer transfer test: wrote pattern");
 
-    let Ok(child_handle) = environment::spawn("file:/initrd/buffer_transfer_child") else {
+    let Ok(child_handle) = environment::spawn("initrd:/buffer_transfer_child") else {
         environment::log("FAIL: spawn returned error");
         return 1;
     };

@@ -7,7 +7,7 @@ libpanda::main! {
     environment::log("Spawn test: starting");
 
     // Spawn a child process
-    let mut child = match Child::spawn("file:/initrd/spawn_child") {
+    let mut child = match Child::spawn("initrd:/spawn_child") {
         Ok(c) => c,
         Err(_) => {
             environment::log("FAIL: spawn returned error");

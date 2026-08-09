@@ -9,10 +9,10 @@ libpanda::main! {
 
     // Test 1: Open a file using file: scheme
     environment::log("Test 1: file: scheme");
-    let handle = if let Ok(h) = environment::open("file:/initrd/hello.txt", 0, 0) {
+    let handle = if let Ok(h) = environment::open("initrd:/hello.txt", 0, 0) {
         h
     } else {
-        environment::log("FAIL: Could not open file:/initrd/hello.txt");
+        environment::log("FAIL: Could not open initrd:/hello.txt");
         return 1;
     };
 

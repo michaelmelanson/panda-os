@@ -51,7 +51,7 @@ libpanda::main! {
     // If it instead dereferences the allocator's vaddr in OUR address
     // space, the file contents land in `own` (which sits at that address
     // here) — corrupting memory the kernel was never asked to touch.
-    let Ok(file) = environment::open("file:/initrd/buffer_owner_child", 0, 0) else {
+    let Ok(file) = environment::open("initrd:/buffer_owner_child", 0, 0) else {
         environment::log("FAIL: could not open our own binary from initrd");
         return 1;
     };

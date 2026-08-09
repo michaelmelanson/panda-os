@@ -1,13 +1,11 @@
 //! Ext2 file implementation.
 
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use async_trait::async_trait;
 
 use super::{Ext2Fs, Inode};
-use crate::vfs::{File, FileStat, FsError, SeekFrom};
+use crate::fs::{File, FileStat, FsError, SeekFrom};
 
 /// An open file in an ext2 filesystem.
 ///
@@ -43,7 +41,7 @@ impl Ext2File {
     }
 
     /// Get block number for file block index (handles indirection with caching).
-    async fn get_block(&mut self, file_block: u32) -> Result<u32, FsError> {
+    fn get_block(&mut self, file_block: u32) -> Result<u32, FsError> {
         let block_size = self.fs.block_size();
         let ptrs_per_block = block_size / 4;
 
@@ -53,45 +51,37 @@ impl Ext2File {
         }
 
         // For indirect blocks, use the cached block lookup
-        self.get_block_indirect(file_block, ptrs_per_block).await
+        self.get_block_indirect(file_block, ptrs_per_block)
     }
 
     /// Handle indirect block lookup with caching.
-    async fn get_block_indirect(
-        &mut self,
-        file_block: u32,
-        ptrs_per_block: u32,
-    ) -> Result<u32, FsError> {
+    fn get_block_indirect(&mut self, file_block: u32, ptrs_per_block: u32) -> Result<u32, FsError> {
         // Single indirect block (12)
         let fb = file_block - 12;
         if fb < ptrs_per_block {
-            return self.read_cached_ptr(self.inode.block[12], fb).await;
+            return self.read_cached_ptr(self.inode.block[12], fb);
         }
 
         // Double indirect block (13)
         let fb = fb - ptrs_per_block;
         if fb < ptrs_per_block * ptrs_per_block {
-            let ind = self
-                .read_cached_ptr(self.inode.block[13], fb / ptrs_per_block)
-                .await?;
-            return self.read_cached_ptr(ind, fb % ptrs_per_block).await;
+            let ind = self.read_cached_ptr(self.inode.block[13], fb / ptrs_per_block)?;
+            return self.read_cached_ptr(ind, fb % ptrs_per_block);
         }
 
         // Triple indirect block (14)
         let fb = fb - ptrs_per_block * ptrs_per_block;
         let pp = ptrs_per_block * ptrs_per_block;
-        let dbl = self.read_cached_ptr(self.inode.block[14], fb / pp).await?;
-        let ind = self
-            .read_cached_ptr(dbl, (fb % pp) / ptrs_per_block)
-            .await?;
-        self.read_cached_ptr(ind, fb % ptrs_per_block).await
+        let dbl = self.read_cached_ptr(self.inode.block[14], fb / pp)?;
+        let ind = self.read_cached_ptr(dbl, (fb % pp) / ptrs_per_block)?;
+        self.read_cached_ptr(ind, fb % ptrs_per_block)
     }
 
     /// Read a block pointer, using cache if available.
     ///
     /// This caches the entire indirect block on first access, making sequential
     /// reads through the same indirect block much faster.
-    async fn read_cached_ptr(&mut self, block: u32, index: u32) -> Result<u32, FsError> {
+    fn read_cached_ptr(&mut self, block: u32, index: u32) -> Result<u32, FsError> {
         if block == 0 {
             return Ok(0);
         }
@@ -109,7 +99,7 @@ impl Ext2File {
         let ptrs_per_block = (block_size / 4) as usize;
         let mut buf = vec![0u8; block_size as usize];
         let offset = block as u64 * block_size as u64;
-        self.fs.device().read_at(offset, &mut buf).await?;
+        self.fs.device().read_at(offset, &mut buf)?;
 
         // Parse all pointers from the block
         let pointers: Vec<u32> = (0..ptrs_per_block)
@@ -128,9 +118,8 @@ impl Ext2File {
     }
 }
 
-#[async_trait]
 impl File for Ext2File {
-    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {
         if self.pos >= self.size {
             return Ok(0);
         }
@@ -145,7 +134,7 @@ impl File for Ext2File {
             let remaining_in_block = block_size as usize - block_off;
             let chunk = core::cmp::min(remaining_in_block, to_read - done);
 
-            let block_num = self.get_block(file_block).await?;
+            let block_num = self.get_block(file_block)?;
 
             if block_num == 0 {
                 // Sparse hole - fill with zeros
@@ -154,8 +143,7 @@ impl File for Ext2File {
                 let disk_off = block_num as u64 * block_size as u64 + block_off as u64;
                 self.fs
                     .device()
-                    .read_at(disk_off, &mut buf[done..done + chunk])
-                    .await?;
+                    .read_at(disk_off, &mut buf[done..done + chunk])?;
             }
 
             done += chunk;
@@ -172,7 +160,7 @@ impl File for Ext2File {
     /// Updates the inode size and block pointers on disk after each write.
     /// Invalidates the indirect block cache when new blocks are allocated
     /// beyond the direct range.
-    async fn write(&mut self, buf: &[u8]) -> Result<usize, FsError> {
+    fn write(&mut self, buf: &[u8]) -> Result<usize, FsError> {
         if buf.is_empty() {
             return Ok(0);
         }
@@ -188,18 +176,18 @@ impl File for Ext2File {
             let chunk = core::cmp::min(remaining_in_block, buf.len() - done);
 
             // Get the current physical block (may be 0 for sparse/unallocated)
-            let mut block_num = self.get_block(file_block).await?;
+            let mut block_num = self.get_block(file_block)?;
 
             if block_num == 0 {
                 // Allocate a new block
-                block_num = self.fs.alloc_block().await?;
+                block_num = self.fs.alloc_block()?;
                 // Zero out the new block so partial writes have clean surroundings
                 let zeroes = vec![0u8; block_size as usize];
-                self.fs.write_block(block_num, &zeroes).await?;
+                self.fs.write_block(block_num, &zeroes)?;
                 // Record the new block in the inode's block map
-                let meta_blocks = self.fs
-                    .set_block_number(&mut self.inode, file_block, block_num)
-                    .await?;
+                let meta_blocks =
+                    self.fs
+                        .set_block_number(&mut self.inode, file_block, block_num)?;
                 // Update the inode's 512-byte block count (data block + any metadata blocks)
                 self.inode.blocks += (1 + meta_blocks) * (block_size / 512);
                 inode_dirty = true;
@@ -212,15 +200,13 @@ impl File for Ext2File {
             // Write the data
             if chunk == block_size as usize {
                 // Full block write — no read-modify-write needed
-                self.fs
-                    .write_block(block_num, &buf[done..done + chunk])
-                    .await?;
+                self.fs.write_block(block_num, &buf[done..done + chunk])?;
             } else {
                 // Partial block write — read-modify-write
                 let mut block_buf = vec![0u8; block_size as usize];
-                self.fs.read_block(block_num, &mut block_buf).await?;
+                self.fs.read_block(block_num, &mut block_buf)?;
                 block_buf[block_off..block_off + chunk].copy_from_slice(&buf[done..done + chunk]);
-                self.fs.write_block(block_num, &block_buf).await?;
+                self.fs.write_block(block_num, &block_buf)?;
             }
 
             done += chunk;
@@ -236,13 +222,13 @@ impl File for Ext2File {
 
         // Persist inode changes (size, block pointers, block count)
         if inode_dirty {
-            self.fs.write_inode(self.ino, &self.inode).await?;
+            self.fs.write_inode(self.ino, &self.inode)?;
         }
 
         Ok(done)
     }
 
-    async fn seek(&mut self, pos: SeekFrom) -> Result<u64, FsError> {
+    fn seek(&mut self, pos: SeekFrom) -> Result<u64, FsError> {
         let new_pos = match pos {
             SeekFrom::Start(n) => n as i64,
             SeekFrom::Current(n) => self.pos as i64 + n,
@@ -255,7 +241,7 @@ impl File for Ext2File {
         Ok(self.pos)
     }
 
-    async fn stat(&self) -> Result<FileStat, FsError> {
+    fn stat(&self) -> Result<FileStat, FsError> {
         Ok(FileStat {
             size: self.size,
             is_dir: false,

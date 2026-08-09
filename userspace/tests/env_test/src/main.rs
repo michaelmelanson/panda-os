@@ -12,7 +12,7 @@ libpanda::main! {
 
     // Test 1: Basic inheritance
     environment::log("env_test: Test 1 - inheritance");
-    let mut child = match Child::builder("file:/initrd/env_child")
+    let mut child = match Child::builder("initrd:/env_child")
         .args(&["env_child", "inherit"])
         .spawn()
     {
@@ -38,7 +38,7 @@ libpanda::main! {
 
     // Test 2: Override environment variable
     environment::log("env_test: Test 2 - override");
-    let mut child = match Child::builder("file:/initrd/env_child")
+    let mut child = match Child::builder("initrd:/env_child")
         .args(&["env_child", "override"])
         .env("FOO", "baz")
         .spawn()
@@ -65,7 +65,7 @@ libpanda::main! {
 
     // Test 3: Clear environment
     environment::log("env_test: Test 3 - env_clear");
-    let mut child = match Child::builder("file:/initrd/env_child")
+    let mut child = match Child::builder("initrd:/env_child")
         .args(&["env_child", "clear"])
         .env_clear()
         .env("ONLY", "yes")

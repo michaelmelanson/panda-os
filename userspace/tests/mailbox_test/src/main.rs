@@ -17,7 +17,7 @@ libpanda::main! {
 
     // Spawn a child with mailbox attachment for channel events
     // We listen for READABLE (message from child) and CLOSED (child exited and dropped channel)
-    let Ok(child_handle) = ChildBuilder::new("file:/initrd/mailbox_child")
+    let Ok(child_handle) = ChildBuilder::new("initrd:/mailbox_child")
         .mailbox(mailbox.handle(), EVENT_CHANNEL_READABLE | EVENT_CHANNEL_CLOSED)
         .spawn_handle()
     else {

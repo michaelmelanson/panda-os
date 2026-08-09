@@ -13,6 +13,20 @@ use libpanda::file;
 libpanda::main! {
     environment::log("path_traversal_test: Starting");
 
+    // This test plays the role of `init`, so it starts the filesystem
+    // service that provides `file:` itself (roadmap M5) — see `vfs_test`.
+    // The canonicalisation under test now lives in that service's mount
+    // table (`userspace/services/fs/src/mount.rs`), so this is the
+    // end-to-end counterpart of that module's host unit tests.
+    let Ok(fs_handle) = environment::spawn("initrd:/fs") else {
+        environment::log("FAIL: could not spawn filesystem service");
+        return 1;
+    };
+    if libpanda::process::wait_ready(fs_handle).is_err() {
+        environment::log("FAIL: filesystem service did not become ready");
+        return 1;
+    }
+
     // Test 1: Normal path works (baseline)
     environment::log("path_traversal_test: Test 1 - Normal open");
     let Ok(handle) = environment::open("file:/initrd/hello.txt", 0, 0) else {
@@ -58,6 +72,12 @@ libpanda::main! {
     };
     file::close(handle);
     environment::log("path_traversal_test: Test 5 passed");
+
+    // Ask the filesystem service to exit, or QEMU never shuts down — see
+    // `ext2_test`'s identical shutdown request.
+    if let Some(fs_channel) = libpanda::ipc::Channel::from_handle_borrowed(fs_handle) {
+        let _ = fs_channel.send(b"shutdown");
+    }
 
     environment::log("path_traversal_test: All tests passed!");
     0

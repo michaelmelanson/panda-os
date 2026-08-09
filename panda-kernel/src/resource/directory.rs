@@ -20,11 +20,12 @@ pub trait Directory: Send + Sync {
     /// Get the number of entries in this directory.
     fn count(&self) -> usize;
 
-    /// Get the absolute VFS path for this directory, if any.
+    /// Get the URI this directory listing came from, if it supports
+    /// mutation operations (create, unlink, mkdir, rmdir).
     ///
-    /// Returns `Some(path)` if this is a VFS-backed directory that supports
-    /// mutation operations (create, unlink).
-    fn vfs_path(&self) -> Option<String> {
+    /// See `resource::scheme::DirectoryResource`'s doc comment for why this
+    /// is a full URI rather than a bare filesystem path.
+    fn uri(&self) -> Option<String> {
         None
     }
 }

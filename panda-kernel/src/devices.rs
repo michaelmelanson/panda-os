@@ -1,4 +1,3 @@
-pub mod claims;
 mod virtio_hal;
 
 use log::debug;

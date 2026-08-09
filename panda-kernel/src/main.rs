@@ -64,13 +64,15 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
     // but linked_list_allocator's extend() has strict requirements about
     // contiguity that make it fragile. The 2MB is a small price for stability.
 
-    // Mount initrd as /initrd, and also register the `initrd:` scheme
-    // (used by the service manager to read driver binaries before any
-    // filesystem is mounted — see resource::InitrdScheme).
+    // Parse the initrd and register the `initrd:` scheme over it. This is
+    // the kernel's only filesystem since roadmap M5 — there is no mount
+    // table any more, so the archive is served directly (see
+    // resource::InitrdScheme). Everything else, `file:` included, comes from
+    // `userspace/services/fs`, which is itself one of the binaries read out
+    // of here.
     let tarfs = alloc::sync::Arc::new(
         vfs::TarFs::from_tar_data(initrd_data).expect("Failed to parse initrd TAR archive"),
     );
-    vfs::mount("/initrd", tarfs.clone());
 
     // Initialize resource scheme system
     resource::init_schemes();
@@ -83,14 +85,15 @@ unsafe extern "C" fn higher_half_continuation() -> ! {
     // aren't running yet, but TarFs operations always resolve on their
     // first poll (the data is already in memory), so we can drive the
     // future to completion directly rather than spawning a kernel task.
-    let init_data = executor::block_on_immediate(resource::load_binary("file:/initrd/init"))
+    let init_data = executor::block_on_immediate(resource::load_binary("initrd:/init"))
         .expect("Failed to load init binary from initrd");
     let init_process =
         unsafe { Process::from_elf_data(Context::from_current_page_table(), init_data) }
             .expect("Failed to load init process - cannot boot");
     scheduler::init(init_process);
 
-    // Note: ext2 filesystem mounting is now done by init via the mount syscall
+    // Note: ext2 is mounted by the userspace filesystem service, which
+    // `init` spawns out of the initrd (roadmap M5).
 
     unsafe { scheduler::exec_next_runnable() };
 }

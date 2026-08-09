@@ -194,10 +194,19 @@ impl Compositor {
                 // above); the `Size`/`DisplayInfo`/`DisplayMap`/
                 // `DisplayFlush` request kinds (M4) only ever arrive on a
                 // `block:`/`display:` provider (`userspace/drivers/virtio-blk`/
-                // `virtio-gpu`), not here, so there's nothing meaningful to
-                // answer beyond a generic rejection.
+                // `virtio-gpu`), and `Stat`/`Create`/`Unlink`/`Mkdir`/`Rmdir`
+                // (M5) only on the filesystem service
+                // (`userspace/services/fs`), not here, so there's nothing
+                // meaningful to answer beyond a generic rejection.
                 SchemeRequest::Size { request_id, .. } => {
                     let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
+                }
+                SchemeRequest::Stat { .. }
+                | SchemeRequest::Create { .. }
+                | SchemeRequest::Unlink { .. }
+                | SchemeRequest::Mkdir { .. }
+                | SchemeRequest::Rmdir { .. } => {
+                    let _ = provider.reply_unsupported(&request);
                 }
                 SchemeRequest::DisplayInfo { request_id, .. } => {
                     let _ = provider.reply_display_info_err(request_id, ErrorCode::NotSupported);

@@ -91,8 +91,14 @@ See `HandleType` in panda-abi for all type tags.
 | `OP_ENVIRONMENT_LOG` | 0x3_0002 | (msg_ptr, msg_len) | 0 |
 | `OP_ENVIRONMENT_TIME` | 0x3_0003 | () | timestamp |
 | `OP_ENVIRONMENT_OPENDIR` | 0x3_0004 | (path_ptr, path_len) | dir_handle |
-| `OP_ENVIRONMENT_MOUNT` | 0x3_0005 | (fstype_ptr, fstype_len, mount_ptr, mount_len) | 0 or error |
 | `OP_ENVIRONMENT_CONNECT` | 0x3_0006 | (uri_ptr, uri_len) | channel_handle or error |
+
+`0x3_0005` was `OP_ENVIRONMENT_MOUNT`, deleted in roadmap M5 along with the
+kernel's mount table. There is nothing left for a process to ask the kernel
+to mount: `userspace/services/fs` mounts ext2 itself, then registers `file:`,
+then signals readiness on its spawn channel — see docs/VFS.md. The number is
+left unused rather than reassigned, so a stale binary calling it gets
+`NotSupported` from the dispatch table's fallthrough.
 
 `OP_ENVIRONMENT_CONNECT` is `OP_ENVIRONMENT_OPEN`'s counterpart for schemes
 that speak their own protocol over a channel rather than the file-like
@@ -200,9 +206,9 @@ behaviour.
 | `OP_SCHEME_REGISTER` | 0x9_0000 | (name_ptr, name_len) | provider endpoint handle or error |
 
 `OP_SCHEME_REGISTER` is the M2.2 primitive that lets a userspace process
-become the backing implementation for a scheme (`display:`, `keyboard:`,
-whatever), indistinguishable to clients from a kernel-side scheme like
-`file:`. It creates a channel pair, registers a `SchemeHandler` under `name`
+become the backing implementation for a scheme (`file:`, `display:`,
+`keyboard:`, whatever), indistinguishable to clients from a kernel-side
+scheme like `initrd:`. It creates a channel pair, registers a `SchemeHandler` under `name`
 in the kernel's scheme registry (`panda-kernel/src/resource/scheme.rs`) that
 holds one endpoint, and returns a handle to the other endpoint — an
 ordinary Channel handle. The registering process serves requests with the
@@ -215,11 +221,14 @@ Fails with `InvalidArgument` for an empty or non-UTF-8 name, `AlreadyExists`
 if the name is already registered, `TooManyHandles` if the caller's handle
 table is full.
 
-Once registered, `open`/`readdir`/`read`/`write`/`close` on `<name>:...`
-route through the same `resource::open`/`resource::readdir` paths as any
-other scheme, and `syscall/file.rs`'s read/write handlers recognize the
+Once registered, `open`/`readdir`/`read`/`write`/`stat`/`close` on
+`<name>:...` route through the same `resource::open`/`resource::readdir`
+paths as any other scheme, and `syscall/file.rs`'s handlers recognize the
 resulting client-side resource (`resource::SchemeProxyResource`) and
-round-trip to the provider instead of going through the VFS.
+round-trip to the provider instead of going through the VFS. The directory
+mutations (`OP_DIRECTORY_CREATE`/`UNLINK`/`MKDIR`/`RMDIR`) route the same
+way, via `resource::create`/`unlink`/`mkdir`/`rmdir` — see docs/VFS.md for
+the request kinds roadmap M5 added for them.
 
 A provider can also serve `OP_ENVIRONMENT_CONNECT` (`environment::connect`
 in userspace), answering `Request::Connect` with `Response::ConnectOk` and a
@@ -336,7 +345,6 @@ environment::log("message");                              // Log to console
 environment::open("/path", mailbox, events) -> Handle;    // Open file
 environment::opendir("/path") -> Handle;                  // Open directory
 environment::spawn("/path", mailbox, events) -> Handle;   // Spawn process
-environment::mount("ext2", "/mnt");                       // Mount filesystem
 ```
 
 ### file

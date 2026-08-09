@@ -85,13 +85,7 @@ harness = false
 name = "elf_security"
 harness = false
 
-[[test]]
-name = "vfs_path"
-harness = false
 
-[[test]]
-name = "ext2_validation"
-harness = false
 
 [[test]]
 name = "fmask"
@@ -101,9 +95,6 @@ harness = false
 name = "smap"
 harness = false
 
-[[test]]
-name = "ext2_write"
-harness = false
 
 [[test]]
 name = "mailbox"
@@ -113,9 +104,6 @@ harness = false
 name = "handle_transfer"
 harness = false
 
-[[test]]
-name = "claims"
-harness = false
 
 [[test]]
 name = "buffer_map"

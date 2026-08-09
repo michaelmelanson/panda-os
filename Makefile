@@ -1,6 +1,6 @@
 # Resolve bash from PATH (NixOS has no /bin/bash); $(shell) itself uses /bin/sh which is universal.
 SHELL := $(shell command -v bash)
-.PHONY: build panda-kernel init compositor run test kernel-test userspace-test unit-test check-extras ext2-image clean-ext2 release
+.PHONY: build panda-kernel init fs compositor run test kernel-test userspace-test unit-test check-extras ext2-image clean-ext2 release
 
 # Set PROFILE=release for optimized builds: make build PROFILE=release
 PROFILE ?= dev
@@ -41,7 +41,10 @@ handle_transfer_test_EXTRAS := handle_transfer_child
 # cases, so it spawns both userspace drivers directly, the same way
 # block_test/ext2_*_test and display_test/compositor_start_test do (see
 # those below).
-claim_test_EXTRAS := claim_child virtio-blk virtio-gpu
+# It also spawns the filesystem service (`fs`) for its "a mounted block
+# device refuses raw opens" case, since the mount is what that service does
+# now (roadmap M5).
+claim_test_EXTRAS := claim_child virtio-blk virtio-gpu fs
 buffer_transfer_test_EXTRAS := buffer_transfer_child
 buffer_owner_test_EXTRAS := buffer_owner_child
 scheme_provider_test_EXTRAS := scheme_provider_child
@@ -65,25 +68,33 @@ compositor_protocol_test_EXTRAS := compositor_test_child virtio-gpu
 # `userspace/init/src/driver_registry.rs`), so they spawn the
 # virtio-keyboard driver directly by path, the same way `scheme_provider_test`
 # spawns its provider child. It needs to be present in the initrd for that
-# `environment::spawn("file:/initrd/virtio-keyboard")` call to resolve.
+# `environment::spawn("initrd:/virtio-keyboard")` call to resolve.
 keyboard_test_EXTRAS := virtio-keyboard
 mailbox_keyboard_test_EXTRAS := virtio-keyboard
 # block_test/ext2_*_test act as their own `init` too (see above), so they
 # spawn the virtio-blk driver directly by path
-# (`environment::spawn("file:/initrd/virtio-blk")`) before opening `block:`
-# or calling `environment::mount("ext2", ...)` — M4 Phase 2,
-# plans/device-driver-model.md.
+# (`environment::spawn("initrd:/virtio-blk")`) before opening `block:` — M4
+# Phase 2, plans/device-driver-model.md. The ext2_*_tests additionally spawn
+# the filesystem service (`initrd:/fs`), which is what mounts ext2 and
+# registers `file:` now that the kernel has no mount table (roadmap M5), so
+# they need `fs` in their initrd too.
 block_test_EXTRAS := virtio-blk
-ext2_test_EXTRAS := virtio-blk
-ext2_create_test_EXTRAS := virtio-blk
-ext2_mkdir_test_EXTRAS := virtio-blk
-ext2_write_test_EXTRAS := virtio-blk
+ext2_test_EXTRAS := virtio-blk fs
+ext2_create_test_EXTRAS := virtio-blk fs
+ext2_mkdir_test_EXTRAS := virtio-blk fs
+ext2_write_test_EXTRAS := virtio-blk fs
+# vfs_test/readdir_test/path_traversal_test exercise `file:` itself (mount
+# resolution, path canonicalisation, directory listing) against the initrd,
+# so they spawn the filesystem service but need no block device.
+vfs_test_EXTRAS := fs
+readdir_test_EXTRAS := fs
+path_traversal_test_EXTRAS := fs
 # display_test/compositor_start_test also act as their own `init` (see
 # their doc comments) and spawn the userspace virtio-gpu driver (roadmap M4)
 # directly.
 display_test_EXTRAS := virtio-gpu
 compositor_start_test_EXTRAS := virtio-gpu
-export spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS mailbox_overflow_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS fault_recovery_test_EXTRAS handle_transfer_test_EXTRAS claim_test_EXTRAS buffer_transfer_test_EXTRAS buffer_owner_test_EXTRAS scheme_provider_test_EXTRAS scheme_provider_concurrency_test_EXTRAS window_test_EXTRAS multi_window_test_EXTRAS alpha_test_EXTRAS partial_refresh_test_EXTRAS window_move_test_EXTRAS compositor_protocol_test_EXTRAS keyboard_test_EXTRAS mailbox_keyboard_test_EXTRAS block_test_EXTRAS ext2_test_EXTRAS ext2_create_test_EXTRAS ext2_mkdir_test_EXTRAS ext2_write_test_EXTRAS display_test_EXTRAS compositor_start_test_EXTRAS
+export vfs_test_EXTRAS readdir_test_EXTRAS path_traversal_test_EXTRAS spawn_test_EXTRAS yield_test_EXTRAS preempt_test_EXTRAS channel_test_EXTRAS mailbox_test_EXTRAS mailbox_overflow_test_EXTRAS args_test_EXTRAS pipeline_test_EXTRAS control_plane_test_EXTRAS env_test_EXTRAS fault_recovery_test_EXTRAS handle_transfer_test_EXTRAS claim_test_EXTRAS buffer_transfer_test_EXTRAS buffer_owner_test_EXTRAS scheme_provider_test_EXTRAS scheme_provider_concurrency_test_EXTRAS window_test_EXTRAS multi_window_test_EXTRAS alpha_test_EXTRAS partial_refresh_test_EXTRAS window_move_test_EXTRAS compositor_protocol_test_EXTRAS keyboard_test_EXTRAS mailbox_keyboard_test_EXTRAS block_test_EXTRAS ext2_test_EXTRAS ext2_create_test_EXTRAS ext2_mkdir_test_EXTRAS ext2_write_test_EXTRAS display_test_EXTRAS compositor_start_test_EXTRAS
 export PROFILE_DIR CARGO_PROFILE
 
 # Cargo commands for custom targets (require build-std for no_std targets)
@@ -93,20 +104,26 @@ KERNEL_TARGET := --target ./x86_64-panda-uefi.json
 USERSPACE_TARGET := --target ./x86_64-panda-userspace.json
 
 # Build targets
-build: panda-kernel init compositor terminal hello ls cat virtio-keyboard virtio-blk virtio-gpu
+build: panda-kernel init fs compositor terminal hello ls cat virtio-keyboard virtio-blk virtio-gpu
 	mkdir -p build/run/efi/boot
 	mkdir -p build/run/initrd/drivers
 	cp target/x86_64-panda-uefi/$(PROFILE_DIR)/panda-kernel.efi build/run/efi/boot/bootx64.efi
 	cp target/x86_64-panda-userspace/$(PROFILE_DIR)/init build/run/initrd/init
 	# virtio-blk lives in the initrd (not the ext2 image, unlike
-	# virtio-keyboard): the block driver that mounts ext2 must itself be
+	# virtio-keyboard): the block driver the filesystem service mounts ext2
+	# through must itself be
 	# readable before any filesystem is mounted (M4 Phase 2,
 	# plans/device-driver-model.md). `init`'s driver registry scans
 	# "initrd:/drivers" (see userspace/init/src/driver_registry.rs) and
-	# spawns everything found there before calling `environment::mount`.
+	# spawns everything found there before starting the filesystem service.
 	cp target/x86_64-panda-userspace/$(PROFILE_DIR)/virtio-blk build/run/initrd/drivers/virtio-blk
+	# The filesystem service lives in the initrd for the same reason
+	# virtio-blk does (roadmap M5): it is what *provides* `file:`, so it
+	# cannot be read from it. `init` spawns it as `initrd:/fs` right after
+	# the initrd drivers and waits for its readiness handshake.
+	cp target/x86_64-panda-userspace/$(PROFILE_DIR)/fs build/run/initrd/fs
 	echo "Hello from the initrd!" > build/run/initrd/hello.txt
-	tar --format=ustar -cf build/run/efi/initrd.tar -C build/run/initrd init hello.txt drivers/virtio-blk
+	tar --format=ustar -cf build/run/efi/initrd.tar -C build/run/initrd init fs hello.txt drivers/virtio-blk
 	echo 'fs0:\efi\boot\bootx64.efi' > build/run/efi/boot/startup.nsh
 
 release:
@@ -117,6 +134,9 @@ panda-kernel:
 
 init:
 	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package init $(USERSPACE_TARGET)
+
+fs:
+	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package fs $(USERSPACE_TARGET)
 
 compositor:
 	$(CARGO) build $(CARGO_BUILD_STD) $(CARGO_PROFILE) --package compositor $(USERSPACE_TARGET)
@@ -207,6 +227,9 @@ unit-test:
 	@echo ""
 	@echo "Running compositor-protocol unit tests..."
 	@cargo test -p compositor-protocol
+	@echo ""
+	@echo "Running fs unit tests..."
+	@cargo test -p fs --no-default-features
 	@echo ""
 	@echo "Running compositor unit tests..."
 	@cargo test -p compositor --no-default-features

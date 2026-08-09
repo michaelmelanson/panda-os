@@ -17,7 +17,7 @@ libpanda::main! {
     // is no service manager running to spawn the virtio-keyboard driver —
     // do it directly, the same way other userspace-scheme-provider tests
     // spawn their provider (see `userspace/tests/scheme_provider_test`).
-    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-keyboard") else {
+    let Ok(driver_handle) = environment::spawn("initrd:/virtio-keyboard") else {
         environment::log("Could not spawn virtio-keyboard driver");
         return 1;
     };

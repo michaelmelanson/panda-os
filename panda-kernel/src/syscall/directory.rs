@@ -13,16 +13,20 @@ use crate::{resource, scheduler};
 use super::helpers::{attach_to_mailbox, read_user_str};
 use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess};
 
-use super::environment::fs_error_code;
-
-/// Read the entry name from userspace and resolve it to a full VFS path within the
-/// directory handle's directory.
+/// Read the entry name from userspace and resolve it to a full URI within
+/// the directory handle's directory.
 ///
-/// Shared prelude for the four directory-mutating ops (create, unlink, mkdir, rmdir):
-/// read `name` from userspace, resolve `handle_id`'s VFS path via `as_directory()`, then
-/// join `dir_path + "/" + name` (treating an empty or root `dir_path` as `"/"`).
-/// `op` is used only for log messages, to keep them identifiable per-caller.
-fn resolve_dir_op_path(
+/// Shared prelude for the four directory-mutating ops (create, unlink,
+/// mkdir, rmdir): read `name` from userspace, resolve `handle_id`'s URI via
+/// `as_directory()`, then join `dir_uri + "/" + name`. `op` is used only for
+/// log messages, to keep them identifiable per-caller.
+///
+/// The result is a full URI (e.g. `"file:/mnt/newfile.txt"`) rather than a
+/// bare path because roadmap M5 moved the filesystem out of the kernel:
+/// these operations are now dispatched through the scheme registry to
+/// whichever provider owns the scheme (see `resource::create` and friends),
+/// instead of calling `vfs::create` directly.
+fn resolve_dir_op_uri(
     ua: &UserAccess,
     handle_id: u64,
     name_ptr: usize,
@@ -31,28 +35,29 @@ fn resolve_dir_op_path(
 ) -> Result<String, SyscallFuture> {
     let name = read_user_str(ua, name_ptr, name_len)?;
 
-    // Get the VFS path from the directory handle
-    let dir_path: Option<String> = scheduler::with_current_process(|proc| {
+    // Get the URI from the directory handle
+    let dir_uri: Option<String> = scheduler::with_current_process(|proc| {
         proc.handles()
             .get(handle_id)
             .and_then(|h| h.as_directory())
-            .and_then(|d| d.vfs_path())
+            .and_then(|d| d.uri())
     });
 
-    let Some(dir_path) = dir_path else {
-        error!("{op}: handle {handle_id} is not a VFS directory");
+    let Some(dir_uri) = dir_uri else {
+        error!("{op}: handle {handle_id} is not a mutable directory");
         return Err(Box::pin(core::future::ready(SyscallResult::err(
             panda_abi::ErrorCode::InvalidHandle,
         ))));
     };
 
-    debug!("{op}: dir={dir_path}, name={name}");
+    debug!("{op}: dir={dir_uri}, name={name}");
 
-    // Build the full path: dir_path + "/" + name
-    Ok(if dir_path.is_empty() || dir_path == "/" {
-        alloc::format!("/{}", name)
+    // Build the full URI. A `dir_uri` whose path part is empty or "/" (e.g.
+    // "file:/") must not produce a doubled slash.
+    Ok(if dir_uri.ends_with('/') {
+        alloc::format!("{}{}", dir_uri, name)
     } else {
-        alloc::format!("{}/{}", dir_path, name)
+        alloc::format!("{}/{}", dir_uri, name)
     })
 }
 
@@ -78,22 +83,20 @@ pub fn handle_create(
     let mailbox_handle = mailbox_handle as u64;
     let mode = mode as u16;
 
-    let full_path =
-        match resolve_dir_op_path(ua, handle_id, name_ptr, name_len, "handle_create") {
-            Ok(p) => p,
-            Err(e) => return e,
-        };
+    let full_uri = match resolve_dir_op_uri(ua, handle_id, name_ptr, name_len, "handle_create") {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
 
-    debug!("handle_create: path={}, mode={:#o}", full_path, mode);
+    debug!("handle_create: uri={}, mode={:#o}", full_uri, mode);
 
     Box::pin(async move {
-        match crate::vfs::create(&full_path, mode).await {
+        match resource::create(&full_uri, mode).await {
             Ok(file) => {
-                let vfs_resource = resource::scheme::VfsFileResource::new(file);
                 let result = scheduler::with_current_process(|proc| {
                     let handle_id = proc
                         .handles_mut()
-                        .insert(Arc::new(vfs_resource))
+                        .insert(Arc::from(file))
                         .map_err(|_| panda_abi::ErrorCode::TooManyHandles)?;
 
                     // Attach to mailbox if requested
@@ -111,7 +114,7 @@ pub fn handle_create(
             }
             Err(e) => {
                 error!("handle_create: failed: {:?}", e);
-                SyscallResult::err(fs_error_code(e))
+                SyscallResult::err(e)
             }
         }
     })
@@ -132,21 +135,21 @@ pub fn handle_unlink(
     name_ptr: usize,
     name_len: usize,
 ) -> SyscallFuture {
-    let full_path =
-        match resolve_dir_op_path(ua, handle_id, name_ptr, name_len, "handle_unlink") {
+    let full_uri =
+        match resolve_dir_op_uri(ua, handle_id, name_ptr, name_len, "handle_unlink") {
             Ok(p) => p,
             Err(e) => return e,
         };
 
     Box::pin(async move {
-        match crate::vfs::unlink(&full_path).await {
+        match resource::unlink(&full_uri).await {
             Ok(()) => {
-                debug!("handle_unlink: unlinked {}", full_path);
+                debug!("handle_unlink: unlinked {}", full_uri);
                 SyscallResult::ok(0)
             }
             Err(e) => {
                 error!("handle_unlink: failed: {:?}", e);
-                SyscallResult::err(fs_error_code(e))
+                SyscallResult::err(e)
             }
         }
     })
@@ -171,22 +174,22 @@ pub fn handle_mkdir(
 ) -> SyscallFuture {
     let mode = mode as u16;
 
-    let full_path = match resolve_dir_op_path(ua, handle_id, name_ptr, name_len, "handle_mkdir") {
+    let full_uri = match resolve_dir_op_uri(ua, handle_id, name_ptr, name_len, "handle_mkdir") {
         Ok(p) => p,
         Err(e) => return e,
     };
 
-    debug!("handle_mkdir: path={}, mode={:#o}", full_path, mode);
+    debug!("handle_mkdir: path={}, mode={:#o}", full_uri, mode);
 
     Box::pin(async move {
-        match crate::vfs::mkdir(&full_path, mode).await {
+        match resource::mkdir(&full_uri, mode).await {
             Ok(()) => {
-                debug!("handle_mkdir: created directory {}", full_path);
+                debug!("handle_mkdir: created directory {}", full_uri);
                 SyscallResult::ok(0)
             }
             Err(e) => {
                 error!("handle_mkdir: failed: {:?}", e);
-                SyscallResult::err(fs_error_code(e))
+                SyscallResult::err(e)
             }
         }
     })
@@ -207,20 +210,20 @@ pub fn handle_rmdir(
     name_ptr: usize,
     name_len: usize,
 ) -> SyscallFuture {
-    let full_path = match resolve_dir_op_path(ua, handle_id, name_ptr, name_len, "handle_rmdir") {
+    let full_uri = match resolve_dir_op_uri(ua, handle_id, name_ptr, name_len, "handle_rmdir") {
         Ok(p) => p,
         Err(e) => return e,
     };
 
     Box::pin(async move {
-        match crate::vfs::rmdir(&full_path).await {
+        match resource::rmdir(&full_uri).await {
             Ok(()) => {
-                debug!("handle_rmdir: removed directory {}", full_path);
+                debug!("handle_rmdir: removed directory {}", full_uri);
                 SyscallResult::ok(0)
             }
             Err(e) => {
                 error!("handle_rmdir: failed: {:?}", e);
-                SyscallResult::err(fs_error_code(e))
+                SyscallResult::err(e)
             }
         }
     })

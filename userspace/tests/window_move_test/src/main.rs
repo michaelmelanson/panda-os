@@ -19,7 +19,7 @@ libpanda::main! {
     let window_width = 200u32;
     let window_height = 150u32;
 
-    let Ok(compositor_handle) = environment::spawn("file:/initrd/compositor_test_child") else {
+    let Ok(compositor_handle) = environment::spawn("initrd:/compositor_test_child") else {
         environment::log("FAIL: could not spawn compositor_test_child");
         return 1;
     };

@@ -5,8 +5,6 @@
 
 use panda_abi::HandleType;
 
-mod block;
-pub mod block_client;
 mod buffer;
 mod channel;
 mod char_output;
@@ -19,8 +17,6 @@ mod process;
 pub(crate) mod scheme;
 mod spawn_handle;
 
-pub use block::{BlockDevice, BlockError};
-pub use block_client::{SchemeBlockDevice, SchemeBlockDeviceError};
 pub use buffer::{Buffer, BufferError, BufferExt, SharedBuffer};
 pub use channel::{ChannelEndpoint, ChannelError};
 pub use char_output::{CharOutError, CharacterOutput};
@@ -31,10 +27,9 @@ pub use initrd::InitrdScheme;
 pub use mailbox::{Mailbox, MailboxRef};
 pub use process::{Process as ProcessInterface, ProcessError};
 pub use scheme::{
-    ConsoleScheme, DirectoryResource, FileScheme, OPEN_RETRY_ATTEMPTS, OPEN_RETRY_SLEEP_MS,
-    OpenError, SchemeHandler, SchemeProxyResource, UserSchemeProvider, connect,
-    init as init_schemes, open, open_retrying, readdir, register_initrd_scheme, register_scheme,
-    register_user_scheme,
+    ConsoleScheme, DirectoryResource, OpenError, SchemeHandler, SchemeProxyResource,
+    UserSchemeProvider, connect, create, init as init_schemes, mkdir, open, readdir,
+    register_initrd_scheme, register_scheme, register_user_scheme, rmdir, unlink,
 };
 pub(crate) use scheme::unregister_scheme_if_present;
 pub use spawn_handle::SpawnHandle;
@@ -197,6 +192,16 @@ pub enum LoadBinaryError {
 /// `executor::block_on_immediate`.
 pub async fn load_binary(uri: &str) -> Result<*const [u8], LoadBinaryError> {
     let resource = open(uri).await.map_err(|_| LoadBinaryError::NotFound)?;
+
+    // Provider-backed resources (`file:` since roadmap M5, when the
+    // filesystem moved to `userspace/services/fs`) have no kernel-side
+    // `vfs::File` to read through — every read is a round trip to the
+    // provider. Only the initrd (`initrd:`, still kernel-resident) takes
+    // the VFS path below.
+    if let Some(proxy) = resource.as_scheme_proxy() {
+        return load_binary_from_proxy(proxy).await;
+    }
+
     let vfs_file = resource
         .as_vfs_file()
         .ok_or(LoadBinaryError::NotReadable)?;
@@ -223,4 +228,44 @@ pub async fn load_binary(uri: &str) -> Result<*const [u8], LoadBinaryError> {
 
     let boxed = data.into_boxed_slice();
     Ok(Box::leak(boxed))
+}
+
+/// [`load_binary`]'s path for a resource served by a userspace scheme
+/// provider: `Request::Stat` for the size, then `Request::Read` round trips
+/// at increasing offsets until the whole file is in hand.
+///
+/// Reads are capped per round trip at
+/// `panda_abi::scheme_protocol::MAX_TRANSFER_SIZE` (one frame's worth), so
+/// this loops where the VFS path could hand the whole buffer to a single
+/// `read`.
+async fn load_binary_from_proxy(
+    proxy: &scheme::SchemeProxyResource,
+) -> Result<*const [u8], LoadBinaryError> {
+    let (size, is_dir) = proxy.stat().await.map_err(|_| LoadBinaryError::IoError)?;
+    if is_dir {
+        return Err(LoadBinaryError::NotReadable);
+    }
+    let size = size as usize;
+
+    let mut data = alloc::vec![0u8; size];
+    let mut total_read = 0;
+    while total_read < size {
+        let want = (size - total_read).min(panda_abi::scheme_protocol::MAX_TRANSFER_SIZE);
+        let chunk = proxy
+            .read_at(total_read as u64, want, false)
+            .await
+            .map_err(|_| LoadBinaryError::IoError)?;
+        if chunk.is_empty() {
+            break; // EOF earlier than `stat` promised
+        }
+        let n = chunk.len().min(size - total_read);
+        data[total_read..total_read + n].copy_from_slice(&chunk[..n]);
+        total_read += n;
+    }
+
+    if total_read != size {
+        return Err(LoadBinaryError::IoError);
+    }
+
+    Ok(Box::leak(data.into_boxed_slice()))
 }

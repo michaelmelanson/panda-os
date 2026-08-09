@@ -15,7 +15,7 @@ libpanda::main! {
     // running to spawn the virtio-blk driver the mount below needs — do it
     // directly, the same way `keyboard_test` spawns virtio-keyboard (M4
     // Phase 2, plans/device-driver-model.md).
-    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-blk") else {
+    let Ok(driver_handle) = environment::spawn("initrd:/virtio-blk") else {
         environment::log("FAIL: could not spawn virtio-blk driver");
         return 1;
     };
@@ -29,10 +29,18 @@ libpanda::main! {
         return 1;
     }
 
-    // Mount ext2 filesystem first
-    environment::log("ext2_test: Mounting ext2 filesystem");
-    if let Err(_) = environment::mount("ext2", "/mnt") {
-        environment::log("FAIL: Could not mount ext2 filesystem");
+    // Start the filesystem service (roadmap M5): it registers `file:` and
+    // mounts ext2 on `block:/pci/storage/0` itself. There is no mount
+    // syscall any more — the kernel has no mount table — so this spawn plus
+    // its readiness handshake is what replaces it: `wait_ready` returns only
+    // once the mount has been attempted and `file:` is registered.
+    environment::log("ext2_test: Starting filesystem service");
+    let Ok(fs_handle) = environment::spawn("initrd:/fs") else {
+        environment::log("FAIL: could not spawn filesystem service");
+        return 1;
+    };
+    if libpanda::process::wait_ready(fs_handle).is_err() {
+        environment::log("FAIL: filesystem service did not become ready");
         return 1;
     }
     environment::log("ext2_test: ext2 mounted at /mnt");
@@ -132,6 +140,11 @@ libpanda::main! {
     // the real boot path), so this test (playing `init`) must ask it to
     // exit before returning itself, or QEMU never shuts down — see
     // `block_test`'s identical shutdown request.
+    // The filesystem service is likewise persistent and must be asked to
+    // exit too (roadmap M5).
+    if let Some(fs_channel) = libpanda::ipc::Channel::from_handle_borrowed(fs_handle) {
+        let _ = fs_channel.send(b"shutdown");
+    }
     let _ = driver_channel.send(b"shutdown");
 
     environment::log("ext2_test: All tests passed!");

@@ -28,7 +28,7 @@ libpanda::main! {
     // `keyboard_test`, this process plays the role of `init` (no service
     // manager runs to spawn it from `initrd:/drivers`), so spawn it
     // directly and wait for its "ready" signal.
-    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-gpu") else {
+    let Ok(driver_handle) = environment::spawn("initrd:/virtio-gpu") else {
         environment::log("FAIL: could not spawn virtio-gpu driver");
         return 1;
     };

@@ -109,21 +109,6 @@ pub fn connect(uri: &str) -> isize {
     )
 }
 
-/// Mount a filesystem.
-///
-/// Returns 0 on success, or negative error code.
-#[inline(always)]
-pub fn mount(fstype: &str, mountpoint: &str) -> isize {
-    send(
-        Handle::ENVIRONMENT,
-        OP_ENVIRONMENT_MOUNT,
-        fstype.as_ptr() as usize,
-        fstype.len(),
-        mountpoint.as_ptr() as usize,
-        mountpoint.len(),
-    )
-}
-
 /// Create a new file in a directory.
 ///
 /// Returns file handle on success, or negative error code.

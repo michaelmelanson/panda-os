@@ -218,7 +218,7 @@ impl Superblock {
     /// Returns `Ok(())` if all critical fields are valid, or an error message.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.log_block_size > Self::MAX_LOG_BLOCK_SIZE {
-            log::warn!(
+            crate::warn!(
                 "ext2: invalid log_block_size {} (max {})",
                 self.log_block_size,
                 Self::MAX_LOG_BLOCK_SIZE
@@ -244,14 +244,14 @@ impl Superblock {
 
         // Validate inode size for rev1+ filesystems
         if self.rev_level >= 1 && (self.inode_size < 128 || self.inode_size > 1024) {
-            log::warn!("ext2: invalid inode_size {}", self.inode_size);
+            crate::warn!("ext2: invalid inode_size {}", self.inode_size);
             return Err("ext2: inode_size out of range");
         }
 
         // Validate block group count isn't excessive
         let bg_count = self.blocks_count.div_ceil(self.blocks_per_group);
         if bg_count > Self::MAX_BLOCK_GROUPS {
-            log::warn!("ext2: excessive block group count {}", bg_count);
+            crate::warn!("ext2: excessive block group count {}", bg_count);
             return Err("ext2: too many block groups");
         }
 
@@ -403,4 +403,331 @@ pub struct DirEntryRaw {
     /// File type (only valid if feature is enabled)
     pub file_type: u8,
     // Name follows (up to 255 bytes, not null-terminated)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Superblock and struct validation tests, ported from the deleted
+    //! `panda-kernel/tests/ext2_validation.rs` (which ran in QEMU only
+    //! because ext2 used to live in the kernel). They verify that malicious
+    //! or corrupted ext2 disk images are rejected before they can cause
+    //! integer overflow, division by zero, or out-of-bounds reads.
+
+    use super::*;
+
+    /// Create a valid superblock for testing. All fields are set to
+    /// reasonable defaults; individual tests override specific fields.
+    fn make_valid_superblock() -> Superblock {
+        // Safety: zero-init and then set required fields.
+        // Superblock is repr(C) and all-zeros is a valid bit pattern.
+        let mut sb: Superblock = unsafe { core::mem::zeroed() };
+        sb.magic = EXT2_SUPER_MAGIC;
+        sb.blocks_count = 8192;
+        sb.inodes_count = 2048;
+        sb.blocks_per_group = 8192;
+        sb.inodes_per_group = 2048;
+        sb.log_block_size = 0; // 1024-byte blocks
+        sb.rev_level = 1;
+        sb.inode_size = 128;
+        sb
+    }
+
+    /// Create an inode with zeroed fields for testing.
+    fn make_inode() -> Inode {
+        unsafe { core::mem::zeroed() }
+    }
+
+    // =============================================================================
+    // Superblock::validate tests
+    // =============================================================================
+
+    #[test]
+    fn valid_superblock_passes() {
+        let sb = make_valid_superblock();
+        assert!(
+            sb.validate().is_ok(),
+            "Valid superblock should pass validation"
+        );
+    }
+
+    #[test]
+    fn zero_blocks_count_rejected() {
+        let mut sb = make_valid_superblock();
+        sb.blocks_count = 0;
+        assert_eq!(sb.validate().unwrap_err(), "ext2: blocks_count is zero");
+    }
+
+    #[test]
+    fn zero_inodes_count_rejected() {
+        let mut sb = make_valid_superblock();
+        sb.inodes_count = 0;
+        assert_eq!(sb.validate().unwrap_err(), "ext2: inodes_count is zero");
+    }
+
+    #[test]
+    fn zero_blocks_per_group_rejected() {
+        let mut sb = make_valid_superblock();
+        sb.blocks_per_group = 0;
+        assert_eq!(sb.validate().unwrap_err(), "ext2: blocks_per_group is zero");
+    }
+
+    #[test]
+    fn zero_inodes_per_group_rejected() {
+        let mut sb = make_valid_superblock();
+        sb.inodes_per_group = 0;
+        assert_eq!(sb.validate().unwrap_err(), "ext2: inodes_per_group is zero");
+    }
+
+    #[test]
+    fn log_block_size_too_large_rejected() {
+        let mut sb = make_valid_superblock();
+        sb.log_block_size = 7; // Would be 1024 << 7 = 128KB, beyond max
+        assert_eq!(
+            sb.validate().unwrap_err(),
+            "ext2: log_block_size out of range"
+        );
+    }
+
+    #[test]
+    fn inode_size_too_small_rejected() {
+        let mut sb = make_valid_superblock();
+        sb.rev_level = 1;
+        sb.inode_size = 64; // Below minimum of 128
+        assert_eq!(sb.validate().unwrap_err(), "ext2: inode_size out of range");
+    }
+
+    #[test]
+    fn inode_size_too_large_rejected() {
+        let mut sb = make_valid_superblock();
+        sb.rev_level = 1;
+        sb.inode_size = 2048; // Above maximum of 1024
+        assert_eq!(sb.validate().unwrap_err(), "ext2: inode_size out of range");
+    }
+
+    #[test]
+    fn rev0_ignores_inode_size_field() {
+        let mut sb = make_valid_superblock();
+        sb.rev_level = 0;
+        sb.inode_size = 0; // Invalid value, but rev0 ignores it
+        assert!(sb.validate().is_ok(), "Rev0 should ignore inode_size field");
+    }
+
+    #[test]
+    fn excessive_block_groups_rejected() {
+        let mut sb = make_valid_superblock();
+        // blocks_count / blocks_per_group > MAX_BLOCK_GROUPS (1_000_000)
+        sb.blocks_count = u32::MAX;
+        sb.blocks_per_group = 1; // Would create ~4 billion block groups
+        assert_eq!(sb.validate().unwrap_err(), "ext2: too many block groups");
+    }
+
+    // =============================================================================
+    // Superblock::block_size tests
+    // =============================================================================
+
+    #[test]
+    fn block_size_1k() {
+        let mut sb = make_valid_superblock();
+        sb.log_block_size = 0;
+        assert_eq!(sb.block_size(), Some(1024));
+    }
+
+    #[test]
+    fn block_size_2k() {
+        let mut sb = make_valid_superblock();
+        sb.log_block_size = 1;
+        assert_eq!(sb.block_size(), Some(2048));
+    }
+
+    #[test]
+    fn block_size_4k() {
+        let mut sb = make_valid_superblock();
+        sb.log_block_size = 2;
+        assert_eq!(sb.block_size(), Some(4096));
+    }
+
+    #[test]
+    fn block_size_64k() {
+        let mut sb = make_valid_superblock();
+        sb.log_block_size = 6; // 1024 << 6 = 65536
+        assert_eq!(sb.block_size(), Some(65536));
+    }
+
+    #[test]
+    fn block_size_invalid() {
+        let mut sb = make_valid_superblock();
+        sb.log_block_size = 7;
+        assert_eq!(sb.block_size(), None);
+    }
+
+    // =============================================================================
+    // Superblock::block_group_count tests
+    // =============================================================================
+
+    #[test]
+    fn block_group_count_normal() {
+        let mut sb = make_valid_superblock();
+        sb.blocks_count = 8192;
+        sb.blocks_per_group = 8192;
+        assert_eq!(sb.block_group_count(), Some(1));
+    }
+
+    #[test]
+    fn block_group_count_rounds_up() {
+        let mut sb = make_valid_superblock();
+        sb.blocks_count = 8193;
+        sb.blocks_per_group = 8192;
+        assert_eq!(sb.block_group_count(), Some(2));
+    }
+
+    #[test]
+    fn block_group_count_zero_bpg() {
+        let mut sb = make_valid_superblock();
+        sb.blocks_per_group = 0;
+        assert_eq!(sb.block_group_count(), None);
+    }
+
+    // =============================================================================
+    // Superblock::inode_size tests
+    // =============================================================================
+
+    #[test]
+    fn inode_size_rev0() {
+        let mut sb = make_valid_superblock();
+        sb.rev_level = 0;
+        sb.inode_size = 999; // Should be ignored
+        assert_eq!(sb.inode_size(), 128);
+    }
+
+    #[test]
+    fn inode_size_rev1() {
+        let mut sb = make_valid_superblock();
+        sb.rev_level = 1;
+        sb.inode_size = 128;
+        assert_eq!(sb.inode_size(), 128);
+    }
+
+    #[test]
+    fn inode_size_rev1_256() {
+        let mut sb = make_valid_superblock();
+        sb.rev_level = 1;
+        sb.inode_size = 256;
+        assert_eq!(sb.inode_size(), 256);
+    }
+
+    // =============================================================================
+    // Feature flag tests
+    // =============================================================================
+
+    #[test]
+    fn unsupported_incompat_detected() {
+        let mut sb = make_valid_superblock();
+        sb.feature_incompat = 0x0040; // EXTENTS - not supported
+        assert_ne!(sb.unsupported_incompat_features(), 0);
+    }
+
+    #[test]
+    fn supported_incompat_passes() {
+        let mut sb = make_valid_superblock();
+        sb.feature_incompat = 0x0002; // FILETYPE - supported
+        assert_eq!(sb.unsupported_incompat_features(), 0);
+    }
+
+    // =============================================================================
+    // Inode helper tests
+    // =============================================================================
+
+    #[test]
+    fn inode_size_combines_high_low() {
+        let mut inode = make_inode();
+        inode.size = 0x1000;
+        inode.size_high = 0x0001;
+        assert_eq!(inode.size(), 0x0001_0000_1000);
+    }
+
+    #[test]
+    fn inode_is_dir() {
+        let mut inode = make_inode();
+        inode.mode = S_IFDIR | 0o755;
+        assert!(inode.is_dir());
+        assert!(!inode.is_file());
+        assert!(!inode.is_symlink());
+    }
+
+    #[test]
+    fn inode_is_file() {
+        let mut inode = make_inode();
+        inode.mode = S_IFREG | 0o644;
+        assert!(inode.is_file());
+        assert!(!inode.is_dir());
+        assert!(!inode.is_symlink());
+    }
+
+    #[test]
+    fn inode_is_symlink() {
+        let mut inode = make_inode();
+        inode.mode = S_IFLNK | 0o777;
+        assert!(inode.is_symlink());
+        assert!(!inode.is_dir());
+        assert!(!inode.is_file());
+    }
+
+    // =============================================================================
+    // DirEntryRaw structure tests
+    // =============================================================================
+
+    #[test]
+    fn dir_entry_size_is_8() {
+        // The code assumes DirEntryRaw header is 8 bytes (rec_len minimum).
+        // Verify the struct layout matches this assumption.
+        assert_eq!(core::mem::size_of::<DirEntryRaw>(), 8);
+    }
+
+    // =============================================================================
+    // Edge case / boundary tests
+    // =============================================================================
+
+    #[test]
+    fn max_valid_log_block_size() {
+        let mut sb = make_valid_superblock();
+        sb.log_block_size = 6; // Maximum valid value
+        assert!(sb.validate().is_ok());
+        assert_eq!(sb.block_size(), Some(65536));
+    }
+
+    #[test]
+    fn boundary_block_group_count() {
+        let mut sb = make_valid_superblock();
+        // Exactly at the MAX_BLOCK_GROUPS limit (1_000_000)
+        sb.blocks_count = 1_000_000;
+        sb.blocks_per_group = 1;
+        assert!(
+            sb.validate().is_ok(),
+            "Exactly MAX_BLOCK_GROUPS should pass"
+        );
+
+        // One over the limit
+        sb.blocks_count = 1_000_001;
+        sb.blocks_per_group = 1;
+        assert!(
+            sb.validate().is_err(),
+            "One over MAX_BLOCK_GROUPS should fail"
+        );
+    }
+
+    #[test]
+    fn inode_size_boundary_128() {
+        let mut sb = make_valid_superblock();
+        sb.rev_level = 1;
+        sb.inode_size = 128; // Minimum valid
+        assert!(sb.validate().is_ok());
+    }
+
+    #[test]
+    fn inode_size_boundary_1024() {
+        let mut sb = make_valid_superblock();
+        sb.rev_level = 1;
+        sb.inode_size = 1024; // Maximum valid
+        assert!(sb.validate().is_ok());
+    }
 }

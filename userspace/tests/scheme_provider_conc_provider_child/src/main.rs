@@ -145,6 +145,17 @@ libpanda::main! {
             Ok(Some(Request::DisplayFlush { request_id, .. })) => {
                 let _ = provider.reply_display_flush_err(request_id, ErrorCode::NotSupported);
             }
+            // The M5 filesystem request kinds only reach the filesystem
+            // service's `file:` provider, never this test provider.
+            Ok(Some(
+                request @ (Request::Stat { .. }
+                | Request::Create { .. }
+                | Request::Unlink { .. }
+                | Request::Mkdir { .. }
+                | Request::Rmdir { .. }),
+            )) => {
+                let _ = provider.reply_unsupported(&request);
+            }
             Ok(None) => {
                 process::yield_now();
             }

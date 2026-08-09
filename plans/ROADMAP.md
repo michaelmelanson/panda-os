@@ -135,13 +135,50 @@ end-state decisions:
 - The **block driver service** ports virtio-blk, registering `block:` under
   the claim rules from M1.
 
-### M5 — filesystems to userspace
+### M5 — filesystems to userspace (landed)
 
 The filesystem service takes the kernel's VFS policy and ext2 implementation
 and registers `file:`; it is a client of `block:`. The kernel retains only a
 read-only `initrd:` scheme (in-memory ustar, already specified in the driver
 plan) to bootstrap init, the service manager, and the fs service itself.
 Kernel `vfs/` is deleted. This completes the strict-microkernel migration.
+
+Landed as `userspace/services/fs` (binary `fs`); see docs/VFS.md for the
+architecture. Deviations and decisions worth recording:
+
+- **`/initrd` is proxied, not dropped.** The service mounts the kernel's
+  `initrd:` scheme at `/initrd`, so `file:/initrd/...` resolves exactly as
+  it did before. Without that, every existing client of those paths would
+  have had to change.
+- **`OP_ENVIRONMENT_MOUNT` was deleted, not kept as a stub.** With no mount
+  table in the kernel there is nothing to mount into. The service mounts at
+  startup and signals readiness on its spawn channel; callers wait for that
+  (`libpanda::process::wait_ready`, task #43) instead of calling a syscall.
+- **The moved code is synchronous.** It was async only because it ran in the
+  kernel task executor. That also made the mount table and ext2 host-
+  testable, which is where the deleted `panda-kernel/tests/vfs_path.rs`,
+  `ext2_validation.rs` and `ext2_write.rs` went (79 unit tests).
+- **Five protocol kinds added** (`MSG_STAT`/`CREATE`/`UNLINK`/`MKDIR`/
+  `RMDIR`), because `OP_FILE_STAT` and the four `OP_DIRECTORY_*` syscalls
+  used to call `vfs::` directly. See docs/VFS.md's "Wire protocol".
+- **Follow-up debt — scheme round-trip latency.** A `file:` read is now two
+  provider round trips deep (client -> fs service -> virtio-blk) instead of
+  one, and a round trip is expensive: instrumenting the service during a
+  full TCG boot measured ~7 served requests per second, i.e. ~140 ms per
+  client read. Booting the full debug-profile image (~27 MB of unstripped
+  binaries, read twice — once by `init`'s driver-registry ELF scan, once by
+  `spawn`) therefore takes tens of minutes rather than the ~10 the previous
+  single-hop arrangement did. The tests are unaffected: they read kilobytes,
+  not megabytes.
+
+  This is *latency*, not block count — batching ext2's per-block
+  `BlockDevice::read_at` calls into one contiguous transfer was measured and
+  bought only ~14%, so it was not kept. The cost is in the handoff itself
+  (process switch, provider wake, kernel reader task, wake again), which
+  predates M5 for `block:` and is simply doubled by it. Worth attacking
+  before the boot path grows further; likely candidates are keeping a
+  scheme round trip on the same dispatch where possible, and not reading
+  each driver binary twice at boot.
 
 ### M6 — capability enforcement
 

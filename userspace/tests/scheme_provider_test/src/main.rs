@@ -16,7 +16,7 @@ use libpanda::{DirEntry, ErrorCode, String, Vec, environment, file, process};
 libpanda::main! {
     environment::log("scheme_provider_test: starting");
 
-    let Ok(child_handle) = environment::spawn("file:/initrd/scheme_provider_child") else {
+    let Ok(child_handle) = environment::spawn("initrd:/scheme_provider_child") else {
         environment::log("FAIL: spawn returned error");
         return 1;
     };

@@ -60,21 +60,26 @@ libpanda::main! {
 
     // Test 2: the well-known built-in schemes must all be present.
     //
-    // "keyboard", "block", and "display" are deliberately *not* in this
-    // list: Phase 7 (keyboard), M4 Phase 2 (block), and roadmap M4
-    // (display) of plans/device-driver-model.md all moved them out of
-    // `resource/scheme.rs::init`'s kernel-resident registrations into
+    // "keyboard", "block", "display" and "file" are deliberately *not* in
+    // this list: Phase 7 (keyboard), M4 Phase 2 (block) and roadmap M4
+    // (display) of plans/device-driver-model.md moved the first three out
+    // of `resource/scheme.rs::init`'s kernel-resident registrations into
     // userspace drivers (`userspace/drivers/virtio-keyboard`,
     // `userspace/drivers/virtio-blk`, `userspace/drivers/virtio-gpu`) that
-    // register their scheme dynamically once they claim their device — no
+    // register their scheme dynamically once they claim their device, and
+    // roadmap M5 did the same for "file" (`userspace/services/fs`) — no
     // different in kind from `scheme_provider_test`'s "echo" scheme. None
-    // of the three is registered at boot at all, so none belongs in a test
+    // of the four is registered at boot at all, so none belongs in a test
     // that "pins the exact set of schemes registered at boot" (see this
     // file's module doc comment). This test doesn't spawn any of those
-    // drivers itself (unlike `claim_test`/`display_test`/`block_test`,
-    // which need an actual open against the real scheme to succeed), so
-    // none of the three ever appears here.
-    for expected in ["file", "console", "scheme"] {
+    // processes itself (unlike `claim_test`/`display_test`/`block_test`/
+    // `vfs_test`, which need an actual open against the real scheme to
+    // succeed), so none of the four ever appears here.
+    //
+    // "initrd" *is* in the list: it is the kernel's own read-only view of
+    // the boot archive, and roadmap M5 left it there deliberately, since
+    // the filesystem service is itself loaded through it.
+    for expected in ["console", "initrd", "scheme"] {
         if !names.iter().any(|n| n.as_str() == expected) {
             environment::log(&format!(
                 "FAIL: scheme '{}' missing from scheme:/ listing",
