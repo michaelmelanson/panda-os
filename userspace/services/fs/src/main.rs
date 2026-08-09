@@ -28,9 +28,10 @@
 //! watch, and this codebase has no multi-channel blocking receive outside
 //! `Mailbox` (which only aggregates mailbox-attachable resources, not plain
 //! channels). The second thing is the parent channel, carrying the
-//! cooperative [`SHUTDOWN_REQUEST`] every long-lived process here honours —
-//! a test standing in for `init` must be able to ask this service to exit,
-//! or the process outlives the test and QEMU never shuts down.
+//! cooperative shutdown request every long-lived process here honours (see
+//! `libpanda::process::shutdown_requested`) — a test standing in for `init`
+//! must be able to ask this service to exit, or the process outlives the
+//! test and QEMU never shuts down.
 
 #![no_std]
 #![no_main]
@@ -53,11 +54,6 @@ use fs::ext2::Ext2Fs;
 use fs::fs::{File, FsError, SeekFrom};
 use fs::mount::MountTable;
 use fs::schemes::{BLOCK_DEVICE_URI, InitrdFs, SchemeBlockDevice};
-
-/// Message a parent process sends on the spawn channel to ask this service
-/// to exit — the same convention every driver in `userspace/drivers/*`
-/// honours.
-const SHUTDOWN_REQUEST: &[u8] = b"shutdown";
 
 /// Where the initrd is mounted, preserving `file:/initrd/...`.
 const INITRD_MOUNTPOINT: &str = "/initrd";
@@ -185,14 +181,11 @@ libpanda::main! {
             }
         }
 
-        if let Some(parent) = parent.as_ref() {
-            let mut shutdown_buf = [0u8; 16];
-            if let Ok(Some(n)) = parent.try_recv(&mut shutdown_buf)
-                && &shutdown_buf[..n] == SHUTDOWN_REQUEST
-            {
-                environment::log("fs: shutdown requested, exiting");
-                return 0;
-            }
+        if let Some(parent) = parent.as_ref()
+            && libpanda::process::shutdown_requested(parent)
+        {
+            environment::log("fs: shutdown requested, exiting");
+            return 0;
         }
 
         libpanda::process::yield_now();

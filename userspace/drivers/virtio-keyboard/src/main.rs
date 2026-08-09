@@ -273,10 +273,10 @@ libpanda::main! {
     let mut pending_reads: Vec<PendingRead> = Vec::new();
 
     // Held for the driver's whole lifetime (not just to send "ready" once):
-    // also doubles as the shutdown-request channel — see `SHUTDOWN_REQUEST`
-    // below. `None` when spawned with no parent channel (shouldn't happen —
-    // every process is spawned by something — but handled rather than
-    // assumed).
+    // also doubles as the shutdown-request channel — see
+    // `libpanda::process::shutdown_requested` below. `None` when spawned
+    // with no parent channel (shouldn't happen — every process is spawned
+    // by something — but handled rather than assumed).
     let parent = libpanda::ipc::Channel::parent();
 
     loop {
@@ -300,14 +300,11 @@ libpanda::main! {
         // shutdown has to be a request this process observes and acts on
         // itself, exiting normally through the same `OP_PROCESS_EXIT` path
         // every other process uses.
-        if let Some(parent) = parent.as_ref() {
-            let mut shutdown_buf = [0u8; 16];
-            if let Ok(Some(n)) = parent.try_recv(&mut shutdown_buf)
-                && &shutdown_buf[..n] == SHUTDOWN_REQUEST
-            {
-                environment::log("virtio-keyboard: shutdown requested, exiting");
-                return 0;
-            }
+        if let Some(parent) = parent.as_ref()
+            && libpanda::process::shutdown_requested(parent)
+        {
+            environment::log("virtio-keyboard: shutdown requested, exiting");
+            return 0;
         }
 
         let Some((handle, events)) = mailbox.try_recv() else {
@@ -351,10 +348,6 @@ libpanda::main! {
         }
     }
 }
-
-/// Message a parent process sends on the spawn channel to ask this driver
-/// to exit — see the shutdown-request handling in the main loop above.
-const SHUTDOWN_REQUEST: &[u8] = b"shutdown";
 
 /// Step 5-10: claim the newly-arrived device, walk its virtio capabilities,
 /// map its config BARs, negotiate virtio features, set up the eventq, and

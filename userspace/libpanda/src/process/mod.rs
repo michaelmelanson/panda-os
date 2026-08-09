@@ -11,6 +11,8 @@
 //! - [`wait()`] - Wait for a child process to exit
 //! - [`signal()`] - Send a signal to a process
 //! - [`sleep()`] - Sleep for a duration
+//! - [`wait_ready()`] - Block until a spawned driver signals readiness
+//! - [`shutdown_requested()`] - Poll for a cooperative shutdown request
 //!
 //! ## High-level types
 //!
@@ -126,4 +128,24 @@ pub fn wait_ready(handle: Handle) -> crate::error::Result<()> {
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Message a parent process sends on the spawn channel to ask a long-lived
+/// driver or service to exit — see [`shutdown_requested`].
+pub const SHUTDOWN_REQUEST: &[u8] = b"shutdown";
+
+/// Poll `parent` for a pending [`SHUTDOWN_REQUEST`] without blocking.
+///
+/// Every long-lived driver/service process's serve loop calls this once per
+/// iteration alongside its own work — there is no multi-channel blocking
+/// receive in this codebase (see [`wait_ready`]'s doc comment for the same
+/// constraint), so a process that must watch both its clients and its parent
+/// has to poll both. The kernel cannot safely tear down a running process's
+/// hardware claims or open resources synchronously from another process's
+/// call stack, so shutdown has to be a message the process observes and acts
+/// on itself, exiting normally through the same path every other process
+/// uses.
+pub fn shutdown_requested(parent: &crate::ipc::Channel) -> bool {
+    let mut buf = [0u8; 16];
+    matches!(parent.try_recv(&mut buf), Ok(Some(n)) if &buf[..n] == SHUTDOWN_REQUEST)
 }
