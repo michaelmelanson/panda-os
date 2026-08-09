@@ -1,12 +1,11 @@
 #![no_std]
 #![no_main]
 
-//! Moving a window against a real compositor process. See `window_test`
-//! for why this is a protocol round-trip test rather than a screenshot
-//! comparison;
-//! repainting both the old and new position is covered by `compositor`'s
-//! `MemoryTarget`-based `manager::tests::moving_a_window_repaints_both_
-//! the_old_and_new_positions`.
+//! Moving a window against a real compositor process, verified via a
+//! screenshot comparison against `expected.png` (see `docs/TESTING.md`,
+//! "Screenshot testing"). Repainting both the old and new position is
+//! additionally covered by `compositor`'s `MemoryTarget`-based
+//! `manager::tests::moving_a_window_repaints_both_the_old_and_new_positions`.
 
 use libpanda::environment;
 use libpanda::graphics::{Colour, PixelBuffer, Window};
@@ -80,6 +79,10 @@ libpanda::main! {
     environment::log("PASS: Moved window to (300, 200)");
 
     environment::log("PASS: Window move test complete");
+
+    process::sleep(100);
+    environment::screenshot_ready();
+    process::sleep(5000);
 
     drop(window);
     let exit_code = process::wait(compositor_handle);

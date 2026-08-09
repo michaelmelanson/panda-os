@@ -1,9 +1,10 @@
 #![no_std]
 #![no_main]
 
-//! Two windows sharing one client connection to a real compositor process.
-//! See `window_test` for why this is a protocol round-trip test rather than
-//! a screenshot comparison.
+//! Two windows sharing one client connection to a real compositor process,
+//! verified via a screenshot comparison against `expected.png` (see
+//! `docs/TESTING.md`, "Screenshot testing") to confirm z-order compositing
+//! of the later (sibling) window.
 
 use libpanda::environment;
 use libpanda::graphics::{Colour, PixelBuffer, Window};
@@ -81,6 +82,10 @@ libpanda::main! {
     environment::log("PASS: Created and rendered blue window at (150, 100)");
 
     environment::log("PASS: Multi-window test complete");
+
+    process::sleep(100);
+    environment::screenshot_ready();
+    process::sleep(5000);
 
     drop(window2);
     drop(window1);

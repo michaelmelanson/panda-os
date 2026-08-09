@@ -20,5 +20,3 @@ PASS: Opened window 3 (blue)
 PASS: Created blue window with 60% alpha
 # @barrier
 PASS: Alpha blending test complete
-# @barrier
-compositor_test_child: finished

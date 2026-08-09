@@ -12,5 +12,3 @@ PASS: Created and rendered red window at (50, 50)
 PASS: Created and rendered blue window at (150, 100)
 # @barrier
 PASS: Multi-window test complete
-# @barrier
-compositor_test_child: finished

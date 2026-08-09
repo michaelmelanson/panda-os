@@ -1,11 +1,11 @@
 #![no_std]
 #![no_main]
 
-//! Three overlapping translucent windows against a real compositor process.
-//! See `window_test` for why this is a protocol round-trip test rather than
-//! a screenshot comparison; the
-//! blend maths itself (output alpha = src_a + dst_a·(1−src_a)) is covered
-//! by `compositor_protocol::blend`'s own unit tests and by `compositor`'s
+//! Three overlapping translucent windows against a real compositor process,
+//! verified via a screenshot comparison against `expected.png` (see
+//! `docs/TESTING.md`, "Screenshot testing"). The blend maths itself (output
+//! alpha = src_a + dst_a·(1−src_a)) is additionally covered by
+//! `compositor_protocol::blend`'s own unit tests and by `compositor`'s
 //! `MemoryTarget`-based `manager::tests::a_translucent_window_is_blended_
 //! with_the_background`.
 
@@ -113,6 +113,10 @@ libpanda::main! {
     environment::log("PASS: Created blue window with 60% alpha");
 
     environment::log("PASS: Alpha blending test complete");
+
+    process::sleep(100);
+    environment::screenshot_ready();
+    process::sleep(5000);
 
     drop(window3);
     drop(window2);

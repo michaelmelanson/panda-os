@@ -16,5 +16,3 @@ PASS: Displayed red window at (50, 50)
 PASS: Moved window to (300, 200)
 # @barrier
 PASS: Window move test complete
-# @barrier
-compositor_test_child: finished

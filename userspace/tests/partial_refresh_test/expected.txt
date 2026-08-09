@@ -16,5 +16,3 @@ PASS: Updated top-left quarter with red
 PASS: Updated bottom-right quarter with green
 # @barrier
 PASS: Partial refresh test complete
-# @barrier
-compositor_test_child: finished

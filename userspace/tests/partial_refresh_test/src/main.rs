@@ -1,13 +1,12 @@
 #![no_std]
 #![no_main]
 
-//! Full then partial buffer updates against a real compositor process.
-//! See `window_test` for why this is a protocol round-trip test rather
-//! than a screenshot comparison;
-//! damage-rect coalescing itself is covered by `compositor`'s
-//! `MemoryTarget`-based `manager::tests::only_committed_damage_is_
-//! composited_and_flushed` and `dirty_regions_coalesce_when_overlapping_
-//! or_adjacent`.
+//! Full then partial buffer updates against a real compositor process,
+//! verified via a screenshot comparison against `expected.png` (see
+//! `docs/TESTING.md`, "Screenshot testing"). Damage-rect coalescing itself
+//! is additionally covered by `compositor`'s `MemoryTarget`-based
+//! `manager::tests::only_committed_damage_is_composited_and_flushed` and
+//! `dirty_regions_coalesce_when_overlapping_or_adjacent`.
 
 use libpanda::environment;
 use libpanda::graphics::{Colour, PixelBuffer, Window};
@@ -93,6 +92,10 @@ libpanda::main! {
     environment::log("PASS: Updated bottom-right quarter with green");
 
     environment::log("PASS: Partial refresh test complete");
+
+    process::sleep(100);
+    environment::screenshot_ready();
+    process::sleep(5000);
 
     drop(window);
     let exit_code = process::wait(compositor_handle);
