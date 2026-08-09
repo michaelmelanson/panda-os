@@ -41,6 +41,12 @@ struct Entry {
 #[derive(Default)]
 pub struct DriverRegistry {
     entries: Vec<Entry>,
+    /// The bytes read from each binary that yielded at least one entry,
+    /// keyed by `binary_path`, kept around so `main.rs` can spawn from them
+    /// directly (`environment::spawn_bytes`) instead of having the kernel
+    /// re-read the same binary by path — a second, expensive round trip
+    /// when the binary lives under a provider-backed scheme like `file:`.
+    binaries: Vec<(String, Vec<u8>)>,
 }
 
 impl DriverRegistry {
@@ -93,6 +99,7 @@ impl DriverRegistry {
             return;
         }
 
+        let mut found_entry = false;
         for (bus_type, section_name, entry_size) in [
             (BusType::Pci, BusType::Pci.section_name(), core::mem::size_of::<PciDeviceId>()),
             (BusType::Usb, BusType::Usb.section_name(), core::mem::size_of::<UsbDeviceId>()),
@@ -115,8 +122,24 @@ impl DriverRegistry {
                     match_bytes: chunk.to_vec(),
                     binary_path: path.to_string(),
                 });
+                found_entry = true;
             }
         }
+
+        if found_entry {
+            self.binaries.push((path.to_string(), data));
+        }
+    }
+
+    /// The bytes read while scanning `path`, if it declared at least one
+    /// `.panda_devices.*` entry — the same bytes `main.rs` hands to
+    /// `environment::spawn_bytes` so the binary isn't read a second time to
+    /// spawn it.
+    pub fn binary_bytes(&self, path: &str) -> Option<&[u8]> {
+        self.binaries
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, data)| data.as_slice())
     }
 
     /// Find the first driver binary whose match table matches the given

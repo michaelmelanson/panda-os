@@ -279,6 +279,12 @@ pub enum Operation {
     /// `panda_abi::scheme_protocol`'s `MSG_CONNECT` and
     /// `resource::scheme::UserSchemeProvider::connect`.
     EnvironmentConnect = 0x3_0006,
+    /// Spawn process from an in-memory ELF image rather than a path: caller
+    /// already has the bytes (e.g. read them to scan for device-match
+    /// sections) and wants to avoid a second round trip to re-read them
+    /// through a provider-backed scheme. (params_ptr) -> process_handle;
+    /// params_ptr points to a `SpawnBytesParams` struct.
+    EnvironmentSpawnBytes = 0x3_0007,
     // Directory operations (0x8_0000 - 0x8_FFFF)
     /// Create file in directory: (name_ptr, name_len, mode) -> file_handle or error
     DirectoryCreateFile = 0x8_0000,
@@ -380,6 +386,7 @@ impl Operation {
             0x3_0003 => Some(Self::EnvironmentTime),
             0x3_0004 => Some(Self::EnvironmentOpendir),
             0x3_0006 => Some(Self::EnvironmentConnect),
+            0x3_0007 => Some(Self::EnvironmentSpawnBytes),
             0x8_0000 => Some(Self::DirectoryCreateFile),
             0x8_0001 => Some(Self::DirectoryUnlinkFile),
             0x8_0002 => Some(Self::DirectoryMkdir),
@@ -478,6 +485,9 @@ pub const OP_ENVIRONMENT_TIME: u32 = Operation::EnvironmentTime as u32;
 pub const OP_ENVIRONMENT_OPENDIR: u32 = Operation::EnvironmentOpendir as u32;
 /// Connect to a userspace scheme provider: (uri_ptr, uri_len) -> channel_handle or error
 pub const OP_ENVIRONMENT_CONNECT: u32 = Operation::EnvironmentConnect as u32;
+/// Spawn process from an in-memory ELF image: (params_ptr) -> process_handle
+/// params_ptr points to a SpawnBytesParams struct
+pub const OP_ENVIRONMENT_SPAWN_BYTES: u32 = Operation::EnvironmentSpawnBytes as u32;
 // Directory operations (0x8_0000 - 0x8_FFFF)
 /// Create file in directory: (name_ptr, name_len, mode) -> file_handle or error
 pub const OP_DIRECTORY_CREATE_FILE: u32 = Operation::DirectoryCreateFile as u32;
@@ -904,6 +914,28 @@ pub struct SpawnParams {
     pub path_ptr: usize,
     /// Length of the path string.
     pub path_len: usize,
+    /// Mailbox handle for event notifications (0 = none).
+    pub mailbox: u64,
+    /// Event mask for mailbox notifications.
+    pub event_mask: u32,
+    /// Padding for alignment.
+    pub _pad: u32,
+    /// Handle to use for child's stdin (0 = default to parent channel).
+    pub stdin: u64,
+    /// Handle to use for child's stdout (0 = default to parent channel).
+    pub stdout: u64,
+}
+
+/// Parameters for `OP_ENVIRONMENT_SPAWN_BYTES`: same as [`SpawnParams`] except
+/// the executable is given as an in-memory ELF image (`data_ptr`/`data_len`)
+/// instead of a path to resolve through a scheme.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SpawnBytesParams {
+    /// Pointer to the ELF image bytes.
+    pub data_ptr: usize,
+    /// Length of the ELF image in bytes.
+    pub data_len: usize,
     /// Mailbox handle for event notifications (0 = none).
     pub mailbox: u64,
     /// Event mask for mailbox notifications.

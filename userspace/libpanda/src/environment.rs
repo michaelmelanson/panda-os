@@ -101,6 +101,26 @@ pub fn spawn(path: &str) -> Result<Handle> {
     ChildBuilder::new(path).spawn_handle()
 }
 
+/// Spawn a new process from an in-memory ELF image.
+///
+/// Same as [`spawn`], but for a caller that already has the executable's
+/// bytes in memory (e.g. having read them once to scan for something else)
+/// and wants to avoid the kernel re-reading the same bytes by path — each
+/// such read is a full scheme round trip when the executable lives under a
+/// provider-backed scheme like `file:`.
+///
+/// # Examples
+///
+/// ```no_run
+/// use libpanda::environment;
+///
+/// let data = [0u8; 0]; // an ELF image already in memory
+/// let handle = environment::spawn_bytes(&data).unwrap();
+/// ```
+pub fn spawn_bytes(data: &[u8]) -> Result<Handle> {
+    ChildBuilder::new_bytes(data).spawn_handle()
+}
+
 /// Connect to a userspace scheme provider by URI and receive a live channel
 /// to it — e.g. `environment::connect("compositor:/connect")`.
 ///

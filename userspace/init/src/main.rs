@@ -34,7 +34,11 @@ libpanda::main! {
     // doesn't have to gamble on a blind retry loop — see
     // `libpanda::process::wait_ready`'s doc comment.
     for path in drivers.binary_paths() {
-        match environment::spawn(path) {
+        let spawned = match drivers.binary_bytes(path) {
+            Some(data) => environment::spawn_bytes(data),
+            None => environment::spawn(path),
+        };
+        match spawned {
             Ok(handle) => {
                 if libpanda::process::wait_ready(handle).is_err() {
                     environment::log("init: initrd driver did not become ready");
@@ -91,7 +95,11 @@ libpanda::main! {
         // whose `display:` scheme the compositor spawned right after this
         // loop depends on (see `libpanda::process::wait_ready`'s doc
         // comment).
-        match environment::spawn(path) {
+        let spawned = match drivers.binary_bytes(path) {
+            Some(data) => environment::spawn_bytes(data),
+            None => environment::spawn(path),
+        };
+        match spawned {
             Ok(handle) => {
                 if libpanda::process::wait_ready(handle).is_err() {
                     environment::log("init: driver did not become ready");

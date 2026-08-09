@@ -135,8 +135,18 @@ impl Drop for Child {
 ///     .spawn()
 ///     .unwrap();
 /// ```
+/// Where a `ChildBuilder` reads the executable from.
+enum Source<'a> {
+    /// Resolve `path` through a scheme (e.g. `file:`, `initrd:`) at spawn
+    /// time — the kernel reads the bytes itself.
+    Path(&'a str),
+    /// Bytes the caller already has in memory, handed to the kernel
+    /// directly instead of being re-read by path.
+    Bytes(&'a [u8]),
+}
+
 pub struct ChildBuilder<'a> {
-    path: &'a str,
+    source: Source<'a>,
     args: Vec<&'a str>,
     env: Vec<(&'a str, &'a str)>,
     inherit_env: bool,
@@ -149,8 +159,19 @@ pub struct ChildBuilder<'a> {
 impl<'a> ChildBuilder<'a> {
     /// Create a new builder for spawning a process at the given path.
     pub fn new(path: &'a str) -> Self {
+        Self::from_source(Source::Path(path))
+    }
+
+    /// Create a new builder for spawning a process from an in-memory ELF
+    /// image, e.g. bytes already read once for another purpose (see
+    /// `environment::spawn_bytes`).
+    pub fn new_bytes(data: &'a [u8]) -> Self {
+        Self::from_source(Source::Bytes(data))
+    }
+
+    fn from_source(source: Source<'a>) -> Self {
         Self {
-            path,
+            source,
             args: Vec::new(),
             env: Vec::new(),
             inherit_env: true,
@@ -238,13 +259,18 @@ impl<'a> ChildBuilder<'a> {
         let stdin_raw = self.stdin.map_or(0, |h| h.as_raw());
         let stdout_raw = self.stdout.map_or(0, |h| h.as_raw());
 
-        let result = sys::env::spawn(
-            self.path,
-            mailbox_raw,
-            self.event_mask,
-            stdin_raw,
-            stdout_raw,
-        );
+        let result = match self.source {
+            Source::Path(path) => {
+                sys::env::spawn(path, mailbox_raw, self.event_mask, stdin_raw, stdout_raw)
+            }
+            Source::Bytes(data) => sys::env::spawn_bytes(
+                data,
+                mailbox_raw,
+                self.event_mask,
+                stdin_raw,
+                stdout_raw,
+            ),
+        };
         if result < 0 {
             return Err(error::from_code(result));
         }

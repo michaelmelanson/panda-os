@@ -57,6 +57,34 @@ pub fn spawn(path: &str, mailbox: u64, event_mask: u32, stdin: u64, stdout: u64)
     )
 }
 
+/// Spawn a new process from an in-memory ELF image.
+///
+/// Same as [`spawn`], but for a caller that already has the executable's
+/// bytes (e.g. after reading them once to scan for something else) and
+/// wants to avoid a second round trip re-reading the same bytes by path.
+///
+/// Returns process handle on success, or negative error code.
+#[inline(always)]
+pub fn spawn_bytes(data: &[u8], mailbox: u64, event_mask: u32, stdin: u64, stdout: u64) -> isize {
+    let params = SpawnBytesParams {
+        data_ptr: data.as_ptr() as usize,
+        data_len: data.len(),
+        mailbox,
+        event_mask,
+        _pad: 0,
+        stdin,
+        stdout,
+    };
+    send(
+        Handle::ENVIRONMENT,
+        OP_ENVIRONMENT_SPAWN_BYTES,
+        &params as *const SpawnBytesParams as usize,
+        0,
+        0,
+        0,
+    )
+}
+
 /// Log a message to the system console.
 #[inline(always)]
 pub fn log(msg: &str) {

@@ -13,7 +13,7 @@ use crate::{
 };
 
 use super::helpers::{attach_to_mailbox, complete_mailbox_attach, read_user_str};
-use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr};
+use super::user_ptr::{SyscallFuture, SyscallResult, UserAccess, UserPtr, UserSlice};
 
 /// Handle environment open operation.
 ///
@@ -207,61 +207,151 @@ pub fn handle_spawn(ua: &UserAccess, params_ptr: UserPtr<panda_abi::SpawnParams>
             }
         };
 
-        let mut process = match Process::from_elf_data(Context::new_user_context(), elf_ptr) {
-            Ok(p) => p,
-            Err(e) => {
-                error!("SPAWN: failed to create process from {}: {:?}", uri, e);
-                return SyscallResult::err(panda_abi::ErrorCode::InvalidArgument);
-            }
-        };
-        let pid = process.id();
-        let process_info = process.info().clone();
-        debug!("SPAWN: created process {:?}", pid);
+        spawn_from_elf(
+            elf_ptr,
+            &uri,
+            mailbox_handle,
+            event_mask,
+            stdin_resource,
+            stdout_resource,
+        )
+    })
+}
 
-        // Create channel pair for parent-child communication
-        let (parent_endpoint, child_endpoint) = resource::ChannelEndpoint::create_pair();
+/// Handle environment spawn-from-bytes operation (`OP_ENVIRONMENT_SPAWN_BYTES`).
+///
+/// Same process-creation logic as [`handle_spawn`], but for a caller that
+/// already has the ELF image in memory (e.g. `userspace/init`'s driver
+/// registry, which reads each driver binary once to scan its
+/// `.panda_devices.*` sections) and wants to hand those bytes straight to
+/// the kernel instead of spawning by path and having the kernel re-read the
+/// same bytes through `file:` a second time.
+pub fn handle_spawn_bytes(
+    ua: &UserAccess,
+    params_ptr: UserPtr<panda_abi::SpawnBytesParams>,
+) -> SyscallFuture {
+    let params: panda_abi::SpawnBytesParams = match ua.read_user(params_ptr) {
+        Ok(p) => p,
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
+    };
 
-        // Give child endpoint at HANDLE_PARENT
+    let mailbox_handle = params.mailbox;
+    let event_mask = params.event_mask;
+    let stdin_handle = params.stdin;
+    let stdout_handle = params.stdout;
+
+    debug!(
+        "SPAWN_BYTES: data_ptr={:#x}, data_len={}, mailbox={}, event_mask={:#x}, stdin={}, stdout={}",
+        params.data_ptr, params.data_len, mailbox_handle, event_mask, stdin_handle, stdout_handle
+    );
+
+    let data = match ua.read(UserSlice::new(params.data_ptr, params.data_len)) {
+        Ok(d) => d,
+        Err(_) => {
+            return Box::pin(core::future::ready(SyscallResult::err(
+                panda_abi::ErrorCode::InvalidArgument,
+            )));
+        }
+    };
+    let elf_ptr: *const [u8] = Box::leak(data.into_boxed_slice());
+
+    let stdin_resource = if stdin_handle != 0 {
+        scheduler::with_current_process(|proc| {
+            proc.handles().get(stdin_handle).map(|h| h.resource_arc())
+        })
+    } else {
+        None
+    };
+    let stdout_resource = if stdout_handle != 0 {
+        scheduler::with_current_process(|proc| {
+            proc.handles().get(stdout_handle).map(|h| h.resource_arc())
+        })
+    } else {
+        None
+    };
+
+    Box::pin(core::future::ready(spawn_from_elf(
+        elf_ptr,
+        "<in-memory image>",
+        mailbox_handle,
+        event_mask,
+        stdin_resource,
+        stdout_resource,
+    )))
+}
+
+/// Shared tail of [`handle_spawn`] and [`handle_spawn_bytes`]: create a
+/// process from an already-loaded ELF image, wire up its parent channel and
+/// optional stdin/stdout, register it with the scheduler, and install the
+/// resulting `SpawnHandle` in the caller's handle table.
+///
+/// `label` is only used for error logging (a URI for `handle_spawn`, a
+/// placeholder for `handle_spawn_bytes`, which has no path to report).
+fn spawn_from_elf(
+    elf_ptr: *const [u8],
+    label: &str,
+    mailbox_handle: u64,
+    event_mask: u32,
+    stdin_resource: Option<Arc<dyn resource::Resource>>,
+    stdout_resource: Option<Arc<dyn resource::Resource>>,
+) -> SyscallResult {
+    let mut process = match Process::from_elf_data(Context::new_user_context(), elf_ptr) {
+        Ok(p) => p,
+        Err(e) => {
+            error!("SPAWN: failed to create process from {}: {:?}", label, e);
+            return SyscallResult::err(panda_abi::ErrorCode::InvalidArgument);
+        }
+    };
+    let pid = process.id();
+    let process_info = process.info().clone();
+    debug!("SPAWN: created process {:?}", pid);
+
+    // Create channel pair for parent-child communication
+    let (parent_endpoint, child_endpoint) = resource::ChannelEndpoint::create_pair();
+
+    // Give child endpoint at HANDLE_PARENT
+    process
+        .handles_mut()
+        .insert_at(panda_abi::HANDLE_PARENT, Arc::new(child_endpoint));
+
+    // Set up stdin/stdout if specified by parent
+    if let Some(stdin_res) = stdin_resource {
         process
             .handles_mut()
-            .insert_at(panda_abi::HANDLE_PARENT, Arc::new(child_endpoint));
+            .insert_at(panda_abi::HANDLE_STDIN, stdin_res);
+    }
+    if let Some(stdout_res) = stdout_resource {
+        process
+            .handles_mut()
+            .insert_at(panda_abi::HANDLE_STDOUT, stdout_res);
+    }
 
-        // Set up stdin/stdout if specified by parent
-        if let Some(stdin_res) = stdin_resource {
-            process
-                .handles_mut()
-                .insert_at(panda_abi::HANDLE_STDIN, stdin_res);
-        }
-        if let Some(stdout_res) = stdout_resource {
-            process
-                .handles_mut()
-                .insert_at(panda_abi::HANDLE_STDOUT, stdout_res);
-        }
+    scheduler::add_process(process);
 
-        scheduler::add_process(process);
+    // Create SpawnHandle combining channel and process info
+    let spawn_handle = resource::SpawnHandle::new(parent_endpoint, process_info);
 
-        // Create SpawnHandle combining channel and process info
-        let spawn_handle = resource::SpawnHandle::new(parent_endpoint, process_info);
+    let result = scheduler::with_current_process(|proc| {
+        let handle_id = proc.handles_mut().insert(Arc::new(spawn_handle)).ok()?;
 
-        let result = scheduler::with_current_process(|proc| {
-            let handle_id = proc.handles_mut().insert(Arc::new(spawn_handle)).ok()?;
-
-            // Attach to mailbox if requested
-            if event_mask != 0 {
-                if let Some(mailbox) =
-                    attach_to_mailbox(proc, mailbox_handle, handle_id, event_mask)
-                {
-                    complete_mailbox_attach(proc, mailbox, handle_id);
-                }
+        // Attach to mailbox if requested
+        if event_mask != 0 {
+            if let Some(mailbox) = attach_to_mailbox(proc, mailbox_handle, handle_id, event_mask)
+            {
+                complete_mailbox_attach(proc, mailbox, handle_id);
             }
-
-            Some(handle_id)
-        });
-        match result {
-            Some(handle_id) => SyscallResult::ok(handle_id as isize),
-            None => SyscallResult::err(panda_abi::ErrorCode::TooManyHandles),
         }
-    })
+
+        Some(handle_id)
+    });
+    match result {
+        Some(handle_id) => SyscallResult::ok(handle_id as isize),
+        None => SyscallResult::err(panda_abi::ErrorCode::TooManyHandles),
+    }
 }
 
 /// Handle environment log operation.
