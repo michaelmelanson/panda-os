@@ -472,18 +472,11 @@ libpanda::main! {
             serve_provider_requests(p, device.as_mut());
         }
 
-        // Cooperative shutdown — see `userspace/drivers/virtio-keyboard`'s
-        // identical convention: the kernel cannot safely tear down a
-        // running process's hardware claims synchronously from another
-        // process's call stack, so the driver exits on its own instead.
-        if let Some(parent) = parent.as_ref() {
-            let mut shutdown_buf = [0u8; 16];
-            if let Ok(Some(n)) = parent.try_recv(&mut shutdown_buf)
-                && &shutdown_buf[..n] == SHUTDOWN_REQUEST
-            {
-                environment::log("virtio-gpu: shutdown requested, exiting");
-                return 0;
-            }
+        if let Some(parent) = parent.as_ref()
+            && libpanda::process::shutdown_requested(parent)
+        {
+            environment::log("virtio-gpu: shutdown requested, exiting");
+            return 0;
         }
 
         let Some((handle, events)) = mailbox.try_recv() else {
@@ -513,8 +506,6 @@ libpanda::main! {
         // subscription mailbox), so there's nothing to handle for it here.
     }
 }
-
-const SHUTDOWN_REQUEST: &[u8] = b"shutdown";
 
 fn handle_device_added(subscription_handle: Handle, device: &mut Option<DeviceState>) {
     if device.is_some() {

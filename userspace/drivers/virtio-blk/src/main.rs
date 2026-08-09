@@ -402,10 +402,6 @@ impl DeviceState {
 /// serves exactly one device via one scheme.
 const BLOCK_RESOURCE_ID: u64 = 1;
 
-/// Message a parent process sends on the spawn channel to ask this driver
-/// to exit — see `virtio-keyboard`'s identical constant.
-const SHUTDOWN_REQUEST: &[u8] = b"shutdown";
-
 libpanda::main! {
     environment::log("virtio-blk: starting");
 
@@ -453,14 +449,11 @@ libpanda::main! {
             serve_provider_requests(p, device.as_mut(), &mut open);
         }
 
-        if let Some(parent) = parent.as_ref() {
-            let mut shutdown_buf = [0u8; 16];
-            if let Ok(Some(n)) = parent.try_recv(&mut shutdown_buf)
-                && &shutdown_buf[..n] == SHUTDOWN_REQUEST
-            {
-                environment::log("virtio-blk: shutdown requested, exiting");
-                return 0;
-            }
+        if let Some(parent) = parent.as_ref()
+            && libpanda::process::shutdown_requested(parent)
+        {
+            environment::log("virtio-blk: shutdown requested, exiting");
+            return 0;
         }
 
         let Some((handle, events)) = mailbox.try_recv() else {
