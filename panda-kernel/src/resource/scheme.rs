@@ -1,7 +1,8 @@
 //! Resource scheme system for unified resource access.
 //!
 //! Resources are identified by URIs with a scheme and path:
-//! - `file:/initrd/init` -> File via existing VFS/mount system
+//! - `initrd:/init` -> File in the in-memory boot archive (kernel-served)
+//! - `file:/mnt/x` -> File served by the userspace filesystem service
 //! - `console:/serial/0` -> Serial console device
 //!
 //! The scheme identifies the resource type, and the path is the address
@@ -29,7 +30,8 @@ pub enum OpenError {
     /// No resource exists at the given URI.
     NotFound,
     /// The resource exists but is exclusively claimed by another owner
-    /// (see `crate::devices::claims`).
+    /// (for a provider-backed scheme, that means the provider answered its
+    /// `Open` with `Busy` — see `userspace/drivers/virtio-blk`).
     Busy,
 }
 
@@ -174,51 +176,6 @@ pub async fn connect(uri: &str) -> Result<Arc<dyn Resource>, OpenError> {
             .ok_or(OpenError::NotFound)?
     };
     handler.connect(path).await
-}
-
-/// Shared retry budget for scheme-open races that a synchronous readiness
-/// handshake doesn't close (task #43: "Redesign scheme-open readiness to
-/// eliminate the driver-registration race class"). 200 * 10ms = ~2s,
-/// matching `libpanda::process::READY_WAIT_ATTEMPTS`/`READY_WAIT_SLEEP_MS`
-/// on the userspace side of the same fix.
-///
-/// This kernel-side path exists for callers `init` itself can't put a
-/// synchronous wait in front of — currently only `vfs::mount_ext2`, which
-/// runs inside the kernel's `OP_ENVIRONMENT_MOUNT` syscall handler rather
-/// than in `init`'s own address space, so it can't reach `init`'s spawn
-/// handle for `virtio-blk` to wait on directly. `init` waiting on
-/// `virtio-blk`'s readiness handshake before calling `mount` (see
-/// `libpanda::process::wait_ready`) is what actually closes that race in
-/// practice; this retry is defense-in-depth for whenever that
-/// isn't true, not the mechanism the race is closed by.
-pub const OPEN_RETRY_ATTEMPTS: u32 = 200;
-/// See [`OPEN_RETRY_ATTEMPTS`].
-pub const OPEN_RETRY_SLEEP_MS: u64 = 10;
-
-/// Retry an async scheme-resolution attempt with a bounded backoff, using
-/// the shared budget in [`OPEN_RETRY_ATTEMPTS`]/[`OPEN_RETRY_SLEEP_MS`].
-///
-/// Generic over the attempt itself (not just `open`/`connect`) so any
-/// future kernel-side caller with the same "driver may not have registered
-/// its scheme yet" race can share this one retry loop and constant pair,
-/// instead of hand-rolling its own — see `vfs::mount_ext2`'s use of this
-/// for `block:` for the pattern to follow.
-pub async fn open_retrying<T, E, F, Fut>(mut attempt: F) -> Result<T, E>
-where
-    F: FnMut() -> Fut,
-    Fut: core::future::Future<Output = Result<T, E>>,
-{
-    let mut n = 0;
-    loop {
-        match attempt().await {
-            Ok(v) => return Ok(v),
-            Err(_) if n < OPEN_RETRY_ATTEMPTS => {
-                n += 1;
-                crate::executor::sleep::sleep_ms(OPEN_RETRY_SLEEP_MS).await;
-            }
-            Err(e) => return Err(e),
-        }
-    }
 }
 
 /// List directory contents by URI (e.g., "file:/initrd")
@@ -439,7 +396,7 @@ impl CharacterOutput for SerialConsoleResource {
 // =============================================================================
 //
 // The kernel-resident `DisplayScheme`/`DisplayDevice` (`display:
-// /pci/display/0`, exclusive claim via `crate::devices::claims`) has been
+// /pci/display/0`, with a kernel-side exclusive claim) has been
 // deleted: the display driver is now a userspace process
 // (`userspace/drivers/virtio-gpu`) that registers `display:` itself via
 // `OP_SCHEME_REGISTER`, exactly like `userspace/drivers/virtio-keyboard`
@@ -462,10 +419,11 @@ impl CharacterOutput for SerialConsoleResource {
 // (registered below by whichever driver claims the block device) with no
 // special-casing needed here. Exclusivity (the M1 claim rules `block:` must
 // honour — see `claim_test`) is enforced by that driver's own `Open`
-// handling instead of `devices::claims`; see
-// `resource::block_client::SchemeBlockDevice`'s module doc comment for the
-// full rationale, and `vfs::mount_ext2` for the kernel-internal client that
-// needed that adapter.
+// handling: an open *is* the claim, and closing it releases it, which is why
+// the kernel's old `devices::claims` table has no users left and was
+// deleted. Its one kernel-internal client, the ext2 mount, is now a
+// userspace process too (`userspace/services/fs`), so the kernel-side
+// `SchemeBlockDevice` adapter that used to bridge the two went with it.
 
 // =============================================================================
 // Scheme Scheme - meta-scheme registry enumeration
@@ -1028,8 +986,8 @@ impl SchemeProxyResource {
     }
 
     /// As [`read`](Self::read), but at a specific byte `offset` — used by
-    /// [`super::block_client::SchemeBlockDevice`] (M4's block driver
-    /// service) for random-access reads. Stream-like providers (the only
+    /// the filesystem service's `block:` client (`userspace/services/fs`)
+    /// for random-access reads. Stream-like providers (the only
     /// kind [`read`](Self::read) itself is used against today, e.g.
     /// `keyboard:`) are free to ignore `offset` — see `Request::Read`'s doc
     /// comment.
@@ -1101,8 +1059,8 @@ impl SchemeProxyResource {
     }
 
     /// Query the resource's byte size — see `Request::Size`'s doc comment.
-    /// Used by [`super::block_client::SchemeBlockDevice`] once, at open
-    /// time, to populate the synchronous `BlockDevice::size()` accessor
+    /// Used by the filesystem service's `block:` client once, at open
+    /// time, to populate its synchronous `BlockDevice::size()` accessor
     /// (the wire protocol only supports async round trips, so it can't be
     /// queried per-call).
     pub async fn size(&self) -> Result<u64, panda_abi::ErrorCode> {

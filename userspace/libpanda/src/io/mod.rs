@@ -33,9 +33,18 @@ pub trait Read {
     /// Read all bytes until EOF, appending them to `buf`.
     ///
     /// Returns the number of bytes read.
+    /// The chunk size is one protocol frame's payload
+    /// (`scheme_protocol::MAX_TRANSFER_SIZE`), because since roadmap M5
+    /// `file:` is served by a userspace process
+    /// (`userspace/services/fs`): every `read` here is a round trip to it,
+    /// and the kernel caps a single scheme-proxy read at one frame anyway,
+    /// so a smaller chunk buys nothing and costs a round trip per chunk.
+    /// It was 512 bytes, which meant reading a multi-megabyte driver
+    /// binary — exactly what `init`'s driver registry does at boot —
+    /// took thousands of round trips more than necessary.
     fn read_to_end(&mut self, buf: &mut alloc::vec::Vec<u8>) -> Result<usize> {
         let mut total = 0;
-        let mut chunk = [0u8; 512];
+        let mut chunk = [0u8; panda_abi::scheme_protocol::MAX_TRANSFER_SIZE];
         loop {
             match self.read(&mut chunk) {
                 Ok(0) => return Ok(total),

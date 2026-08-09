@@ -791,7 +791,11 @@ Main function:
 
 ```rust
 libpanda::main! {
-    environment::mount("ext2", "/mnt").expect("mount failed");
+    // Roadmap M5 replaced `environment::mount("ext2", "/mnt")` with
+    // spawning the filesystem service, which mounts and registers `file:`
+    // itself; its readiness handshake is what says "/mnt is usable".
+    let fs = environment::spawn("initrd:/fs").expect("spawn fs failed");
+    libpanda::process::wait_ready(fs).expect("fs service not ready");
 
     let configs = match scan_services("/config/services") {
         Ok(configs) if !configs.is_empty() => configs,

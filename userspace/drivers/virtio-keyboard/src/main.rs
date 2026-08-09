@@ -562,8 +562,8 @@ fn serve_provider_requests(
             }
             Request::Size { request_id, .. } => {
                 // The eventq has no addressable size (see `Request::Size`'s
-                // doc comment) — only `resource::block_client::SchemeBlockDevice`
-                // (M4's block driver service) uses this request.
+                // doc comment) — only the filesystem service's `block:`
+                // client (`userspace/services/fs`) uses this request.
                 let _ = provider.reply_size_err(request_id, ErrorCode::NotSupported);
             }
             // `keyboard:` never serves `OP_DISPLAY_*` — those request kinds

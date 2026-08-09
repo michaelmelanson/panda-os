@@ -43,8 +43,9 @@ impl Future for SleepFuture {
             //   duration of the poll — `current_task_id()` returns
             //   `Some(_)` here, and the deadline is registered as a
             //   `KernelTask`.
-            // - A process's pending async syscall (e.g. `mount_ext2`,
-            //   invoked from `OP_ENVIRONMENT_MOUNT`'s handler) is polled by
+            // - A process's pending async syscall (e.g. a blocked
+            //   `OP_FILE_READ` round-tripping to a scheme provider) is
+            //   polled by
             //   `scheduler::poll_pending_syscall` instead, which never
             //   touches `CURRENT_TASK` — it has its own, separate notion of
             //   "current" (`Scheduler::current_process`, set right before
@@ -56,15 +57,15 @@ impl Future for SleepFuture {
             // ever re-polls a process's blocked pending-syscall future
             // (unlike a kernel task, which the executor's main loop polls
             // unconditionally every tick), so a `sleep_ms` awaited from
-            // inside a syscall handler — e.g. `vfs::mount_ext2`'s retry
-            // loop racing the block driver's startup — would hang forever
-            // instead of ever waking up. Found via `make run`'s full boot
+            // inside a syscall handler would hang forever instead of ever
+            // waking up. Found via `make run`'s full boot
             // (gpu+mouse+keyboard+blk) hanging after "virtio-blk:
-            // registered block: scheme": the userspace test suite never
-            // exercises this path because every test explicitly waits for
-            // the driver's ready signal before mounting, so
-            // `SchemeBlockDevice::open`'s first attempt always succeeds
-            // and this retry-sleep is never reached.
+            // registered block: scheme", when the kernel still mounted ext2
+            // itself and its `OP_ENVIRONMENT_MOUNT` handler slept in a
+            // retry loop racing the block driver's startup. That caller is
+            // gone (roadmap M5 moved mounting to
+            // `userspace/services/fs`), but the dispatch rule below is what
+            // makes *any* in-syscall `sleep_ms` work at all.
             let entity = match super::current_task_id() {
                 Some(task_id) => Some(crate::scheduler::SchedulableEntity::KernelTask(task_id)),
                 None => {

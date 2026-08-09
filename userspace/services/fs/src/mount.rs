@@ -64,11 +64,6 @@ impl MountTable {
         });
     }
 
-    /// Whether anything is mounted at exactly `path`.
-    pub fn is_mounted(&self, path: &str) -> bool {
-        self.mounts.iter().any(|m| m.path == path)
-    }
-
     /// Find the filesystem and relative path for an absolute canonical path.
     ///
     /// Returns the longest matching mount point's filesystem and the path

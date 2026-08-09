@@ -104,9 +104,6 @@ harness = false
 name = "handle_transfer"
 harness = false
 
-[[test]]
-name = "claims"
-harness = false
 
 [[test]]
 name = "buffer_map"
