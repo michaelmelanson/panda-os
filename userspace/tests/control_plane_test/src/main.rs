@@ -13,7 +13,7 @@ libpanda::main! {
     environment::log("control_plane_test: starting");
 
     // Spawn child process
-    let Ok(child) = ChildBuilder::new("file:/initrd/control_plane_child")
+    let Ok(child) = ChildBuilder::new("initrd:/control_plane_child")
         .args(&["control_plane_child"])
         .spawn_handle()
     else {

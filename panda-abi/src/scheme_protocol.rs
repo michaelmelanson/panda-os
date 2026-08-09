@@ -88,6 +88,37 @@ pub const MSG_DISPLAY_MAP: u8 = 10;
 /// Request/response kind: flush a damaged rectangle (or, if none given, the
 /// whole surface) to the display.
 pub const MSG_DISPLAY_FLUSH: u8 = 11;
+/// Request/response kind: fetch a provider resource's metadata (byte size
+/// and whether it is a directory). Added in roadmap M5, when `file:` became
+/// a userspace scheme (`userspace/services/fs`): `OP_FILE_STAT` used to
+/// read that metadata straight off the VFS file the kernel held, and for a
+/// provider-backed resource there was nothing to read it from — the sync
+/// fallback in `syscall::file::handle_stat` reported `size: 0, is_dir:
+/// false` for *every* scheme-proxy handle. [`MSG_SIZE`] alone is not
+/// enough: it predates this and deliberately answers only the byte size
+/// (`block:` has no notion of a directory), whereas `OP_FILE_STAT`'s
+/// `FileStat` also carries `is_dir`.
+pub const MSG_STAT: u8 = 12;
+/// Request/response kind: create a file at a path, returning it open (the
+/// success payload is a `resource_id`, exactly like [`MSG_OPEN`]).
+///
+/// This and [`MSG_UNLINK`]/[`MSG_MKDIR`]/[`MSG_RMDIR`] were added in
+/// roadmap M5 for the same reason: `OP_DIRECTORY_CREATE`/`UNLINK`/`MKDIR`/
+/// `RMDIR` used to call `vfs::create`/… directly in the kernel, and once
+/// the mount table and ext2 moved to `userspace/services/fs` the kernel had
+/// no filesystem left to call. They are path-based rather than
+/// resource_id-based because that is what the syscalls already are: the
+/// directory handle only supplies the directory's path, which the kernel
+/// joins with the caller's `name` before dispatching (see
+/// `panda-kernel/src/syscall/directory.rs`).
+pub const MSG_CREATE: u8 = 13;
+/// Request/response kind: remove a file at a path. See [`MSG_CREATE`].
+pub const MSG_UNLINK: u8 = 14;
+/// Request/response kind: create a directory at a path. See [`MSG_CREATE`].
+pub const MSG_MKDIR: u8 = 15;
+/// Request/response kind: remove an empty directory at a path. See
+/// [`MSG_CREATE`].
+pub const MSG_RMDIR: u8 = 16;
 
 /// Response status byte: the operation succeeded.
 pub const STATUS_OK: u8 = 0;
@@ -138,6 +169,41 @@ fn u8_to_error(byte: u8) -> ErrorCode {
     }
 }
 
+/// Encode a path-based filesystem request (`Create`/`Unlink`/`Mkdir`/
+/// `Rmdir` — see [`MSG_CREATE`]) into `buf`.
+fn encode_path_op(
+    kind: u8,
+    request_id: u64,
+    mode: u16,
+    path: &str,
+    buf: &mut [u8],
+) -> Option<usize> {
+    let path = path.as_bytes();
+    let total = HEADER_LEN + 2 + 2 + path.len();
+    if total > buf.len() || path.len() > u16::MAX as usize {
+        return None;
+    }
+    buf[0] = kind;
+    buf[1..9].copy_from_slice(&request_id.to_le_bytes());
+    buf[9..11].copy_from_slice(&mode.to_le_bytes());
+    buf[11..13].copy_from_slice(&(path.len() as u16).to_le_bytes());
+    buf[13..13 + path.len()].copy_from_slice(path);
+    Some(total)
+}
+
+/// Decode a path-based filesystem request's payload, returning `(mode,
+/// path)`. See [`encode_path_op`].
+fn decode_path_op(buf: &[u8]) -> Option<(u16, &str)> {
+    if buf.len() < 13 {
+        return None;
+    }
+    let mode = u16::from_le_bytes(buf[9..11].try_into().ok()?);
+    let path_len = u16::from_le_bytes(buf[11..13].try_into().ok()?) as usize;
+    let end = 13usize.checked_add(path_len)?;
+    let path = core::str::from_utf8(buf.get(13..end)?).ok()?;
+    Some((mode, path))
+}
+
 /// A decoded provider request (borrows from the frame it was decoded from).
 ///
 /// # Connect
@@ -173,6 +239,17 @@ pub enum Request<'a> {
     Connect { request_id: u64, path: &'a str },
     /// Query a resource's byte size — see [`MSG_SIZE`].
     Size { request_id: u64, resource_id: u64 },
+    /// Query a resource's metadata — see [`MSG_STAT`].
+    Stat { request_id: u64, resource_id: u64 },
+    /// Create a file at `path` with `mode`, returning it open — see
+    /// [`MSG_CREATE`].
+    Create { request_id: u64, mode: u16, path: &'a str },
+    /// Remove the file at `path` — see [`MSG_UNLINK`].
+    Unlink { request_id: u64, path: &'a str },
+    /// Create a directory at `path` with `mode` — see [`MSG_MKDIR`].
+    Mkdir { request_id: u64, mode: u16, path: &'a str },
+    /// Remove the empty directory at `path` — see [`MSG_RMDIR`].
+    Rmdir { request_id: u64, path: &'a str },
     /// See [`MSG_DISPLAY_INFO`].
     DisplayInfo { request_id: u64, resource_id: u64 },
     /// See [`MSG_DISPLAY_MAP`].
@@ -196,6 +273,11 @@ impl<'a> Request<'a> {
             | Request::Close { request_id, .. }
             | Request::Connect { request_id, .. }
             | Request::Size { request_id, .. }
+            | Request::Stat { request_id, .. }
+            | Request::Create { request_id, .. }
+            | Request::Unlink { request_id, .. }
+            | Request::Mkdir { request_id, .. }
+            | Request::Rmdir { request_id, .. }
             | Request::DisplayInfo { request_id, .. }
             | Request::DisplayMap { request_id, .. }
             | Request::DisplayFlush { request_id, .. } => request_id,
@@ -277,15 +359,43 @@ impl<'a> Request<'a> {
                 buf[9..17].copy_from_slice(&resource_id.to_le_bytes());
                 Some(total)
             }
+            // The four path-based filesystem operations share one frame
+            // layout — `mode(u16) + path_len(u16) + path` — with `mode`
+            // ignored (and encoded as 0) by the two that don't take one.
+            // See [`MSG_CREATE`].
+            Request::Create { request_id, mode, path }
+            | Request::Mkdir { request_id, mode, path } => {
+                let kind = if matches!(self, Request::Create { .. }) {
+                    MSG_CREATE
+                } else {
+                    MSG_MKDIR
+                };
+                encode_path_op(kind, request_id, mode, path, buf)
+            }
+            Request::Unlink { request_id, path } => {
+                encode_path_op(MSG_UNLINK, request_id, 0, path, buf)
+            }
+            Request::Rmdir { request_id, path } => {
+                encode_path_op(MSG_RMDIR, request_id, 0, path, buf)
+            }
             Request::Size {
                 request_id,
                 resource_id,
+            }
+            | Request::Stat {
+                request_id,
+                resource_id,
             } => {
+                let kind = if matches!(self, Request::Size { .. }) {
+                    MSG_SIZE
+                } else {
+                    MSG_STAT
+                };
                 let total = HEADER_LEN + 8;
                 if total > buf.len() {
                     return None;
                 }
-                buf[0] = MSG_SIZE;
+                buf[0] = kind;
                 buf[1..9].copy_from_slice(&request_id.to_le_bytes());
                 buf[9..17].copy_from_slice(&resource_id.to_le_bytes());
                 Some(total)
@@ -402,14 +512,30 @@ impl<'a> Request<'a> {
                     resource_id,
                 })
             }
-            MSG_SIZE => {
+            MSG_SIZE | MSG_STAT => {
                 if buf.len() < 17 {
                     return None;
                 }
                 let resource_id = u64::from_le_bytes(buf[9..17].try_into().ok()?);
-                Some(Request::Size {
-                    request_id,
-                    resource_id,
+                Some(if kind == MSG_SIZE {
+                    Request::Size {
+                        request_id,
+                        resource_id,
+                    }
+                } else {
+                    Request::Stat {
+                        request_id,
+                        resource_id,
+                    }
+                })
+            }
+            MSG_CREATE | MSG_UNLINK | MSG_MKDIR | MSG_RMDIR => {
+                let (mode, path) = decode_path_op(buf)?;
+                Some(match kind {
+                    MSG_CREATE => Request::Create { request_id, mode, path },
+                    MSG_MKDIR => Request::Mkdir { request_id, mode, path },
+                    MSG_UNLINK => Request::Unlink { request_id, path },
+                    _ => Request::Rmdir { request_id, path },
                 })
             }
             MSG_DISPLAY_INFO => {
@@ -480,6 +606,19 @@ pub enum Response<'a> {
     /// Answers `Request::Size` — see [`MSG_SIZE`].
     SizeOk { request_id: u64, size: u64 },
     SizeErr { request_id: u64, error: ErrorCode },
+    /// Answers `Request::Stat` — see [`MSG_STAT`].
+    StatOk { request_id: u64, size: u64, is_dir: bool },
+    StatErr { request_id: u64, error: ErrorCode },
+    /// Answers `Request::Create` — see [`MSG_CREATE`]. Carries the newly
+    /// created file's `resource_id`, exactly like `OpenOk`.
+    CreateOk { request_id: u64, resource_id: u64 },
+    CreateErr { request_id: u64, error: ErrorCode },
+    /// Answers `Request::Unlink`/`Mkdir`/`Rmdir` — see [`MSG_CREATE`].
+    /// These carry no payload, so one variant pair covers all three; the
+    /// `kind` byte is what tells them apart on the wire, and the kernel
+    /// correlates by `request_id` anyway.
+    PathOpOk { request_id: u64 },
+    PathOpErr { request_id: u64, error: ErrorCode },
     /// Unsolicited push — see [`MSG_NOTIFY`]. `request_id` is always `0`.
     Notify { resource_id: u64, events: u32 },
     /// Answers [`Request::DisplayInfo`]. `format` mirrors
@@ -513,6 +652,12 @@ impl<'a> Response<'a> {
             | Response::ConnectErr { request_id, .. }
             | Response::SizeOk { request_id, .. }
             | Response::SizeErr { request_id, .. }
+            | Response::StatOk { request_id, .. }
+            | Response::StatErr { request_id, .. }
+            | Response::CreateOk { request_id, .. }
+            | Response::CreateErr { request_id, .. }
+            | Response::PathOpOk { request_id }
+            | Response::PathOpErr { request_id, .. }
             | Response::DisplayInfoOk { request_id, .. }
             | Response::DisplayInfoErr { request_id, .. }
             | Response::DisplayMapOk { request_id, .. }
@@ -643,6 +788,45 @@ impl<'a> Response<'a> {
         Some(total)
     }
 
+    /// Encode `StatOk`.
+    pub fn encode_stat_ok(
+        request_id: u64,
+        size: u64,
+        is_dir: bool,
+        buf: &mut [u8],
+    ) -> Option<usize> {
+        let total = RESP_HEADER_LEN + 8 + 1;
+        if total > buf.len() {
+            return None;
+        }
+        Self::header(MSG_STAT, request_id, STATUS_OK, buf)?;
+        buf[10..18].copy_from_slice(&size.to_le_bytes());
+        buf[18] = is_dir as u8;
+        Some(total)
+    }
+
+    /// Encode `CreateOk`.
+    pub fn encode_create_ok(request_id: u64, resource_id: u64, buf: &mut [u8]) -> Option<usize> {
+        let total = RESP_HEADER_LEN + 8;
+        if total > buf.len() {
+            return None;
+        }
+        Self::header(MSG_CREATE, request_id, STATUS_OK, buf)?;
+        buf[10..18].copy_from_slice(&resource_id.to_le_bytes());
+        Some(total)
+    }
+
+    /// Encode `PathOpOk` for `kind` (one of [`MSG_UNLINK`], [`MSG_MKDIR`],
+    /// [`MSG_RMDIR`]) — header only, these carry no payload.
+    pub fn encode_path_op_ok(kind: u8, request_id: u64, buf: &mut [u8]) -> Option<usize> {
+        let total = RESP_HEADER_LEN;
+        if total > buf.len() {
+            return None;
+        }
+        Self::header(kind, request_id, STATUS_OK, buf)?;
+        Some(total)
+    }
+
     /// Encode `DisplayInfoOk`.
     pub fn encode_display_info_ok(
         request_id: u64,
@@ -727,6 +911,9 @@ impl<'a> Response<'a> {
                 MSG_CLOSE => Response::CloseErr { request_id, error },
                 MSG_CONNECT => Response::ConnectErr { request_id, error },
                 MSG_SIZE => Response::SizeErr { request_id, error },
+                MSG_STAT => Response::StatErr { request_id, error },
+                MSG_CREATE => Response::CreateErr { request_id, error },
+                MSG_UNLINK | MSG_MKDIR | MSG_RMDIR => Response::PathOpErr { request_id, error },
                 MSG_DISPLAY_INFO => Response::DisplayInfoErr { request_id, error },
                 MSG_DISPLAY_MAP => Response::DisplayMapErr { request_id, error },
                 MSG_DISPLAY_FLUSH => Response::DisplayFlushErr { request_id, error },
@@ -766,6 +953,16 @@ impl<'a> Response<'a> {
                 let size = u64::from_le_bytes(buf.get(10..18)?.try_into().ok()?);
                 Some(Response::SizeOk { request_id, size })
             }
+            MSG_STAT => {
+                let size = u64::from_le_bytes(buf.get(10..18)?.try_into().ok()?);
+                let is_dir = *buf.get(18)? != 0;
+                Some(Response::StatOk { request_id, size, is_dir })
+            }
+            MSG_CREATE => {
+                let resource_id = u64::from_le_bytes(buf.get(10..18)?.try_into().ok()?);
+                Some(Response::CreateOk { request_id, resource_id })
+            }
+            MSG_UNLINK | MSG_MKDIR | MSG_RMDIR => Some(Response::PathOpOk { request_id }),
             MSG_DISPLAY_INFO => {
                 let width = u32::from_le_bytes(buf.get(10..14)?.try_into().ok()?);
                 let height = u32::from_le_bytes(buf.get(14..18)?.try_into().ok()?);
@@ -819,5 +1016,182 @@ impl<'a> Iterator for ReaddirEntriesIter<'a> {
         self.off = name_start + name_len;
         self.remaining -= 1;
         Some(ReaddirEntry { name, is_dir })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Round-trip coverage for the M5 filesystem request kinds
+    //! ([`MSG_STAT`]/[`MSG_CREATE`]/[`MSG_UNLINK`]/[`MSG_MKDIR`]/
+    //! [`MSG_RMDIR`]), whose frames are hand-encoded byte offsets like every
+    //! other kind here.
+
+    use super::*;
+
+    /// Encode `request` and decode it back out of an owned buffer.
+    fn roundtrip<'a>(request: Request<'_>, buf: &'a mut [u8; 256]) -> Request<'a> {
+        let n = request.encode(buf).expect("encodes");
+        Request::decode(&buf[..n]).expect("decodes")
+    }
+
+    #[test]
+    fn stat_request_roundtrips() {
+        let mut buf = [0u8; 256];
+        assert_eq!(
+            roundtrip(
+                Request::Stat {
+                    request_id: 7,
+                    resource_id: 9
+                },
+                &mut buf
+            ),
+            Request::Stat {
+                request_id: 7,
+                resource_id: 9
+            }
+        );
+    }
+
+    #[test]
+    fn size_and_stat_are_distinct_kinds() {
+        let mut buf = [0u8; 32];
+        Request::Size {
+            request_id: 1,
+            resource_id: 2,
+        }
+        .encode(&mut buf)
+        .unwrap();
+        assert_eq!(buf[0], MSG_SIZE);
+        Request::Stat {
+            request_id: 1,
+            resource_id: 2,
+        }
+        .encode(&mut buf)
+        .unwrap();
+        assert_eq!(buf[0], MSG_STAT);
+    }
+
+    #[test]
+    fn create_request_roundtrips() {
+        let mut buf = [0u8; 256];
+        assert_eq!(
+            roundtrip(
+                Request::Create {
+                    request_id: 1,
+                    mode: 0o644,
+                    path: "/mnt/new.txt"
+                },
+                &mut buf
+            ),
+            Request::Create {
+                request_id: 1,
+                mode: 0o644,
+                path: "/mnt/new.txt"
+            }
+        );
+    }
+
+    #[test]
+    fn mkdir_request_roundtrips() {
+        let mut buf = [0u8; 256];
+        assert_eq!(
+            roundtrip(
+                Request::Mkdir {
+                    request_id: 2,
+                    mode: 0o755,
+                    path: "/mnt/d"
+                },
+                &mut buf
+            ),
+            Request::Mkdir {
+                request_id: 2,
+                mode: 0o755,
+                path: "/mnt/d"
+            }
+        );
+    }
+
+    #[test]
+    fn unlink_request_roundtrips() {
+        let mut buf = [0u8; 256];
+        assert_eq!(
+            roundtrip(
+                Request::Unlink {
+                    request_id: 3,
+                    path: "/mnt/gone"
+                },
+                &mut buf
+            ),
+            Request::Unlink {
+                request_id: 3,
+                path: "/mnt/gone"
+            }
+        );
+    }
+
+    #[test]
+    fn rmdir_request_roundtrips() {
+        let mut buf = [0u8; 256];
+        assert_eq!(
+            roundtrip(
+                Request::Rmdir {
+                    request_id: 4,
+                    path: "/mnt/d"
+                },
+                &mut buf
+            ),
+            Request::Rmdir {
+                request_id: 4,
+                path: "/mnt/d"
+            }
+        );
+    }
+
+    #[test]
+    fn stat_response_roundtrips() {
+        let mut buf = [0u8; 64];
+        let n = Response::encode_stat_ok(5, 4096, true, &mut buf).unwrap();
+        assert_eq!(
+            Response::decode(&buf[..n]).unwrap(),
+            Response::StatOk {
+                request_id: 5,
+                size: 4096,
+                is_dir: true
+            }
+        );
+    }
+
+    #[test]
+    fn create_response_roundtrips() {
+        let mut buf = [0u8; 64];
+        let n = Response::encode_create_ok(6, 42, &mut buf).unwrap();
+        assert_eq!(
+            Response::decode(&buf[..n]).unwrap(),
+            Response::CreateOk {
+                request_id: 6,
+                resource_id: 42
+            }
+        );
+    }
+
+    #[test]
+    fn path_op_responses_roundtrip() {
+        for kind in [MSG_UNLINK, MSG_MKDIR, MSG_RMDIR] {
+            let mut buf = [0u8; 64];
+            let n = Response::encode_path_op_ok(kind, 8, &mut buf).unwrap();
+            assert_eq!(
+                Response::decode(&buf[..n]).unwrap(),
+                Response::PathOpOk { request_id: 8 }
+            );
+
+            let n = Response::encode_err(kind, 8, ErrorCode::NotEmpty, &mut buf).unwrap();
+            assert_eq!(
+                Response::decode(&buf[..n]).unwrap(),
+                Response::PathOpErr {
+                    request_id: 8,
+                    error: ErrorCode::NotEmpty
+                }
+            );
+        }
     }
 }

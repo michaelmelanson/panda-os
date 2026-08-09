@@ -80,7 +80,7 @@ libpanda::main! {
     // driver directly and wait for its readiness signal before opening
     // `keyboard:`. See `userspace/tests/keyboard_test` for the identical
     // pattern and rationale.
-    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-keyboard") else {
+    let Ok(driver_handle) = environment::spawn("initrd:/virtio-keyboard") else {
         environment::log("Could not spawn virtio-keyboard driver");
         return 1;
     };

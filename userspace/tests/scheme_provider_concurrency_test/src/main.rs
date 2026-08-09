@@ -31,7 +31,7 @@ use libpanda::{environment, process};
 libpanda::main! {
     environment::log("scheme_provider_concurrency_test: starting");
 
-    let Ok(provider_handle) = environment::spawn("file:/initrd/scheme_provider_conc_provider_child")
+    let Ok(provider_handle) = environment::spawn("initrd:/scheme_provider_conc_provider_child")
     else {
         environment::log("FAIL: spawn of provider returned error");
         return 1;
@@ -63,7 +63,7 @@ libpanda::main! {
     let mut children: libpanda::Vec<Child> = libpanda::Vec::new();
     for tag in TAGS {
         match Child::spawn_with_args(
-            "file:/initrd/scheme_provider_conc_client_child",
+            "initrd:/scheme_provider_conc_client_child",
             &["scheme_provider_conc_client_child", tag],
         ) {
             Ok(child) => children.push(child),

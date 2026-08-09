@@ -126,51 +126,13 @@ pub fn handle_connect(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> Syscal
     })
 }
 
-/// Handle environment mount operation.
-///
-/// This syscall is async - mounting a filesystem requires reading from disk.
-///
-/// Arguments:
-/// - fstype_ptr, fstype_len: Filesystem type string (e.g., "ext2")
-/// - mountpoint_ptr, mountpoint_len: Mount point path (e.g., "/mnt")
-pub fn handle_mount(
-    ua: &UserAccess,
-    fstype_ptr: usize,
-    fstype_len: usize,
-    mountpoint_ptr: usize,
-    mountpoint_len: usize,
-) -> SyscallFuture {
-    let fstype = match read_user_str(ua, fstype_ptr, fstype_len) {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
-
-    let mountpoint = match read_user_str(ua, mountpoint_ptr, mountpoint_len) {
-        Ok(s) => s,
-        Err(e) => return e,
-    };
-
-    info!("handle_mount: fstype={}, mountpoint={}", fstype, mountpoint);
-
-    Box::pin(async move {
-        match fstype.as_str() {
-            "ext2" => match crate::vfs::mount_ext2(&mountpoint).await {
-                Ok(()) => {
-                    info!("Mounted ext2 filesystem at {}", mountpoint);
-                    SyscallResult::ok(0)
-                }
-                Err(e) => {
-                    error!("Failed to mount ext2 at {}: {}", mountpoint, e);
-                    SyscallResult::err(panda_abi::ErrorCode::IoError)
-                }
-            },
-            _ => {
-                error!("Unknown filesystem type: {}", fstype);
-                SyscallResult::err(panda_abi::ErrorCode::NotSupported)
-            }
-        }
-    })
-}
+// `OP_ENVIRONMENT_MOUNT` was deleted in roadmap M5. The kernel has no mount
+// table to mount into any more: `userspace/services/fs` owns it, and mounts
+// ext2 on `block:/pci/storage/0` itself at startup — before it registers
+// `file:` and signals readiness to its parent, so by the time anything can
+// resolve a `file:` URI at all, the mount either succeeded or definitively
+// failed. That readiness handshake (`libpanda::process::wait_ready`, task
+// #43) is what callers wait on now, in place of a mount syscall returning.
 
 /// Handle environment spawn operation.
 ///
@@ -323,30 +285,13 @@ pub fn handle_time() -> SyscallFuture {
     Box::pin(core::future::ready(SyscallResult::ok(uptime)))
 }
 
-/// Map a VFS `FsError` to an `ErrorCode`.
-pub(super) fn fs_error_code(e: crate::vfs::FsError) -> panda_abi::ErrorCode {
-    use crate::vfs::FsError;
-    match e {
-        FsError::NotFound => panda_abi::ErrorCode::NotFound,
-        FsError::InvalidOffset => panda_abi::ErrorCode::InvalidOffset,
-        FsError::NotReadable => panda_abi::ErrorCode::NotReadable,
-        FsError::NotWritable => panda_abi::ErrorCode::NotWritable,
-        FsError::NotSeekable => panda_abi::ErrorCode::NotSeekable,
-        FsError::ReadOnlyFs => panda_abi::ErrorCode::NotSupported,
-        FsError::NoSpace => panda_abi::ErrorCode::NoSpace,
-        FsError::AlreadyExists => panda_abi::ErrorCode::AlreadyExists,
-        FsError::NotEmpty => panda_abi::ErrorCode::NotEmpty,
-        FsError::IsDirectory => panda_abi::ErrorCode::IsDirectory,
-        FsError::NotDirectory => panda_abi::ErrorCode::NotDirectory,
-        FsError::IoError => panda_abi::ErrorCode::IoError,
-    }
-}
-
 /// Handle environment opendir operation.
 ///
 /// This syscall is async - directory listing may require disk I/O.
-/// For `file:` URIs, the returned directory handle supports create/unlink
-/// operations via the VFS path.
+/// The returned directory handle is tagged with the URI it was listed from,
+/// which is what lets `OP_DIRECTORY_CREATE`/`UNLINK`/`MKDIR`/`RMDIR`
+/// dispatch back to the same scheme provider (see
+/// `resource::scheme::DirectoryResource`).
 pub fn handle_opendir(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> SyscallFuture {
     let uri = match read_user_str(ua, uri_ptr, uri_len) {
         Ok(u) => u,
@@ -358,15 +303,7 @@ pub fn handle_opendir(ua: &UserAccess, uri_ptr: usize, uri_len: usize) -> Syscal
             return SyscallResult::err(panda_abi::ErrorCode::NotFound);
         };
 
-        // For file: URIs, store the VFS path so create/unlink can use it
-        let dir_resource = if let Some(vfs_path) = uri.strip_prefix("file:") {
-            resource::DirectoryResource::with_vfs_path(
-                entries,
-                alloc::string::String::from(vfs_path),
-            )
-        } else {
-            resource::DirectoryResource::new(entries)
-        };
+        let dir_resource = resource::DirectoryResource::with_uri(entries, uri.clone());
         let result = scheduler::with_current_process(|proc| {
             proc.handles_mut().insert(Arc::new(dir_resource)).ok()
         });

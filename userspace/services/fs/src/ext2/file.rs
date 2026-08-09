@@ -4,7 +4,6 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-
 use super::{Ext2Fs, Inode};
 use crate::fs::{File, FileStat, FsError, SeekFrom};
 
@@ -56,11 +55,7 @@ impl Ext2File {
     }
 
     /// Handle indirect block lookup with caching.
-    fn get_block_indirect(
-        &mut self,
-        file_block: u32,
-        ptrs_per_block: u32,
-    ) -> Result<u32, FsError> {
+    fn get_block_indirect(&mut self, file_block: u32, ptrs_per_block: u32) -> Result<u32, FsError> {
         // Single indirect block (12)
         let fb = file_block - 12;
         if fb < ptrs_per_block {
@@ -70,9 +65,7 @@ impl Ext2File {
         // Double indirect block (13)
         let fb = fb - ptrs_per_block;
         if fb < ptrs_per_block * ptrs_per_block {
-            let ind = self
-                .read_cached_ptr(self.inode.block[13], fb / ptrs_per_block)
-                ?;
+            let ind = self.read_cached_ptr(self.inode.block[13], fb / ptrs_per_block)?;
             return self.read_cached_ptr(ind, fb % ptrs_per_block);
         }
 
@@ -80,9 +73,7 @@ impl Ext2File {
         let fb = fb - ptrs_per_block * ptrs_per_block;
         let pp = ptrs_per_block * ptrs_per_block;
         let dbl = self.read_cached_ptr(self.inode.block[14], fb / pp)?;
-        let ind = self
-            .read_cached_ptr(dbl, (fb % pp) / ptrs_per_block)
-            ?;
+        let ind = self.read_cached_ptr(dbl, (fb % pp) / ptrs_per_block)?;
         self.read_cached_ptr(ind, fb % ptrs_per_block)
     }
 
@@ -127,7 +118,6 @@ impl Ext2File {
     }
 }
 
-
 impl File for Ext2File {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {
         if self.pos >= self.size {
@@ -153,8 +143,7 @@ impl File for Ext2File {
                 let disk_off = block_num as u64 * block_size as u64 + block_off as u64;
                 self.fs
                     .device()
-                    .read_at(disk_off, &mut buf[done..done + chunk])
-                    ?;
+                    .read_at(disk_off, &mut buf[done..done + chunk])?;
             }
 
             done += chunk;
@@ -196,9 +185,9 @@ impl File for Ext2File {
                 let zeroes = vec![0u8; block_size as usize];
                 self.fs.write_block(block_num, &zeroes)?;
                 // Record the new block in the inode's block map
-                let meta_blocks = self.fs
-                    .set_block_number(&mut self.inode, file_block, block_num)
-                    ?;
+                let meta_blocks =
+                    self.fs
+                        .set_block_number(&mut self.inode, file_block, block_num)?;
                 // Update the inode's 512-byte block count (data block + any metadata blocks)
                 self.inode.blocks += (1 + meta_blocks) * (block_size / 512);
                 inode_dirty = true;
@@ -211,9 +200,7 @@ impl File for Ext2File {
             // Write the data
             if chunk == block_size as usize {
                 // Full block write — no read-modify-write needed
-                self.fs
-                    .write_block(block_num, &buf[done..done + chunk])
-                    ?;
+                self.fs.write_block(block_num, &buf[done..done + chunk])?;
             } else {
                 // Partial block write — read-modify-write
                 let mut block_buf = vec![0u8; block_size as usize];

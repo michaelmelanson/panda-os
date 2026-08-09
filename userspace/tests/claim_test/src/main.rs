@@ -30,7 +30,7 @@ libpanda::main! {
     // roadmap M4, plans/device-driver-model.md). Both `block:` opens below
     // plus the ext2 mount in Test 5 need virtio-blk running, and Test 4
     // needs virtio-gpu running.
-    let Ok(blk_driver_handle) = environment::spawn("file:/initrd/virtio-blk") else {
+    let Ok(blk_driver_handle) = environment::spawn("initrd:/virtio-blk") else {
         environment::log("FAIL: could not spawn virtio-blk driver");
         return 1;
     };
@@ -44,7 +44,7 @@ libpanda::main! {
         return 1;
     }
 
-    let Ok(gpu_driver_handle) = environment::spawn("file:/initrd/virtio-gpu") else {
+    let Ok(gpu_driver_handle) = environment::spawn("initrd:/virtio-gpu") else {
         environment::log("FAIL: could not spawn virtio-gpu driver");
         return 1;
     };
@@ -88,7 +88,7 @@ libpanda::main! {
 
     // Test 3: process exit releases the claim — the child opens the device
     // and exits without closing it
-    let Ok(child) = environment::spawn("file:/initrd/claim_child") else {
+    let Ok(child) = environment::spawn("initrd:/claim_child") else {
         environment::log("FAIL: could not spawn claim_child");
         return 1;
     };

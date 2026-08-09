@@ -264,8 +264,13 @@ pub enum Operation {
     EnvironmentTime = 0x3_0003,
     /// Open directory: (path_ptr, path_len) -> dir_handle or error
     EnvironmentOpendir = 0x3_0004,
-    /// Mount filesystem: (fstype_ptr, fstype_len, mountpoint_ptr, mountpoint_len) -> 0 or error
-    EnvironmentMount = 0x3_0005,
+    // 0x3_0005 was `EnvironmentMount`, deleted in roadmap M5 along with the
+    // kernel's mount table: `userspace/services/fs` mounts ext2 itself
+    // before registering `file:` and signalling readiness, so there is
+    // nothing for a caller to ask the kernel to mount. The number is left
+    // unused rather than reassigned, so a stale binary calling it gets
+    // `NotSupported` from the dispatch table's fallthrough instead of some
+    // unrelated operation.
     /// Connect to a userspace scheme provider's `Request::Connect` handler
     /// and receive a live channel to it: (uri_ptr, uri_len) -> channel_handle
     /// or error. Unlike `EnvironmentOpen`, which yields a file-like
@@ -374,7 +379,6 @@ impl Operation {
             0x3_0002 => Some(Self::EnvironmentLog),
             0x3_0003 => Some(Self::EnvironmentTime),
             0x3_0004 => Some(Self::EnvironmentOpendir),
-            0x3_0005 => Some(Self::EnvironmentMount),
             0x3_0006 => Some(Self::EnvironmentConnect),
             0x8_0000 => Some(Self::DirectoryCreateFile),
             0x8_0001 => Some(Self::DirectoryUnlinkFile),
@@ -472,10 +476,6 @@ pub const OP_ENVIRONMENT_LOG: u32 = Operation::EnvironmentLog as u32;
 pub const OP_ENVIRONMENT_TIME: u32 = Operation::EnvironmentTime as u32;
 /// Open directory: (path_ptr, path_len) -> dir_handle or error
 pub const OP_ENVIRONMENT_OPENDIR: u32 = Operation::EnvironmentOpendir as u32;
-/// Mount filesystem: (fstype_ptr, fstype_len, mountpoint_ptr, mountpoint_len) -> 0 or error
-/// fstype: "ext2" to mount ext2 on first block device
-/// mountpoint: e.g., "/mnt"
-pub const OP_ENVIRONMENT_MOUNT: u32 = Operation::EnvironmentMount as u32;
 /// Connect to a userspace scheme provider: (uri_ptr, uri_len) -> channel_handle or error
 pub const OP_ENVIRONMENT_CONNECT: u32 = Operation::EnvironmentConnect as u32;
 // Directory operations (0x8_0000 - 0x8_FFFF)

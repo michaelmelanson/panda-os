@@ -88,9 +88,13 @@ check_extras() {
             # virtio-keyboard directly, since they act as their own `init`
             # with no service manager to spawn it for them — see
             # `userspace/tests/keyboard_test`) references one under
-            # userspace/drivers/ instead.
-            if [ ! -d "$PROJECT_DIR/userspace/tests/$name" ] && [ ! -d "$PROJECT_DIR/userspace/drivers/$name" ]; then
-                echo "error: $var references nonexistent crate '$name' (no userspace/tests/$name or userspace/drivers/$name)" >&2
+            # userspace/drivers/ instead, and a test needing the filesystem
+            # service (`fs`, which provides `file:` since roadmap M5)
+            # references one under userspace/services/.
+            if [ ! -d "$PROJECT_DIR/userspace/tests/$name" ] \
+                && [ ! -d "$PROJECT_DIR/userspace/drivers/$name" ] \
+                && [ ! -d "$PROJECT_DIR/userspace/services/$name" ]; then
+                echo "error: $var references nonexistent crate '$name' (no userspace/tests/$name, userspace/drivers/$name or userspace/services/$name)" >&2
                 status=1
             fi
             echo "$name"

@@ -16,8 +16,6 @@ use async_trait::async_trait;
 use spinning_top::{RwSpinlock, Spinlock};
 use x86_64::instructions::port::Port;
 
-use crate::device_path;
-use crate::devices::claims::ClaimOwner;
 use crate::vfs;
 
 use super::Resource;
@@ -60,6 +58,35 @@ pub trait SchemeHandler: Send + Sync {
     /// which always fails `NotFound`.
     async fn connect(&self, _path: &str) -> Result<Arc<dyn Resource>, OpenError> {
         Err(OpenError::NotFound)
+    }
+
+    /// Create a file at `path` within this scheme, returning it open.
+    ///
+    /// Backs `OP_DIRECTORY_CREATE` (see `syscall::directory::handle_create`).
+    /// Roadmap M5: this used to call `vfs::create` directly in the kernel;
+    /// now the filesystem lives in `userspace/services/fs`, so it has to be
+    /// a request to whichever provider owns the scheme. Only
+    /// [`UserSchemeProvider`] implements it — everything else inherits this
+    /// default, which is also the honest answer for `initrd:` (read-only)
+    /// and the device schemes.
+    async fn create(&self, _path: &str, _mode: u16) -> Result<Box<dyn Resource>, panda_abi::ErrorCode> {
+        Err(panda_abi::ErrorCode::NotSupported)
+    }
+
+    /// Remove the file at `path` within this scheme. See [`create`](Self::create).
+    async fn unlink(&self, _path: &str) -> Result<(), panda_abi::ErrorCode> {
+        Err(panda_abi::ErrorCode::NotSupported)
+    }
+
+    /// Create a directory at `path` within this scheme. See [`create`](Self::create).
+    async fn mkdir(&self, _path: &str, _mode: u16) -> Result<(), panda_abi::ErrorCode> {
+        Err(panda_abi::ErrorCode::NotSupported)
+    }
+
+    /// Remove the empty directory at `path` within this scheme. See
+    /// [`create`](Self::create).
+    async fn rmdir(&self, _path: &str) -> Result<(), panda_abi::ErrorCode> {
+        Err(panda_abi::ErrorCode::NotSupported)
     }
 }
 
@@ -206,38 +233,56 @@ pub async fn readdir(uri: &str) -> Option<Vec<DirEntry>> {
     handler.readdir(path).await
 }
 
-// =============================================================================
-// File Scheme - wraps existing VFS
-// =============================================================================
-
-/// Scheme handler that wraps the existing VFS mount system
-pub struct FileScheme;
-
-#[async_trait]
-impl SchemeHandler for FileScheme {
-    async fn open(&self, path: &str) -> Result<Box<dyn Resource>, OpenError> {
-        // Try it as a directory first. This resolves the path with a single
-        // lookup: both ext2 and TarFs fail `readdir` with `NotFound` for a
-        // path that names a file (or doesn't exist), so a non-directory
-        // falls straight through to the file-open path below without a
-        // separate `stat` call to decide which lookup to do.
-        if let Ok(entries) = vfs::readdir(path).await {
-            // Return a directory resource with VFS path for mutation support
-            return Ok(Box::new(DirectoryResource::with_vfs_path(
-                entries,
-                alloc::string::String::from(path),
-            )));
-        }
-
-        // Open as a file
-        let file = vfs::open(path).await.map_err(|_| OpenError::NotFound)?;
-        Ok(Box::new(VfsFileResource::new(file)))
-    }
-
-    async fn readdir(&self, path: &str) -> Option<Vec<DirEntry>> {
-        vfs::readdir(path).await.ok()
-    }
+/// Resolve `uri`'s scheme to its handler, or `NotFound` if nothing is
+/// registered under that name. Shared by the four path-based filesystem
+/// operations below.
+fn handler_for(uri: &str) -> Result<(Arc<dyn SchemeHandler>, &str), panda_abi::ErrorCode> {
+    let (scheme, path) = uri.split_once(':').ok_or(panda_abi::ErrorCode::NotFound)?;
+    let schemes = SCHEMES.read();
+    let handler = schemes
+        .get(scheme)
+        .map(Arc::clone)
+        .ok_or(panda_abi::ErrorCode::NotFound)?;
+    Ok((handler, path))
 }
+
+/// Create a file by URI (e.g. `"file:/mnt/new.txt"`), returning it open.
+/// See [`SchemeHandler::create`].
+pub async fn create(uri: &str, mode: u16) -> Result<Box<dyn Resource>, panda_abi::ErrorCode> {
+    let (handler, path) = handler_for(uri)?;
+    handler.create(path, mode).await
+}
+
+/// Remove a file by URI. See [`SchemeHandler::create`].
+pub async fn unlink(uri: &str) -> Result<(), panda_abi::ErrorCode> {
+    let (handler, path) = handler_for(uri)?;
+    handler.unlink(path).await
+}
+
+/// Create a directory by URI. See [`SchemeHandler::create`].
+pub async fn mkdir(uri: &str, mode: u16) -> Result<(), panda_abi::ErrorCode> {
+    let (handler, path) = handler_for(uri)?;
+    handler.mkdir(path, mode).await
+}
+
+/// Remove an empty directory by URI. See [`SchemeHandler::create`].
+pub async fn rmdir(uri: &str) -> Result<(), panda_abi::ErrorCode> {
+    let (handler, path) = handler_for(uri)?;
+    handler.rmdir(path).await
+}
+
+// =============================================================================
+// File Scheme - moved to a userspace service in roadmap M5
+// =============================================================================
+//
+// The kernel-resident `FileScheme` (which walked `vfs`'s mount table) has
+// been deleted along with the mount table and ext2 themselves. `file:` is
+// now registered by `userspace/services/fs` via `OP_SCHEME_REGISTER`,
+// exactly like `block:`/`display:`/`keyboard:`, and resolves through
+// `UserSchemeProvider` below with no special-casing here. The kernel keeps
+// only `initrd:` (see `resource::initrd::InitrdScheme`), which reads the
+// in-memory ustar archive directly and is what makes the filesystem service
+// itself loadable before any filesystem is mounted.
 
 /// A file resource wrapping a VFS file.
 pub struct VfsFileResource {
@@ -268,29 +313,35 @@ impl super::VfsFile for VfsFileResource {
     }
 }
 
-/// A directory resource.
+/// A directory resource: a snapshot of one directory's entries, plus the URI
+/// it was listed from.
 ///
-/// If `vfs_path` is set, this directory supports mutation operations
-/// (create, unlink) via the VFS layer.
+/// The URI is what makes the mutating directory syscalls
+/// (`OP_DIRECTORY_CREATE`/`UNLINK`/`MKDIR`/`RMDIR`) possible: they join it
+/// with the caller's entry name and dispatch the result back through the
+/// scheme registry (see [`create`]/[`unlink`]/[`mkdir`]/[`rmdir`] and
+/// `syscall::directory`). Before roadmap M5 this was a bare VFS path,
+/// because the only mutable filesystem was the kernel's own; it is a full
+/// URI now so the operation reaches whichever provider owns that scheme.
 pub struct DirectoryResource {
     entries: Vec<DirEntry>,
-    /// Absolute VFS path of this directory, if backed by a VFS filesystem.
-    vfs_path: Option<alloc::string::String>,
+    /// The URI this listing came from (e.g. `"file:/mnt"`), if it supports
+    /// mutation. `None` for listings with no mutable backing (e.g.
+    /// `initrd:`, `scheme:`).
+    uri: Option<alloc::string::String>,
 }
 
 impl DirectoryResource {
     pub fn new(entries: Vec<DirEntry>) -> Self {
-        Self {
-            entries,
-            vfs_path: None,
-        }
+        Self { entries, uri: None }
     }
 
-    /// Create a directory resource with an associated VFS path for mutation.
-    pub fn with_vfs_path(entries: Vec<DirEntry>, path: alloc::string::String) -> Self {
+    /// Create a directory resource that supports mutation, tagged with the
+    /// URI it was listed from.
+    pub fn with_uri(entries: Vec<DirEntry>, uri: alloc::string::String) -> Self {
         Self {
             entries,
-            vfs_path: Some(path),
+            uri: Some(uri),
         }
     }
 }
@@ -314,8 +365,8 @@ impl Directory for DirectoryResource {
         self.entries.len()
     }
 
-    fn vfs_path(&self) -> Option<alloc::string::String> {
-        self.vfs_path.clone()
+    fn uri(&self) -> Option<alloc::string::String> {
+        self.uri.clone()
     }
 }
 
@@ -765,6 +816,46 @@ impl UserSchemeProvider {
             state: ProviderState::new(kernel_endpoint),
         }
     }
+
+    /// Round-trip one of the payload-free path operations
+    /// (`Unlink`/`Mkdir`/`Rmdir` — see
+    /// `panda_abi::scheme_protocol::MSG_CREATE`). They share one request
+    /// shape and one payload-free response, so `kind` is all that
+    /// distinguishes them; `mode` is ignored by everything but `Mkdir`.
+    async fn path_op(
+        &self,
+        kind: u8,
+        mode: u16,
+        path: &str,
+    ) -> Result<(), panda_abi::ErrorCode> {
+        use panda_abi::scheme_protocol::{self, Request, Response};
+
+        let request_id = self.state.next_request_id();
+        let request = match kind {
+            scheme_protocol::MSG_UNLINK => Request::Unlink { request_id, path },
+            scheme_protocol::MSG_MKDIR => Request::Mkdir { request_id, mode, path },
+            scheme_protocol::MSG_RMDIR => Request::Rmdir { request_id, path },
+            _ => return Err(panda_abi::ErrorCode::InvalidArgument),
+        };
+
+        let mut req_buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let Some(n) = request.encode(&mut req_buf) else {
+            return Err(panda_abi::ErrorCode::InvalidArgument);
+        };
+        req_buf.truncate(n);
+
+        let resp = self
+            .state
+            .round_trip(request_id, &req_buf)
+            .await
+            .map_err(provider_error_to_error_code)?;
+
+        match Response::decode(&resp) {
+            Some(Response::PathOpOk { .. }) => Ok(()),
+            Some(Response::PathOpErr { error, .. }) => Err(error),
+            _ => Err(panda_abi::ErrorCode::Protocol),
+        }
+    }
 }
 
 #[async_trait]
@@ -821,6 +912,47 @@ impl SchemeHandler for UserSchemeProvider {
             }
             _ => None,
         }
+    }
+
+    async fn create(&self, path: &str, mode: u16) -> Result<Box<dyn Resource>, panda_abi::ErrorCode> {
+        use panda_abi::scheme_protocol::{Request, Response};
+
+        let request_id = self.state.next_request_id();
+        let mut req_buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let Some(n) = (Request::Create { request_id, mode, path }).encode(&mut req_buf) else {
+            return Err(panda_abi::ErrorCode::InvalidArgument);
+        };
+        req_buf.truncate(n);
+
+        let resp = self
+            .state
+            .round_trip(request_id, &req_buf)
+            .await
+            .map_err(provider_error_to_error_code)?;
+
+        match Response::decode(&resp) {
+            Some(Response::CreateOk { resource_id, .. }) => Ok(Box::new(SchemeProxyResource {
+                provider: Arc::clone(&self.state),
+                resource_id,
+            })),
+            Some(Response::CreateErr { error, .. }) => Err(error),
+            _ => Err(panda_abi::ErrorCode::Protocol),
+        }
+    }
+
+    async fn unlink(&self, path: &str) -> Result<(), panda_abi::ErrorCode> {
+        self.path_op(panda_abi::scheme_protocol::MSG_UNLINK, 0, path)
+            .await
+    }
+
+    async fn mkdir(&self, path: &str, mode: u16) -> Result<(), panda_abi::ErrorCode> {
+        self.path_op(panda_abi::scheme_protocol::MSG_MKDIR, mode, path)
+            .await
+    }
+
+    async fn rmdir(&self, path: &str) -> Result<(), panda_abi::ErrorCode> {
+        self.path_op(panda_abi::scheme_protocol::MSG_RMDIR, 0, path)
+            .await
     }
 
     async fn connect(&self, path: &str) -> Result<Arc<dyn Resource>, OpenError> {
@@ -1000,6 +1132,38 @@ impl SchemeProxyResource {
         }
     }
 
+    /// Query the resource's metadata, returning `(size, is_dir)` — see
+    /// `Request::Stat`'s doc comment. Backs `OP_FILE_STAT` for a
+    /// provider-backed resource (roadmap M5, when `file:` became a
+    /// userspace scheme); distinct from [`size`](Self::size), which predates
+    /// it and deliberately answers only a byte count.
+    pub async fn stat(&self) -> Result<(u64, bool), panda_abi::ErrorCode> {
+        use panda_abi::scheme_protocol::{Request, Response};
+
+        let request_id = self.provider.next_request_id();
+        let mut req_buf = alloc::vec![0u8; panda_abi::MAX_MESSAGE_SIZE];
+        let Some(n) = (Request::Stat {
+            request_id,
+            resource_id: self.resource_id,
+        })
+        .encode(&mut req_buf) else {
+            return Err(panda_abi::ErrorCode::InvalidArgument);
+        };
+        req_buf.truncate(n);
+
+        let resp = self
+            .provider
+            .round_trip(request_id, &req_buf)
+            .await
+            .map_err(provider_error_to_error_code)?;
+
+        match Response::decode(&resp) {
+            Some(Response::StatOk { size, is_dir, .. }) => Ok((size, is_dir)),
+            Some(Response::StatErr { error, .. }) => Err(error),
+            _ => Err(panda_abi::ErrorCode::Protocol),
+        }
+    }
+
     /// Forward `OP_DISPLAY_INFO` to the provider — see
     /// `panda-kernel/src/syscall/display.rs`'s scheme-proxy fallback branch,
     /// used when the opened resource is a userspace display driver
@@ -1166,10 +1330,11 @@ pub fn register_initrd_scheme(fs: Arc<vfs::TarFs>) {
 
 /// Initialize the resource scheme system with default schemes
 pub fn init() {
-    register_scheme("file", Arc::new(FileScheme));
     register_scheme("console", Arc::new(ConsoleScheme));
-    // "block" and "display" are intentionally not registered here — both
-    // are registered by their respective userspace drivers
-    // (virtio-blk/virtio-gpu) via `OP_SCHEME_REGISTER`, same as "keyboard".
+    // "file", "block" and "display" are intentionally not registered here —
+    // each is registered by its userspace provider via `OP_SCHEME_REGISTER`,
+    // same as "keyboard": "file" by `userspace/services/fs` (roadmap M5),
+    // "block"/"display" by `userspace/drivers/virtio-blk`/`virtio-gpu`
+    // (roadmap M4).
     register_scheme("scheme", Arc::new(SchemeScheme));
 }

@@ -1,5 +1,5 @@
 [package]
-name = "panda-fs"
+name = "fs"
 version.workspace = true
 edition.workspace = true
 
@@ -13,7 +13,6 @@ os = ["dep:libpanda"]
 [dependencies]
 libpanda = { workspace = true, optional = true }
 panda-abi = { path = "../../../panda-abi" }
-log = { workspace = true }
 spinning_top = { workspace = true }
 
 [[bin]]

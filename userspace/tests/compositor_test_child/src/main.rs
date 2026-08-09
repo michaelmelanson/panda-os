@@ -66,7 +66,7 @@ libpanda::main! {
     // compositor, which otherwise races the driver's async device-claim/
     // feature-negotiation/scanout-setup startup and degrades to "running
     // without output" (see `compositor::server::Compositor::new`).
-    let driver_channel = if let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-gpu") {
+    let driver_channel = if let Ok(driver_handle) = environment::spawn("initrd:/virtio-gpu") {
         let channel = Channel::from_handle_borrowed(driver_handle.into());
         if let Some(channel) = channel.as_ref() {
             let mut ready_msg = [0u8; 64];

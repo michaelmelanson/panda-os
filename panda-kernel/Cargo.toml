@@ -85,13 +85,7 @@ harness = false
 name = "elf_security"
 harness = false
 
-[[test]]
-name = "vfs_path"
-harness = false
 
-[[test]]
-name = "ext2_validation"
-harness = false
 
 [[test]]
 name = "fmask"

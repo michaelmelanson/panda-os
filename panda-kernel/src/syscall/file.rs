@@ -297,13 +297,12 @@ pub fn handle_write(
         return handle_write_scheme_proxy(ua, handle_id, offset, buf_ptr, buf_len, resource);
     }
 
-    // Check if this is a VFS file (which needs async handling)
-    if let Some(vfs_file) = get_vfs_file(handle_id) {
-        handle_write_vfs(ua, handle_id, buf_ptr, buf_len, vfs_file)
-    } else {
-        // Sync path for non-VFS resources (char output, etc.)
-        handle_write_sync(ua, handle_id, buf_ptr, buf_len)
-    }
+    // There is no VFS write path any more: the kernel's one remaining
+    // filesystem (`initrd:`'s `TarFs`) is read-only, so `vfs::File` has no
+    // `write` method (roadmap M5). A VFS-backed handle therefore falls
+    // through to the sync path below and is rejected `NotWritable` there,
+    // same as any other non-writable resource.
+    handle_write_sync(ua, handle_id, buf_ptr, buf_len)
 }
 
 /// Write path for scheme-provider proxy resources (M2.2): round-trips a
@@ -341,60 +340,6 @@ fn handle_write_scheme_proxy(
                 SyscallResult::ok(n as isize)
             }
             Err(code) => SyscallResult::err(code),
-        }
-    })
-}
-
-/// Async write path for VFS files.
-///
-/// Copies data from userspace into a kernel buffer before building the future.
-fn handle_write_vfs(
-    ua: &UserAccess,
-    handle_id: u64,
-    buf_ptr: usize,
-    buf_len: usize,
-    vfs_file: Arc<dyn VfsFile>,
-) -> SyscallFuture {
-    let offset = scheduler::with_current_process(|proc| {
-        proc.handles()
-            .get(handle_id)
-            .map(|h| h.offset())
-            .unwrap_or(0)
-    });
-
-    // Cap write size to prevent kernel heap exhaustion
-    let buf_len = buf_len.min(panda_abi::MAX_FILE_IO_SIZE);
-
-    // Copy data from userspace into kernel buffer before building future
-    let data = match ua.read(UserSlice::new(buf_ptr, buf_len)) {
-        Ok(d) => d,
-        Err(_) => {
-            return Box::pin(core::future::ready(SyscallResult::err(
-                panda_abi::ErrorCode::InvalidArgument,
-            )));
-        }
-    };
-
-    Box::pin(async move {
-        let file_lock = vfs_file.file();
-        let mut file = file_lock.lock();
-
-        // Seek to current offset
-        if file.seek(SeekFrom::Start(offset)).await.is_err() {
-            return SyscallResult::err(panda_abi::ErrorCode::IoError);
-        }
-
-        // Write data from kernel buffer
-        match file.write(&data).await {
-            Ok(n) => {
-                scheduler::with_current_process(|proc| {
-                    if let Some(handle) = proc.handles_mut().get_mut(handle_id) {
-                        handle.set_offset(offset + n as u64);
-                    }
-                });
-                SyscallResult::ok(n as isize)
-            }
-            Err(_) => SyscallResult::err(panda_abi::ErrorCode::IoError),
         }
     })
 }
@@ -609,6 +554,25 @@ fn handle_seek_scheme_proxy(
 /// The result is written back to userspace via WriteBack.
 pub fn handle_stat(handle_id: u64, stat_ptr: usize) -> SyscallFuture {
     let dst = UserSlice::new(stat_ptr, core::mem::size_of::<FileStat>());
+
+    // Scheme-provider proxy resources (`file:` since roadmap M5) answer via
+    // a `Request::Stat` round trip. Without this they would fall through to
+    // the sync path below, which reports `size: 0, is_dir: false` for
+    // anything that isn't a directory handle — see `MSG_STAT`'s doc comment.
+    if let Some(resource) = get_scheme_proxy(handle_id) {
+        return Box::pin(async move {
+            // Safety of unwrap: `resource` was resolved by `get_scheme_proxy`,
+            // which only returns handles where `as_scheme_proxy()` is `Some`.
+            let proxy = resource.as_scheme_proxy().unwrap();
+            match proxy.stat().await {
+                Ok((size, is_dir)) => {
+                    let file_stat = FileStat { size, is_dir };
+                    SyscallResult::write_back_struct(0, &file_stat, dst)
+                }
+                Err(code) => SyscallResult::err(code),
+            }
+        });
+    }
 
     // Check if this is a VFS file
     if let Some(vfs_file) = get_vfs_file(handle_id) {

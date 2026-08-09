@@ -8,7 +8,7 @@ libpanda::main! {
 
     // Spawn child with arguments
     let mut child = match Child::spawn_with_args(
-        "file:/initrd/args_child",
+        "initrd:/args_child",
         &["args_child", "hello", "world", "123"],
     ) {
         Ok(c) => c,

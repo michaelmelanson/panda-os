@@ -13,7 +13,7 @@ libpanda::main! {
     // running to spawn the virtio-blk driver — do it directly, the same
     // way `keyboard_test` spawns virtio-keyboard (M4 Phase 2,
     // plans/device-driver-model.md).
-    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-blk") else {
+    let Ok(driver_handle) = environment::spawn("initrd:/virtio-blk") else {
         environment::log("Could not spawn virtio-blk driver");
         return 1;
     };

@@ -15,7 +15,7 @@ libpanda::main! {
     };
     let a = Channel::from_typed(handle_a);
 
-    let Ok(child_handle) = environment::spawn("file:/initrd/handle_transfer_child") else {
+    let Ok(child_handle) = environment::spawn("initrd:/handle_transfer_child") else {
         environment::log("FAIL: spawn returned error");
         return 1;
     };

@@ -203,9 +203,7 @@ impl Ext2Fs {
 
         // Set the new block in the directory inode
         let file_block = num_blocks;
-        let meta_blocks = self
-            .set_block_number(&mut dir_inode, file_block, new_block)
-            ?;
+        let meta_blocks = self.set_block_number(&mut dir_inode, file_block, new_block)?;
         dir_inode.blocks += (1 + meta_blocks) * (self.block_size() / 512);
         dir_inode.set_size(dir_inode.size() + self.block_size() as u64);
 
@@ -352,15 +350,13 @@ impl Ext2Fs {
     /// * `Ok(false)` - Directory contains entries other than `.` and `..`
     /// * `Err(_)` - I/O error reading directory blocks
     pub fn is_dir_empty(&self, dir_inode: &Inode) -> Result<bool, FsError> {
-        let found_non_dot_entry = self
-            .for_each_dir_entry(dir_inode, |_entry, name_bytes| {
-                if name_bytes != b"." && name_bytes != b".." {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                }
-            })
-            ?;
+        let found_non_dot_entry = self.for_each_dir_entry(dir_inode, |_entry, name_bytes| {
+            if name_bytes != b"." && name_bytes != b".." {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })?;
 
         Ok(found_non_dot_entry.is_none())
     }

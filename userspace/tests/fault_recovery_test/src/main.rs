@@ -13,7 +13,7 @@ libpanda::main! {
     environment::log("Fault recovery test: starting");
 
     // Spawn the child that will fault
-    let mut child = match Child::spawn("file:/initrd/fault_child") {
+    let mut child = match Child::spawn("initrd:/fault_child") {
         Ok(c) => c,
         Err(_) => {
             environment::log("FAIL: could not spawn fault_child");

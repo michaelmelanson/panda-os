@@ -41,7 +41,7 @@ libpanda::main! {
     // running to spawn the virtio-blk driver the mount below needs — do it
     // directly, the same way `keyboard_test` spawns virtio-keyboard (M4
     // Phase 2, plans/device-driver-model.md).
-    let Ok(driver_handle) = environment::spawn("file:/initrd/virtio-blk") else {
+    let Ok(driver_handle) = environment::spawn("initrd:/virtio-blk") else {
         environment::log("FAIL: could not spawn virtio-blk driver");
         return 1;
     };
@@ -55,10 +55,16 @@ libpanda::main! {
         return 1;
     }
 
-    // Mount ext2 filesystem
-    environment::log("ext2_write_test: Mounting ext2 filesystem");
-    if let Err(_) = environment::mount("ext2", "/mnt") {
-        environment::log("FAIL: Could not mount ext2 filesystem");
+    // Start the filesystem service, which registers `file:` and mounts
+    // ext2 itself — see `ext2_test` for why this replaces the deleted mount
+    // syscall (roadmap M5).
+    environment::log("ext2_write_test: Starting filesystem service");
+    let Ok(fs_handle) = environment::spawn("initrd:/fs") else {
+        environment::log("FAIL: could not spawn filesystem service");
+        return 1;
+    };
+    if libpanda::process::wait_ready(fs_handle).is_err() {
+        environment::log("FAIL: filesystem service did not become ready");
         return 1;
     }
     environment::log("ext2_write_test: ext2 mounted at /mnt");

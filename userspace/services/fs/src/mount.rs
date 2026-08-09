@@ -360,8 +360,14 @@ mod tests {
             table.create("/test/newfile.txt", 0o644),
             Err(FsError::ReadOnlyFs)
         ));
-        assert_eq!(table.unlink("/test/hello.txt").unwrap_err(), FsError::ReadOnlyFs);
-        assert_eq!(table.mkdir("/test/newdir", 0o755).unwrap_err(), FsError::ReadOnlyFs);
+        assert_eq!(
+            table.unlink("/test/hello.txt").unwrap_err(),
+            FsError::ReadOnlyFs
+        );
+        assert_eq!(
+            table.mkdir("/test/newdir", 0o755).unwrap_err(),
+            FsError::ReadOnlyFs
+        );
         assert_eq!(table.rmdir("/test/sub").unwrap_err(), FsError::ReadOnlyFs);
         assert_eq!(
             table.truncate("/test/hello.txt", 0).unwrap_err(),

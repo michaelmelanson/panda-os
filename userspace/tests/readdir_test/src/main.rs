@@ -6,6 +6,17 @@ use libpanda::{environment, file, DirEntry};
 libpanda::main! {
     environment::log("readdir test starting");
 
+    // This test plays the role of `init`, so it starts the filesystem
+    // service that provides `file:` itself (roadmap M5) — see `vfs_test`.
+    let Ok(fs_handle) = environment::spawn("initrd:/fs") else {
+        environment::log("FAIL: could not spawn filesystem service");
+        return 1;
+    };
+    if libpanda::process::wait_ready(fs_handle).is_err() {
+        environment::log("FAIL: filesystem service did not become ready");
+        return 1;
+    }
+
     // Test: Open the initrd directory
     let handle = if let Ok(h) = environment::opendir("file:/initrd") {
         h

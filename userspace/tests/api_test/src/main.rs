@@ -11,7 +11,7 @@ libpanda::main! {
     // Test 1: io::File::open with RAII
     environment::log("Test 1: io::File::open");
     {
-        let mut file = match File::open("file:/initrd/hello.txt") {
+        let mut file = match File::open("initrd:/hello.txt") {
             Ok(f) => f,
             Err(e) => {
                 environment::log("FAIL: File::open failed");
@@ -55,7 +55,7 @@ libpanda::main! {
     // Test 3: File handle method
     environment::log("Test 3: File::handle");
     {
-        let file = File::open("file:/initrd/hello.txt").unwrap();
+        let file = File::open("initrd:/hello.txt").unwrap();
         let handle = file.handle();
         // Just verify we can get the handle
         let _ = handle.as_raw();

@@ -665,6 +665,16 @@ fn serve_provider_requests(provider: &SchemeProvider, device: Option<&mut Device
             Request::DisplayFlush { request_id, .. } => {
                 let _ = provider.reply_display_flush_err(request_id, ErrorCode::NotSupported);
             }
+            // The M5 filesystem request kinds only ever arrive on the
+            // filesystem service's `file:` provider
+            // (`userspace/services/fs`), never here.
+            Request::Stat { .. }
+            | Request::Create { .. }
+            | Request::Unlink { .. }
+            | Request::Mkdir { .. }
+            | Request::Rmdir { .. } => {
+                let _ = provider.reply_unsupported(&request);
+            }
         }
     }
 }

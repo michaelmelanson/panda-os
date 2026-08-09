@@ -26,7 +26,7 @@ libpanda::main! {
     // Spawn consumer FIRST with stdin connected to read_end
     // This ensures consumer is ready to receive before producer sends
     // stdout not set means output goes to parent channel
-    let Ok(consumer) = ChildBuilder::new("file:/initrd/pipeline_consumer")
+    let Ok(consumer) = ChildBuilder::new("initrd:/pipeline_consumer")
         .args(&["pipeline_consumer"])
         .stdin(read_end.into())
         .spawn_handle()
@@ -38,7 +38,7 @@ libpanda::main! {
 
     // Spawn producer with stdout connected to write_end
     // stdin not set means no stdin redirection
-    let Ok(producer) = ChildBuilder::new("file:/initrd/pipeline_producer")
+    let Ok(producer) = ChildBuilder::new("initrd:/pipeline_producer")
         .args(&["pipeline_producer"])
         .stdout(write_end.into())
         .spawn_handle()

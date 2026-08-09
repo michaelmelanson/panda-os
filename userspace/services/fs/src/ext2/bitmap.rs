@@ -26,8 +26,8 @@
 use alloc::sync::Arc;
 use alloc::vec;
 
-use super::guards::InodeGuard;
 use super::Ext2Fs;
+use super::guards::InodeGuard;
 use crate::fs::FsError;
 
 impl Ext2Fs {
@@ -39,7 +39,6 @@ impl Ext2Fs {
     ///
     /// Returns the allocated block number, or `NoSpace` if the filesystem is full.
     pub fn alloc_block(&self) -> Result<u32, FsError> {
-
         let block_size = self.block_size() as usize;
         let (num_groups, first_data_block) = {
             let m = self.mutable().read();
@@ -63,7 +62,12 @@ impl Ext2Fs {
                 } else {
                     m.superblock.blocks_per_group
                 };
-                (bgd.free_blocks_count, bgd.block_bitmap, blocks_in_group, m.superblock.blocks_per_group)
+                (
+                    bgd.free_blocks_count,
+                    bgd.block_bitmap,
+                    blocks_in_group,
+                    m.superblock.blocks_per_group,
+                )
             };
 
             if free_count == 0 {
@@ -95,7 +99,8 @@ impl Ext2Fs {
                 self.write_superblock()?;
 
                 // Calculate the absolute block number, accounting for first_data_block offset
-                let block_num = first_data_block + group as u32 * blocks_per_group + bit_index as u32;
+                let block_num =
+                    first_data_block + group as u32 * blocks_per_group + bit_index as u32;
                 return Ok(block_num);
             }
         }
@@ -108,7 +113,6 @@ impl Ext2Fs {
     /// Clears the bit in the block bitmap, increments free block counts in
     /// the block group descriptor and superblock, and writes all back to disk.
     pub fn free_block(&self, block_num: u32) -> Result<(), FsError> {
-
         if block_num >= self.blocks_count() {
             crate::warn!("ext2: free_block {} out of range", block_num);
             return Err(FsError::IoError);
@@ -170,7 +174,6 @@ impl Ext2Fs {
     ///
     /// Returns `NoSpace` if no inodes are available.
     pub fn alloc_inode(self: &Arc<Self>) -> Result<InodeGuard, FsError> {
-
         let block_size = self.block_size() as usize;
         let num_groups = {
             let m = self.mutable().read();
@@ -229,7 +232,6 @@ impl Ext2Fs {
     /// Clears the bit in the inode bitmap, increments free inode counts in
     /// the block group descriptor and superblock, and writes all back to disk.
     pub fn free_inode(&self, ino: u32) -> Result<(), FsError> {
-
         if ino == 0 {
             return Err(FsError::IoError);
         }
@@ -327,7 +329,6 @@ impl Ext2Fs {
     /// The count is used by fsck and some allocation heuristics.
     ///
     pub fn inc_used_dirs_count(&self, ino: u32) -> Result<(), FsError> {
-
         let group = ((ino - 1) / self.inodes_per_group()) as usize;
 
         {
@@ -349,7 +350,6 @@ impl Ext2Fs {
     /// The count is used by fsck and some allocation heuristics.
     ///
     pub fn dec_used_dirs_count(&self, ino: u32) -> Result<(), FsError> {
-
         let group = ((ino - 1) / self.inodes_per_group()) as usize;
 
         {
@@ -365,4 +365,3 @@ impl Ext2Fs {
         Ok(())
     }
 }
-

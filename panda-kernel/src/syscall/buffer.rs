@@ -319,6 +319,43 @@ pub fn handle_free(handle_id: u64) -> SyscallFuture {
     }
 }
 
+/// Resolve `handle_id` to a provider-backed resource and its current file
+/// offset, if it is one. Shared by the two buffer<->file syscalls; mirrors
+/// `syscall::file::get_scheme_proxy`, which pairs the same lookup with the
+/// per-call offset those handlers also need.
+fn scheme_proxy_handle(handle_id: u64) -> Option<(Arc<dyn crate::resource::Resource>, u64)> {
+    scheduler::with_current_process(|proc| {
+        let handle = proc.handles().get(handle_id)?;
+        handle.as_scheme_proxy()?;
+        Some((handle.resource_arc(), handle.offset()))
+    })
+}
+
+/// Fill `buf` from `proxy` starting at `offset`, looping because one
+/// round trip carries at most `MAX_TRANSFER_SIZE` bytes. Returns the number
+/// of bytes actually read (short at EOF).
+async fn read_proxy_into(
+    proxy: &crate::resource::SchemeProxyResource,
+    offset: u64,
+    buf: &mut [u8],
+) -> Result<usize, panda_abi::ErrorCode> {
+    let mut done = 0;
+    while done < buf.len() {
+        let want = (buf.len() - done).min(panda_abi::scheme_protocol::MAX_TRANSFER_SIZE);
+        let data = proxy.read_at(offset + done as u64, want, false).await?;
+        if data.is_empty() {
+            break;
+        }
+        let n = data.len().min(want);
+        buf[done..done + n].copy_from_slice(&data[..n]);
+        done += n;
+        if n < want {
+            break; // short read: EOF
+        }
+    }
+    Ok(done)
+}
+
 /// Handle reading from file into buffer.
 /// Returns bytes read on success, negative on error.
 pub fn handle_read_buffer(file_handle_id: u64, buffer_handle_id: u64) -> SyscallFuture {
@@ -343,6 +380,30 @@ pub fn handle_read_buffer(file_handle_id: u64, buffer_handle_id: u64) -> Syscall
         return Box::pin(core::future::ready(SyscallResult::err(
             panda_abi::ErrorCode::PermissionDenied,
         )));
+    }
+
+    // Provider-backed file handles (`file:` since roadmap M5) round-trip to
+    // the provider instead of going through the VFS; only `initrd:` still
+    // resolves to a kernel-side `vfs::File`.
+    if let Some((resource, file_offset)) = scheme_proxy_handle(file_handle_id) {
+        return Box::pin(async move {
+            let proxy = resource.as_scheme_proxy().unwrap();
+            let to_read = buffer_arc.size().min(buffer_size);
+            let mut kernel_buf = alloc::vec![0u8; to_read];
+            let read = match read_proxy_into(proxy, file_offset, &mut kernel_buf).await {
+                Ok(n) => n,
+                Err(code) => return SyscallResult::err(code),
+            };
+            buffer_arc.with_mut_slice(|buf| {
+                buf[..read].copy_from_slice(&kernel_buf[..read]);
+            });
+            scheduler::with_current_process(|proc| {
+                if let Some(handle) = proc.handles_mut().get_mut(file_handle_id) {
+                    handle.set_offset(file_offset + read as u64);
+                }
+            });
+            SyscallResult::ok(read as isize)
+        });
     }
 
     // Get VFS file and current offset
@@ -440,47 +501,37 @@ pub fn handle_write_buffer(
         }
     };
 
-    // Get VFS file and current offset
-    let (vfs_file, file_offset) = match scheduler::with_current_process(|proc| {
-        let file_handle = proc.handles().get(file_handle_id)?;
-        let _ = file_handle.as_vfs_file()?;
-        let offset = file_handle.offset();
-        let resource_arc = file_handle.resource_arc();
-        Some((
-            Arc::new(VfsFileWrapper(resource_arc)) as Arc<dyn VfsFile>,
-            offset,
-        ))
-    }) {
-        Some(info) => info,
-        None => {
-            return Box::pin(core::future::ready(SyscallResult::err(
-                panda_abi::ErrorCode::InvalidHandle,
-            )));
-        }
+    // Writing is only possible to a provider-backed handle now: the
+    // kernel's one remaining filesystem (`initrd:`'s `TarFs`) is read-only,
+    // so `vfs::File` lost its `write` method entirely in roadmap M5.
+    let Some((resource, file_offset)) = scheme_proxy_handle(file_handle_id) else {
+        return Box::pin(core::future::ready(SyscallResult::err(
+            panda_abi::ErrorCode::NotWritable,
+        )));
     };
 
-    // Create async future for the write
     Box::pin(async move {
-        let file_lock = vfs_file.file();
-        let mut file = file_lock.lock();
-
-        // Seek to current offset
-        if file.seek(SeekFrom::Start(file_offset)).await.is_err() {
-            return SyscallResult::err(panda_abi::ErrorCode::IoError);
-        }
-
-        // Write from buffer
-        match file.write(&buffer_data[..write_len]).await {
-            Ok(n) => {
-                // Update file offset
-                scheduler::with_current_process(|proc| {
-                    if let Some(handle) = proc.handles_mut().get_mut(file_handle_id) {
-                        handle.set_offset(file_offset + n as u64);
-                    }
-                });
-                SyscallResult::ok(n as isize)
+        let proxy = resource.as_scheme_proxy().unwrap();
+        let mut done = 0;
+        while done < write_len {
+            let end = (done + panda_abi::scheme_protocol::MAX_TRANSFER_SIZE).min(write_len);
+            let n = match proxy
+                .write_at(file_offset + done as u64, &buffer_data[done..end])
+                .await
+            {
+                Ok(n) => n,
+                Err(code) => return SyscallResult::err(code),
+            };
+            if n == 0 {
+                break;
             }
-            Err(_) => SyscallResult::err(panda_abi::ErrorCode::IoError),
+            done += n;
         }
+        scheduler::with_current_process(|proc| {
+            if let Some(handle) = proc.handles_mut().get_mut(file_handle_id) {
+                handle.set_offset(file_offset + done as u64);
+            }
+        });
+        SyscallResult::ok(done as isize)
     })
 }

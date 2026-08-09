@@ -179,7 +179,7 @@ fn test_state_preserved_blocking_read() {
     // Instead, let's test with a file read which is non-blocking.
 
     // Open a file from initrd
-    let Ok(f) = environment::open("file:/initrd/hello.txt", 0, 0) else {
+    let Ok(f) = environment::open("initrd:/hello.txt", 0, 0) else {
         environment::log("SKIP: test file not available");
         return;
     };
@@ -298,7 +298,7 @@ fn test_syscall_return_values() {
     }
 
     // Test that open returns a valid handle
-    let Ok(fd) = environment::open("file:/initrd/hello.txt", 0, 0) else {
+    let Ok(fd) = environment::open("initrd:/hello.txt", 0, 0) else {
         environment::log("FAIL: open should return valid fd");
         process::exit(1);
     };
@@ -311,7 +311,7 @@ fn test_syscall_return_values() {
     }
 
     // Test that opening non-existent file returns error
-    if let Ok(_) = environment::open("file:/initrd/nonexistent", 0, 0) {
+    if let Ok(_) = environment::open("initrd:/nonexistent", 0, 0) {
         environment::log("FAIL: open nonexistent should fail");
         process::exit(1);
     }

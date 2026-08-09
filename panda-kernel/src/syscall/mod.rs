@@ -227,7 +227,6 @@ fn build_future(
         OP_ENVIRONMENT_LOG => Ok(environment::handle_log(ua, arg0, arg1)),
         OP_ENVIRONMENT_TIME => Ok(environment::handle_time()),
         OP_ENVIRONMENT_OPENDIR => Ok(environment::handle_opendir(ua, arg0, arg1)),
-        OP_ENVIRONMENT_MOUNT => Ok(environment::handle_mount(ua, arg0, arg1, arg2, arg3)),
         OP_ENVIRONMENT_CONNECT => Ok(environment::handle_connect(ua, arg0, arg1)),
 
         // Directory operations
