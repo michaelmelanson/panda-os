@@ -303,6 +303,13 @@ impl Window {
         self.set_visible(false)
     }
 
+    /// Raise the window to the top of the stacking order.
+    pub fn raise(&mut self) -> Result<()> {
+        self.connection
+            .borrow()
+            .send(Request::Raise { window: self.id })
+    }
+
     /// Fill a rectangle of the window with a solid colour.
     ///
     /// Handled compositor-side against the latched content (the plan's

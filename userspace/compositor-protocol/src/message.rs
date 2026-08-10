@@ -24,6 +24,7 @@ const TAG_FILL: u8 = 5;
 const TAG_SET_VISIBLE: u8 = 6;
 const TAG_MOVE: u8 = 7;
 const TAG_DESTROY_WINDOW: u8 = 8;
+const TAG_RAISE: u8 = 9;
 
 const TAG_DISPLAY_FORMATS: u8 = 1;
 const TAG_WINDOW_CREATED: u8 = 2;
@@ -108,6 +109,8 @@ pub enum Request {
     Move { window: u64, x: u32, y: u32 },
     /// Destroy a window and release its buffers.
     DestroyWindow { window: u64 },
+    /// Raise a window to the top of the stacking order.
+    Raise { window: u64 },
 }
 
 impl Request {
@@ -200,6 +203,15 @@ impl Request {
                 buf[1..9].copy_from_slice(&window.to_le_bytes());
                 Some(total)
             }
+            Request::Raise { window } => {
+                let total = 1 + 8;
+                if buf.len() < total {
+                    return None;
+                }
+                buf[0] = TAG_RAISE;
+                buf[1..9].copy_from_slice(&window.to_le_bytes());
+                Some(total)
+            }
         }
     }
 
@@ -236,6 +248,9 @@ impl Request {
                 y: u32_at(buf, 13)?,
             }),
             TAG_DESTROY_WINDOW => Some(Request::DestroyWindow {
+                window: u64_at(buf, 1)?,
+            }),
+            TAG_RAISE => Some(Request::Raise {
                 window: u64_at(buf, 1)?,
             }),
             _ => None,
@@ -401,6 +416,7 @@ mod tests {
             y: 200,
         });
         round_trip_request(Request::DestroyWindow { window: 3 });
+        round_trip_request(Request::Raise { window: 3 });
     }
 
     #[test]

@@ -319,6 +319,23 @@ impl<T: Target> WindowManager<T> {
                     self.mark_dirty(rect);
                 }
             }
+
+            Request::Raise { window } => {
+                let Some(index) = self.windows.iter().position(|w| w.id == window) else {
+                    return events;
+                };
+                // `composite` walks `self.windows` back-to-front, so the
+                // last entry is the topmost; raising moves the window there.
+                if index != self.windows.len() - 1 {
+                    let raised = self.windows.remove(index);
+                    let rect = raised.rect();
+                    let visible = raised.visible;
+                    self.windows.push(raised);
+                    if visible {
+                        self.mark_dirty(rect);
+                    }
+                }
+            }
         }
 
         events
@@ -873,6 +890,80 @@ mod tests {
         let target = manager.target.as_ref().unwrap();
         assert_eq!(target.get_pixel(0, 0), BACKGROUND_COLOUR.to_le_bytes());
         assert_eq!(target.get_pixel(32, 32), [7, 7, 7, 255]);
+    }
+
+    #[test]
+    fn raising_a_window_moves_it_to_the_top_of_the_stack() {
+        let mut manager = manager(64, 64);
+        let bottom = create_window(&mut manager);
+        let middle = create_window(&mut manager);
+        let top = create_window(&mut manager);
+
+        let mut bottom_buffer = ClientBuffer::new(16, 16, [1, 0, 0, 255]);
+        let mut middle_buffer = ClientBuffer::new(16, 16, [0, 1, 0, 255]);
+        let mut top_buffer = ClientBuffer::new(16, 16, [0, 0, 1, 255]);
+
+        for (window, buffer) in [
+            (bottom, bottom_buffer.attach(0)),
+            (middle, middle_buffer.attach(0)),
+            (top, top_buffer.attach(0)),
+        ] {
+            manager.handle_request(
+                Request::AttachBuffer {
+                    window,
+                    width: 16,
+                    height: 16,
+                    format: FORMAT_BGRA8888,
+                },
+                Some(buffer),
+            );
+            manager.handle_request(
+                Request::SetVisible {
+                    window,
+                    visible: true,
+                },
+                None,
+            );
+            manager.handle_request(Request::Commit { window }, None);
+        }
+        manager.tick();
+
+        // All three windows overlap at (0, 0); creation order puts `top` on
+        // top.
+        let target = manager.target.as_ref().unwrap();
+        assert_eq!(target.get_pixel(0, 0), [0, 0, 1, 255]);
+
+        manager.handle_request(Request::Raise { window: bottom }, None);
+        manager.tick();
+
+        let target = manager.target.as_ref().unwrap();
+        assert_eq!(target.get_pixel(0, 0), [1, 0, 0, 255]);
+    }
+
+    #[test]
+    fn raising_the_topmost_window_is_a_no_op() {
+        let mut manager = manager(64, 64);
+        let bottom = create_window(&mut manager);
+        let top = create_window(&mut manager);
+
+        assert!(
+            manager
+                .handle_request(Request::Raise { window: top }, None)
+                .is_empty()
+        );
+        assert_eq!(manager.windows.iter().map(|w| w.id).collect::<Vec<_>>(), vec![
+            bottom, top
+        ]);
+    }
+
+    #[test]
+    fn raising_an_unknown_window_does_nothing() {
+        let mut manager = manager(64, 64);
+        assert!(
+            manager
+                .handle_request(Request::Raise { window: 99 }, None)
+                .is_empty()
+        );
     }
 
     #[test]
