@@ -1121,6 +1121,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "window_raise_test"
+version = "0.1.0"
+dependencies = [
+ "libpanda",
+ "panda-abi",
+]
+
+[[package]]
 name = "window_test"
 version = "0.1.0"
 dependencies = [

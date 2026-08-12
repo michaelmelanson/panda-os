@@ -1,0 +1,16 @@
+# @unordered
+Window raise test starting
+# @barrier
+compositor_test_child: starting
+compositor: starting
+compositor: claimed the display
+compositor: registered the compositor: scheme
+compositor: entering the frame loop
+# @barrier
+PASS: Created and rendered red window at (50, 50)
+# @barrier
+PASS: Created and rendered blue window at (150, 100)
+# @barrier
+PASS: Raised blue window to the front
+# @barrier
+PASS: Window raise test complete
