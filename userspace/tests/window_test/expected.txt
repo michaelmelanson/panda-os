@@ -17,3 +17,5 @@ PASS: Filled buffer with test pattern
 PASS: Blitted buffer to window
 # @barrier
 PASS: Flushed window (FrameDone received)
+# @barrier
+compositor_test_child: finished

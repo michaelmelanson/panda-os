@@ -96,16 +96,15 @@ if [ $SCREENSHOT_TEST -eq 1 ]; then
             ACTUAL_PNG_TMP="$BUILD_DIR/${TEST_NAME}_actual.ppm"
             ACTUAL_PNG="$BUILD_DIR/${TEST_NAME}_actual.png"
 
-            # Send commands to monitor with proper formatting
+            # Send commands to monitor with proper formatting. Quitting is
+            # deferred until after the screenshot and expected.txt checks
+            # below, so the test process gets a chance to run its normal
+            # shutdown sequence before the VM goes away.
             {
                 sleep 0.1
                 echo "screendump $ACTUAL_PNG_TMP"
                 sleep 0.3
-                echo "quit"
-            } | nc -U "$MONITOR_SOCK" > /dev/null 2>&1
-
-            # Wait for QEMU to exit
-            wait $QEMU_PID 2>/dev/null || true
+            } | nc -N -U "$MONITOR_SOCK" > /dev/null 2>&1
 
             # Verify screenshot was captured
             if [ ! -f "$ACTUAL_PNG_TMP" ]; then
@@ -155,7 +154,28 @@ if [ $SCREENSHOT_TEST -eq 1 ]; then
             # Clean up the actual screenshot now that it passed
             rm -f "$ACTUAL_PNG"
 
-            # Screenshot test passed - now check expected.txt if it exists
+            # Screenshot test passed. Before quitting, give the test the
+            # same chance the non-screenshot path gets to run its normal
+            # completion/teardown sequence, so expected.txt below can
+            # verify the full closing log (e.g. a spawned helper process's
+            # clean-shutdown line) rather than just the state at the
+            # screenshot marker.
+            if [ -n "$EXPECTED_FILE" ] && [ -f "$EXPECTED_FILE" ]; then
+                FINAL_PATTERN=$(grep -v '^#' "$EXPECTED_FILE" | grep -v '^[[:space:]]*$' | tail -1)
+                if [ -n "$FINAL_PATTERN" ]; then
+                    for j in $(seq 1 $SCREENSHOT_TIMEOUT); do
+                        grep -qa -F "$FINAL_PATTERN" "$LOG_FILE" 2>/dev/null && break
+                        if ! kill -0 $QEMU_PID 2>/dev/null; then
+                            break
+                        fi
+                        sleep 0.5
+                    done
+                fi
+            fi
+
+            echo "quit" | nc -N -U "$MONITOR_SOCK" > /dev/null 2>&1
+            wait $QEMU_PID 2>/dev/null || true
+
             break
         fi
 
