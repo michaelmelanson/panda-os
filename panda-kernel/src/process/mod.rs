@@ -148,12 +148,20 @@ impl Process {
 
         // Uses our minimal ELF parser — only reads ELF header + program headers,
         // skipping section headers, symbol tables, and relocations.
-        let (entry_point, mappings) = elf::load_elf(data)?;
+        //
+        // Must restore the caller's page table before returning in either
+        // case: an early return on a parse error here (via `?`) would
+        // otherwise leave the *caller* running on the new (mostly empty)
+        // context's page table, which page-faults on its very next
+        // instruction back in userspace.
+        let load_result = elf::load_elf(data);
 
         // Switch back to the original page table
         unsafe {
             memory::switch_page_table(saved_page_table);
         }
+
+        let (entry_point, mappings) = load_result?;
 
         // Create demand-paged stack mapping (grows downward, pages allocated on fault)
         let stack = Mapping::new(

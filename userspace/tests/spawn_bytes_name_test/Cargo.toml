@@ -1,0 +1,7 @@
+[package]
+name = "spawn_bytes_name_test"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+libpanda = { workspace = true }

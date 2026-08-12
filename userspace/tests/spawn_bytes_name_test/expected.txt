@@ -1,0 +1,3 @@
+Spawn bytes name test: starting
+Spawn bytes name test: spawn_bytes failed as expected
+PASS

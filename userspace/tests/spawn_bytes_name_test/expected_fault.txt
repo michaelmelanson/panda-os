@@ -1,0 +1,4 @@
+# The kernel-side error log for the failed in-memory spawn must name the
+# real caller-supplied image name, not the old hardcoded stock label
+# "<in-memory image>" (task #49).
+SPAWN: failed to create process from spawn_bytes_name_test:garbage-image

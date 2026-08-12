@@ -23,6 +23,7 @@ members = [
   "userspace/tests/preempt_child",
   "userspace/tests/spawn_test",
   "userspace/tests/spawn_child",
+  "userspace/tests/spawn_bytes_name_test",
   "userspace/tests/yield_test",
   "userspace/tests/yield_child",
   "userspace/tests/sleep_test",

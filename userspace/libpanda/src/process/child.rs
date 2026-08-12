@@ -141,8 +141,10 @@ enum Source<'a> {
     /// time — the kernel reads the bytes itself.
     Path(&'a str),
     /// Bytes the caller already has in memory, handed to the kernel
-    /// directly instead of being re-read by path.
-    Bytes(&'a [u8]),
+    /// directly instead of being re-read by path. The name identifies the
+    /// image for kernel-side error logging (e.g. the path the bytes were
+    /// originally read from).
+    Bytes(&'a str, &'a [u8]),
 }
 
 pub struct ChildBuilder<'a> {
@@ -164,9 +166,10 @@ impl<'a> ChildBuilder<'a> {
 
     /// Create a new builder for spawning a process from an in-memory ELF
     /// image, e.g. bytes already read once for another purpose (see
-    /// `environment::spawn_bytes`).
-    pub fn new_bytes(data: &'a [u8]) -> Self {
-        Self::from_source(Source::Bytes(data))
+    /// `environment::spawn_bytes`). `name` identifies the image for
+    /// kernel-side error logging.
+    pub fn new_bytes(name: &'a str, data: &'a [u8]) -> Self {
+        Self::from_source(Source::Bytes(name, data))
     }
 
     fn from_source(source: Source<'a>) -> Self {
@@ -263,7 +266,8 @@ impl<'a> ChildBuilder<'a> {
             Source::Path(path) => {
                 sys::env::spawn(path, mailbox_raw, self.event_mask, stdin_raw, stdout_raw)
             }
-            Source::Bytes(data) => sys::env::spawn_bytes(
+            Source::Bytes(name, data) => sys::env::spawn_bytes(
+                name,
                 data,
                 mailbox_raw,
                 self.event_mask,

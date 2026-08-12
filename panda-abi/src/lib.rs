@@ -936,6 +936,11 @@ pub struct SpawnBytesParams {
     pub data_ptr: usize,
     /// Length of the ELF image in bytes.
     pub data_len: usize,
+    /// Pointer to a name string identifying the image, used only for
+    /// error logging (e.g. the driver path the bytes were read from).
+    pub name_ptr: usize,
+    /// Length of the name string.
+    pub name_len: usize,
     /// Mailbox handle for event notifications (0 = none).
     pub mailbox: u64,
     /// Event mask for mailbox notifications.

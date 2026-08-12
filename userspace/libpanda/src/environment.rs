@@ -109,16 +109,19 @@ pub fn spawn(path: &str) -> Result<Handle> {
 /// such read is a full scheme round trip when the executable lives under a
 /// provider-backed scheme like `file:`.
 ///
+/// `name` identifies the image (e.g. the path the bytes were originally
+/// read from) and is used only for kernel-side error logging.
+///
 /// # Examples
 ///
 /// ```no_run
 /// use libpanda::environment;
 ///
 /// let data = [0u8; 0]; // an ELF image already in memory
-/// let handle = environment::spawn_bytes(&data).unwrap();
+/// let handle = environment::spawn_bytes("file:/mnt/drivers/example", &data).unwrap();
 /// ```
-pub fn spawn_bytes(data: &[u8]) -> Result<Handle> {
-    ChildBuilder::new_bytes(data).spawn_handle()
+pub fn spawn_bytes(name: &str, data: &[u8]) -> Result<Handle> {
+    ChildBuilder::new_bytes(name, data).spawn_handle()
 }
 
 /// Connect to a userspace scheme provider by URI and receive a live channel

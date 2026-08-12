@@ -249,6 +249,11 @@ pub fn handle_spawn_bytes(
         params.data_ptr, params.data_len, mailbox_handle, event_mask, stdin_handle, stdout_handle
     );
 
+    let name = match read_user_str(ua, params.name_ptr, params.name_len) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
     let data = match ua.read(UserSlice::new(params.data_ptr, params.data_len)) {
         Ok(d) => d,
         Err(_) => {
@@ -276,7 +281,7 @@ pub fn handle_spawn_bytes(
 
     Box::pin(core::future::ready(spawn_from_elf(
         elf_ptr,
-        "<in-memory image>",
+        &name,
         mailbox_handle,
         event_mask,
         stdin_resource,
@@ -289,8 +294,8 @@ pub fn handle_spawn_bytes(
 /// optional stdin/stdout, register it with the scheduler, and install the
 /// resulting `SpawnHandle` in the caller's handle table.
 ///
-/// `label` is only used for error logging (a URI for `handle_spawn`, a
-/// placeholder for `handle_spawn_bytes`, which has no path to report).
+/// `label` is only used for error logging (a URI for `handle_spawn`, the
+/// caller-supplied name for `handle_spawn_bytes`).
 fn spawn_from_elf(
     elf_ptr: *const [u8],
     label: &str,

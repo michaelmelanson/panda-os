@@ -63,12 +63,25 @@ pub fn spawn(path: &str, mailbox: u64, event_mask: u32, stdin: u64, stdout: u64)
 /// bytes (e.g. after reading them once to scan for something else) and
 /// wants to avoid a second round trip re-reading the same bytes by path.
 ///
+/// `name` identifies the image for kernel-side error logging (e.g. the
+/// path the bytes were originally read from); it isn't used to resolve
+/// anything.
+///
 /// Returns process handle on success, or negative error code.
 #[inline(always)]
-pub fn spawn_bytes(data: &[u8], mailbox: u64, event_mask: u32, stdin: u64, stdout: u64) -> isize {
+pub fn spawn_bytes(
+    name: &str,
+    data: &[u8],
+    mailbox: u64,
+    event_mask: u32,
+    stdin: u64,
+    stdout: u64,
+) -> isize {
     let params = SpawnBytesParams {
         data_ptr: data.as_ptr() as usize,
         data_len: data.len(),
+        name_ptr: name.as_ptr() as usize,
+        name_len: name.len(),
         mailbox,
         event_mask,
         _pad: 0,

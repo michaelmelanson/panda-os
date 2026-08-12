@@ -35,7 +35,7 @@ libpanda::main! {
     // `libpanda::process::wait_ready`'s doc comment.
     for path in drivers.binary_paths() {
         let spawned = match drivers.binary_bytes(path) {
-            Some(data) => environment::spawn_bytes(data),
+            Some(data) => environment::spawn_bytes(path, data),
             None => environment::spawn(path),
         };
         match spawned {
@@ -96,7 +96,7 @@ libpanda::main! {
         // loop depends on (see `libpanda::process::wait_ready`'s doc
         // comment).
         let spawned = match drivers.binary_bytes(path) {
-            Some(data) => environment::spawn_bytes(data),
+            Some(data) => environment::spawn_bytes(path, data),
             None => environment::spawn(path),
         };
         match spawned {
